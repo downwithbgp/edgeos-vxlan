@@ -35,7 +35,7 @@ Check whether your router is supported without making any changes:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.1.1/install.sh |
+  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.2.0/install.sh |
   sh -s -- --check
 ```
 
@@ -43,7 +43,7 @@ Install `edgeos-vxlan`:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.1.1/install.sh |
+  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.2.0/install.sh |
   sudo sh
 ```
 
@@ -58,15 +58,14 @@ Prefer to inspect the installer first?
 
 ```bash
 curl -fLO \
-  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.1.1/install.sh
+  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.2.0/install.sh
 
 less install.sh
 sudo sh install.sh
 ```
 
-The installer is pinned to release `v0.1.1`; it does not execute the moving `main` branch.
+The installer is pinned to release `v0.2.0`; it does not execute the moving `main` branch.
 
-Until `v0.2.0` is tagged and its release artifacts are published, the quick-install commands above intentionally continue to install the current published `v0.1.1` release.
 
 ## Supported platform
 
