@@ -20,6 +20,10 @@ INTERFACE=${1:?missing interface}
 VYATTA_SBINDIR=${vyatta_sbindir:-/opt/vyatta/sbin}
 VYATTA_API="${VYATTA_SBINDIR}/my_cli_shell_api"
 
+# EdgeOS 3.0.1 bridge-port defaults observed when a port is attached.
+DEFAULT_BRIDGE_COST=100
+DEFAULT_BRIDGE_PRIORITY=32
+
 node_exists() {
     "$VYATTA_API" exists interfaces vxlan "$INTERFACE" "$@"
 }
@@ -43,6 +47,35 @@ get_live_bridge() {
     basename "$link"
 }
 
+get_live_cost() {
+    cat "/sys/class/net/${INTERFACE}/brport/path_cost"
+}
+
+get_live_priority() {
+    cat "/sys/class/net/${INTERFACE}/brport/priority"
+}
+
+apply_bridge_port_options() {
+    local bridge=$1
+    local desired_cost=$2
+    local desired_priority=$3
+    local current_cost
+    local current_priority
+
+    current_cost=$(get_live_cost)
+    current_priority=$(get_live_priority)
+
+    if [ "$current_cost" != "$desired_cost" ]; then
+        sudo /usr/sbin/brctl setpathcost \
+            "$bridge" "$INTERFACE" "$desired_cost"
+    fi
+
+    if [ "$current_priority" != "$desired_priority" ]; then
+        sudo /usr/sbin/brctl setportprio \
+            "$bridge" "$INTERFACE" "$desired_priority"
+    fi
+}
+
 validate_config() {
     if node_exists bridge-group bridge &&
        node_exists address; then
@@ -50,18 +83,66 @@ validate_config() {
         return 1
     fi
 
+    if ! node_exists bridge-group bridge &&
+       { node_exists bridge-group cost ||
+         node_exists bridge-group priority; }; then
+        echo "ERROR: Bridge port cost/priority require bridge membership." >&2
+        return 1
+    fi
+
+    return 0
+}
+
+restore_bridge_state() {
+    local original_bridge=$1
+    local original_cost=$2
+    local original_priority=$3
+    local current_bridge
+
+    current_bridge=$(get_live_bridge)
+
+    if [ "$current_bridge" != "$original_bridge" ]; then
+        if [ -n "$current_bridge" ]; then
+            sudo /usr/sbin/brctl delif \
+                "$current_bridge" "$INTERFACE" || return 1
+        fi
+
+        if [ -n "$original_bridge" ]; then
+            if [ ! -d "/sys/class/net/${original_bridge}/bridge" ]; then
+                echo "ERROR: Can not restore missing bridge $original_bridge." >&2
+                return 1
+            fi
+
+            sudo /usr/sbin/brctl addif \
+                "$original_bridge" "$INTERFACE" || return 1
+        fi
+    fi
+
+    if [ -n "$original_bridge" ]; then
+        apply_bridge_port_options \
+            "$original_bridge" \
+            "$original_cost" \
+            "$original_priority" || return 1
+    fi
+
     return 0
 }
 
 reconcile_bridge() {
     local desired_bridge=$1
-    local current_bridge
+    local desired_cost=$2
+    local desired_priority=$3
+
+    local original_bridge
+    local original_cost=""
+    local original_priority=""
     local rc
 
-    current_bridge=$(get_live_bridge)
+    original_bridge=$(get_live_bridge)
 
-    if [ "$current_bridge" = "$desired_bridge" ]; then
-        return 0
+    if [ -n "$original_bridge" ]; then
+        original_cost=$(get_live_cost)
+        original_priority=$(get_live_priority)
     fi
 
     if [ -n "$desired_bridge" ] &&
@@ -70,28 +151,50 @@ reconcile_bridge() {
         return 1
     fi
 
-    if [ -n "$current_bridge" ]; then
-        sudo /usr/sbin/brctl delif \
-            "$current_bridge" "$INTERFACE" || return $?
+    if [ "$original_bridge" != "$desired_bridge" ]; then
+        if [ -n "$original_bridge" ]; then
+            sudo /usr/sbin/brctl delif \
+                "$original_bridge" "$INTERFACE" || return $?
+        fi
+
+        if [ -n "$desired_bridge" ]; then
+            sudo /usr/sbin/brctl addif \
+                "$desired_bridge" "$INTERFACE" || {
+                rc=$?
+
+                echo "ERROR: Failed to add $INTERFACE to $desired_bridge." >&2
+                echo "Restoring previous bridge state..." >&2
+
+                restore_bridge_state \
+                    "$original_bridge" \
+                    "$original_cost" \
+                    "$original_priority" || {
+                    echo "ERROR: Failed to restore previous bridge state." >&2
+                    return 2
+                }
+
+                return "$rc"
+            }
+        fi
     fi
 
     if [ -n "$desired_bridge" ]; then
-        sudo /usr/sbin/brctl addif \
-            "$desired_bridge" "$INTERFACE" || {
+        apply_bridge_port_options \
+            "$desired_bridge" \
+            "$desired_cost" \
+            "$desired_priority" || {
             rc=$?
 
-            echo "ERROR: Failed to add $INTERFACE to $desired_bridge." >&2
+            echo "ERROR: Failed to apply bridge port options to $INTERFACE." >&2
+            echo "Restoring previous bridge state..." >&2
 
-            if [ -n "$current_bridge" ] &&
-               [ -d "/sys/class/net/${current_bridge}/bridge" ]; then
-                echo "Restoring $INTERFACE to $current_bridge..." >&2
-
-                sudo /usr/sbin/brctl addif \
-                    "$current_bridge" "$INTERFACE" || {
-                    echo "ERROR: Failed to restore bridge membership." >&2
-                    return 2
-                }
-            fi
+            restore_bridge_state \
+                "$original_bridge" \
+                "$original_cost" \
+                "$original_priority" || {
+                echo "ERROR: Failed to restore previous bridge state." >&2
+                return 2
+            }
 
             return "$rc"
         }
@@ -113,9 +216,22 @@ if ! interface_exists; then
 fi
 
 DESIRED_BRIDGE=""
+DESIRED_COST=$DEFAULT_BRIDGE_COST
+DESIRED_PRIORITY=$DEFAULT_BRIDGE_PRIORITY
 
 if node_exists bridge-group bridge; then
     DESIRED_BRIDGE=$(node_value bridge-group bridge)
 fi
 
-reconcile_bridge "$DESIRED_BRIDGE"
+if node_exists bridge-group cost; then
+    DESIRED_COST=$(node_value bridge-group cost)
+fi
+
+if node_exists bridge-group priority; then
+    DESIRED_PRIORITY=$(node_value bridge-group priority)
+fi
+
+reconcile_bridge \
+    "$DESIRED_BRIDGE" \
+    "$DESIRED_COST" \
+    "$DESIRED_PRIORITY"

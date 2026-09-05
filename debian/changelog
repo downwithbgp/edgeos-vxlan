@@ -1,3 +1,17 @@
+edgeos-vxlan (0.2.1~dev2+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * Preserve bridge port cost and priority across VXLAN identity
+    recreation and live-state rollback.
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Sat, 05 Sep 2026 17:39:57 +0000
+
+edgeos-vxlan (0.2.1~dev1+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * Add native bridge port cost and priority configuration for VXLAN
+    interfaces.
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Sat, 05 Sep 2026 17:20:55 +0000
+
 edgeos-vxlan (0.2.0+edgeos3.0.1.e50) unstable; urgency=medium
 
   * Add native EdgeOS bridge integration for VXLAN interfaces.

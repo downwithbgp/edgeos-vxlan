@@ -39,6 +39,26 @@ get_live_bridge() {
     basename "$link"
 }
 
+get_live_bridge_cost() {
+    cat "/sys/class/net/${INTERFACE}/brport/path_cost"
+}
+
+get_live_bridge_priority() {
+    cat "/sys/class/net/${INTERFACE}/brport/priority"
+}
+
+apply_live_bridge_port_options() {
+    local bridge=$1
+    local cost=$2
+    local priority=$3
+
+    sudo /usr/sbin/brctl setpathcost \
+        "$bridge" "$INTERFACE" "$cost" || return $?
+
+    sudo /usr/sbin/brctl setportprio \
+        "$bridge" "$INTERFACE" "$priority" || return $?
+}
+
 reconcile_bridge() {
     local desired_bridge=$1
     local current_bridge
@@ -224,7 +244,8 @@ apply_desired_mutable_state() {
 
     # Detach from a bridge before configuring L3 addresses.
     if [ -z "$BRIDGE" ]; then
-        reconcile_bridge "" || return $?
+        "${VYATTA_SBINDIR}/vyatta-vxlan-bridge" \
+            "$INTERFACE" || return $?
     fi
 
     for address in "${LIVE_ADDRESSES[@]}"; do
@@ -241,9 +262,10 @@ apply_desired_mutable_state() {
     done
 
     # When transitioning to L2 operation, remove addresses first and only
-    # then attach the interface to the requested bridge.
+    # then reconcile the complete requested bridge-port state.
     if [ -n "$BRIDGE" ]; then
-        reconcile_bridge "$BRIDGE" || return $?
+        /opt/vyatta/sbin/vyatta-vxlan-bridge \
+            "$INTERFACE" || return $?
     fi
 
     flags=$(cat "/sys/class/net/$INTERFACE/flags")
@@ -286,6 +308,13 @@ capture_live_snapshot() {
     OLD_MTU=$(cat "/sys/class/net/$INTERFACE/mtu")
     OLD_DESCRIPTION=$(cat "/sys/class/net/$INTERFACE/ifalias" 2>/dev/null || true)
     OLD_BRIDGE=$(get_live_bridge)
+    OLD_BRIDGE_COST=""
+    OLD_BRIDGE_PRIORITY=""
+
+    if [ -n "$OLD_BRIDGE" ]; then
+        OLD_BRIDGE_COST=$(get_live_bridge_cost)
+        OLD_BRIDGE_PRIORITY=$(get_live_bridge_priority)
+    fi
 
     flags=$(cat "/sys/class/net/$INTERFACE/flags")
 
@@ -334,6 +363,13 @@ rollback_live_snapshot() {
     done
 
     reconcile_bridge "$OLD_BRIDGE" || return 1
+
+    if [ -n "$OLD_BRIDGE" ]; then
+        apply_live_bridge_port_options \
+            "$OLD_BRIDGE" \
+            "$OLD_BRIDGE_COST" \
+            "$OLD_BRIDGE_PRIORITY" || return 1
+    fi
 
     if [ "$OLD_UP" -eq 1 ]; then
         sudo ip link set dev "$INTERFACE" up || return 1
