@@ -1,0 +1,82 @@
+name: Release validation
+
+on:
+  push:
+    branches:
+      - main
+      - 'ci/**'
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            crossbuild-essential-mipsel \
+            debhelper \
+            devscripts \
+            fakeroot
+
+      - name: Source sanity
+        run: |
+          sh -n install.sh
+          git diff --check
+
+      - name: Build Debian packages
+        run: |
+          dpkg-buildpackage -us -uc -b -a mipsel
+
+      - name: Validate release artifacts
+        run: |
+          ./scripts/validate-release.sh
+
+      - name: Show package contents
+        run: |
+          VERSION=$(dpkg-parsechangelog -S Version)
+
+          dpkg-deb -c \
+            "../edgeos-vxlan-kmod_${VERSION}_mipsel.deb" \
+            | grep -E 'vxlan\.ko|udp_tunnel\.ko'
+
+          dpkg-deb -f \
+            "../edgeos-vxlan_${VERSION}_all.deb" \
+            Version Architecture Depends
+
+          dpkg-deb -f \
+            "../edgeos-vxlan-kmod_${VERSION}_mipsel.deb" \
+            Version Architecture
+
+      - name: Stage CI artifacts
+        run: |
+          VERSION=$(dpkg-parsechangelog -S Version)
+
+          mkdir -p ci-artifacts
+          cp \
+            "../edgeos-vxlan-kmod_${VERSION}_mipsel.deb" \
+            "../edgeos-vxlan_${VERSION}_all.deb" \
+            ci-artifacts/
+
+          (
+            cd ci-artifacts
+            sha256sum *.deb > SHA256SUMS
+          )
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: edgeos-vxlan-packages
+          path: ci-artifacts/
