@@ -1,8 +1,41 @@
 #!/bin/sh
 set -e
 
-if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
-    depmod -a 4.14.54-UBNT || true
-fi
+KERNEL="4.14.54-UBNT"
+TARGET="/lib/modules/$KERNEL/kernel/net/ipv4/udp_tunnel.ko"
+DIVERT="/lib/modules/$KERNEL/kernel/net/ipv4/udp_tunnel.ko.edgeos-vxlan-stock"
+EXPECTED_SHA256="14fbf8c469a7c902ce53d79de581e3e14982a9d52dbc80515d5ab481afb0fa94"
+
+case "$1" in
+    remove|purge)
+        DIVERSION="$(dpkg-divert --list "$TARGET" 2>/dev/null || true)"
+
+        if echo "$DIVERSION" | grep -Fq "by edgeos-vxlan-kmod"; then
+            if [ ! -f "$DIVERT" ]; then
+                echo "ERROR: Diverted stock udp_tunnel module is missing:"
+                echo "  $DIVERT"
+                exit 1
+            fi
+
+            ACTUAL_SHA256="$(sha256sum "$DIVERT" | awk '{print $1}')"
+
+            if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+                echo "ERROR: Refusing to restore unexpected udp_tunnel.ko."
+                echo "Expected: $EXPECTED_SHA256"
+                echo "Actual:   $ACTUAL_SHA256"
+                exit 1
+            fi
+
+            dpkg-divert \
+                --package edgeos-vxlan-kmod \
+                --remove \
+                --rename \
+                --divert "$DIVERT" \
+                "$TARGET"
+        fi
+
+        depmod -a "$KERNEL" || true
+        ;;
+esac
 
 exit 0

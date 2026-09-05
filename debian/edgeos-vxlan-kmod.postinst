@@ -3,9 +3,26 @@ set -e
 
 KERNEL="4.14.54-UBNT"
 
+if [ "$(uname -r)" != "$KERNEL" ]; then
+    echo "WARNING: edgeos-vxlan-kmod was built for $KERNEL."
+    echo "Running kernel is $(uname -r)."
+    echo "The VXLAN module will not be loaded."
+    exit 0
+fi
+
 depmod -a "$KERNEL"
 
-modprobe udp_tunnel
+if lsmod | grep -q '^udp_tunnel '; then
+    echo
+    echo "NOTICE: udp_tunnel is already loaded."
+    echo "The patched module has been installed on disk but the currently"
+    echo "loaded module will remain active until it is safely reloaded or"
+    echo "the router is rebooted."
+    echo
+else
+    modprobe udp_tunnel
+fi
+
 modprobe ip6_udp_tunnel
 modprobe vxlan
 

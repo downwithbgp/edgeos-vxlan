@@ -1,3 +1,10 @@
+edgeos-vxlan (0.2.0~dev4+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * Backport the Linux fix for CVE-2022-50405, a VXLAN/UDP tunnel
+    socket teardown race, for the EdgeOS 3.0.1 kernel.
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Sat, 05 Sep 2026 14:15:32 +0000
+
 edgeos-vxlan (0.2.0~dev3+edgeos3.0.1.e50) unstable; urgency=medium
 
   * Avoid shell interpolation when applying VXLAN descriptions.
