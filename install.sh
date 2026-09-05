@@ -2,15 +2,15 @@
 # SPDX-License-Identifier: GPL-2.0-only
 set -eu
 
-VERSION="0.2.0"
-PKG_VERSION="0.2.0+edgeos3.0.1.e50"
+VERSION="0.2.1"
+PKG_VERSION="0.2.1+edgeos3.0.1.e50"
 REPO="downwithbgp/edgeos-vxlan"
 
 KMOD="edgeos-vxlan-kmod_${PKG_VERSION}_mipsel.deb"
 INTEGRATION="edgeos-vxlan_${PKG_VERSION}_all.deb"
 
-KMOD_SHA256="383b219316b7705abe74894c2ab9161e1636834ad5ad289f5981fce585f80307"
-INTEGRATION_SHA256="edeea3d7040f587f3dc9fe218e891cbc4afe74e76d4bb410aef5837e4b1d58c3"
+KMOD_SHA256="d3e2893680d5823276ed6d7bee51a4afa9a53fb93162b76c9b8f87d62bb532c2"
+INTEGRATION_SHA256="066f4e5d746e1ac0ef62f54ed847ec5fffd030fbfb8468eefbada7ae5e0ca231"
 
 BASE_URL="https://github.com/${REPO}/releases/download/v${VERSION}"
 
