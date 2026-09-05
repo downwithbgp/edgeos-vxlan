@@ -29,6 +29,43 @@ Interface    IP Address        S/L
 vxlan42      198.51.100.1/30      u/u
 ```
 
+## Quick install
+
+Check whether your router is supported without making any changes:
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.1.0/install.sh |
+  sh -s -- --check
+```
+
+Install `edgeos-vxlan`:
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.1.0/install.sh |
+  sudo sh
+```
+
+The installer:
+
+* verifies the EdgeOS firmware and running kernel;
+* downloads the matching kernel-module and EdgeOS integration packages;
+* verifies both packages against SHA-256 hashes pinned in the tagged installer;
+* installs the kernel module first, followed by the EdgeOS integration.
+
+Prefer to inspect the script before running it as root?
+
+```bash
+curl -fLO \
+  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.1.0/install.sh
+
+less install.sh
+sudo sh install.sh
+```
+
+The installer is pinned to release `v0.1.0`; it does not execute the moving `main` branch.
+
 ## Supported platform
 
 Version `0.1.0` is deliberately restricted to the platform on which it has been built and tested.
