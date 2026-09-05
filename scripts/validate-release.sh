@@ -14,9 +14,6 @@ VERSION=$(sed -n 's/^VERSION="\([^"]*\)"/\1/p' install.sh)
 INSTALLER_PKG_VERSION=$(sed -n 's/^PKG_VERSION="\([^"]*\)"/\1/p' install.sh)
 CHANGELOG_VERSION=$(dpkg-parsechangelog -S Version)
 
-KMOD_SHA=$(sed -n 's/^KMOD_SHA256="\([^"]*\)"/\1/p' install.sh)
-INTEGRATION_SHA=$(sed -n 's/^INTEGRATION_SHA256="\([^"]*\)"/\1/p' install.sh)
-
 [ -n "$VERSION" ] || fail "could not read VERSION from install.sh"
 [ -n "$INSTALLER_PKG_VERSION" ] || fail "could not read PKG_VERSION from install.sh"
 
@@ -48,12 +45,6 @@ INTEGRATION="../edgeos-vxlan_${CHANGELOG_VERSION}_all.deb"
 
 ACTUAL_KMOD_SHA=$(sha256sum "$KMOD" | awk '{print $1}')
 ACTUAL_INTEGRATION_SHA=$(sha256sum "$INTEGRATION" | awk '{print $1}')
-
-[ "$KMOD_SHA" = "$ACTUAL_KMOD_SHA" ] ||
-    fail "install.sh kmod SHA256 does not match built package"
-
-[ "$INTEGRATION_SHA" = "$ACTUAL_INTEGRATION_SHA" ] ||
-    fail "install.sh integration SHA256 does not match built package"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT TERM

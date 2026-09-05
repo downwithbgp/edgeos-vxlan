@@ -8,7 +8,16 @@ on:
     tags:
       - 'v*'
   pull_request:
+  release:
+    types:
+      - published
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to validate
+        required: false
+        default: v0.2.0
+        type: string
 
 permissions:
   contents: read
@@ -80,3 +89,47 @@ jobs:
         with:
           name: edgeos-vxlan-packages
           path: ci-artifacts/
+  published-release:
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out CI source
+        uses: actions/checkout@v6
+
+      - name: Resolve release tag
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [ "$EVENT_NAME" = "release" ]; then
+            TAG="$RELEASE_TAG"
+          else
+            TAG="$INPUT_TAG"
+          fi
+
+          test -n "$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check out tagged release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          path: tagged-source
+
+      - name: Download published release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir published
+          gh release download \
+            "${{ steps.release.outputs.tag }}" \
+            --dir published
+
+      - name: Validate published release
+        run: |
+          ./scripts/validate-published-release.sh \
+            published \
+            tagged-source
