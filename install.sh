@@ -1,4 +1,3 @@
-```sh
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-only
 set -eu
@@ -175,4 +174,3 @@ echo "  set interfaces vxlan vxlan42 mtu 1450"
 echo "  commit"
 echo "  save"
 echo "  exit"
-```
