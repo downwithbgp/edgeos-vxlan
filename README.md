@@ -35,7 +35,7 @@ Check whether your router is supported without making any changes:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.2.0/install.sh |
+  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.2.1/install.sh |
   sh -s -- --check
 ```
 
@@ -43,7 +43,7 @@ Install `edgeos-vxlan`:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.2.0/install.sh |
+  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.2.1/install.sh |
   sudo sh
 ```
 
@@ -58,18 +58,18 @@ Prefer to inspect the installer first?
 
 ```bash
 curl -fLO \
-  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.2.0/install.sh
+  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.2.1/install.sh
 
 less install.sh
 sudo sh install.sh
 ```
 
-The installer is pinned to release `v0.2.0`; it does not execute the moving `main` branch.
+The installer is pinned to release `v0.2.1`; it does not execute the moving `main` branch.
 
 
 ## Supported platform
 
-Version `0.2.0` is deliberately restricted to the platform on which it has been built and tested.
+Version `0.2.1` is deliberately restricted to the platform on which it has been built and tested.
 
 ```text
 Device:       Ubiquiti EdgeRouter X / ER-e50
@@ -103,7 +103,10 @@ Do not install the package on other EdgeRouter models, EdgeOS releases, or kerne
 * Integration with `show configuration commands`
 * IPv4 and IPv6 interface-address syntax
 * Native address validation
-* Native bridge membership through `bridge-group bridge brN`
+* Native bridge integration through `bridge-group`, including:
+  * bridge membership
+  * STP path cost
+  * STP port priority
 * Validation that prevents a VXLAN interface from being both bridged and directly addressed
 * Configurable:
 
@@ -115,9 +118,9 @@ Do not install the package on other EdgeRouter models, EdgeOS releases, or kerne
   * interface addresses
   * description
   * administrative disable state
-* Non-disruptive updates for mutable interface properties, including bridge membership
+* Non-disruptive updates for mutable interface properties, including bridge membership, path cost, and port priority
 * Controlled interface recreation for VXLAN identity changes
-* Rollback to the previous live interface state, including bridge membership, if recreation fails
+* Rollback to the previous live interface state, including bridge membership, path cost, and port priority, if recreation fails
 * Deterministic locally administered MAC addresses
 
 ## Packages
@@ -180,14 +183,14 @@ Install the kernel module first:
 
 ```bash
 sudo dpkg -i \
-  edgeos-vxlan-kmod_0.2.0+edgeos3.0.1.e50_mipsel.deb
+  edgeos-vxlan-kmod_0.2.1+edgeos3.0.1.e50_mipsel.deb
 ```
 
 Then install the EdgeOS integration package:
 
 ```bash
 sudo dpkg -i \
-  edgeos-vxlan_0.2.0+edgeos3.0.1.e50_all.deb
+  edgeos-vxlan_0.2.1+edgeos3.0.1.e50_all.deb
 ```
 
 Verify that the module is loaded:
@@ -263,6 +266,8 @@ set interfaces bridge br42
 set interfaces bridge br42 address 198.51.100.1/30
 
 set interfaces vxlan vxlan42 bridge-group bridge br42
+set interfaces vxlan vxlan42 bridge-group cost 200
+set interfaces vxlan vxlan42 bridge-group priority 10
 set interfaces vxlan vxlan42 local-ip 192.0.2.1
 set interfaces vxlan vxlan42 remote-ip 192.0.2.2
 set interfaces vxlan vxlan42 vni 42
@@ -276,7 +281,28 @@ exit
 
 A bridged VXLAN interface must not also have an `address` configured directly on the VXLAN interface. If Layer 3 connectivity is required, assign the address to the bridge, as shown above. EdgeOS commit validation rejects simultaneous `bridge-group bridge` and VXLAN interface-address configuration.
 
-Bridge membership is mutable. Moving `vxlan42` between bridges, adding it to a bridge, or removing it from a bridge does not by itself recreate the VXLAN interface. If a VXLAN identity change does require recreation, the configured bridge membership is restored afterward and is also included in rollback and boot restoration.
+Bridge membership and bridge port options are mutable. Moving `vxlan42`
+between bridges, adding it to a bridge, removing it from a bridge, or
+changing its bridge port cost or priority does not by itself recreate the
+VXLAN interface.
+
+`bridge-group cost` accepts values from `1` through `65535`. If omitted,
+the bridge port is reconciled to the EdgeOS 3.0.1 default path cost of
+`100`.
+
+`bridge-group priority` accepts values from `0` through `63`. If omitted,
+the bridge port is reconciled to the EdgeOS 3.0.1 default priority of
+`32`.
+
+Bridge port cost and priority require bridge membership. EdgeOS commit
+validation rejects either option when `bridge-group bridge` is not
+configured.
+
+If a VXLAN identity change requires interface recreation, the configured
+bridge membership, cost, and priority are reapplied to the new interface.
+If recreation fails, the previous live bridge membership, cost, and
+priority are restored during rollback. These settings are also restored
+during boot.
 
 ## Configuration tree
 
@@ -288,6 +314,8 @@ interfaces {
         address <address/prefix>
         bridge-group {
             bridge <brN>
+            cost <1-65535>
+            priority <0-63>
         }
         description <text>
         disable
@@ -707,9 +735,9 @@ dpkg-buildpackage -us -uc -b -a mipsel
 The build produces:
 
 ```text
-edgeos-vxlan_0.2.0+edgeos3.0.1.e50_all.deb
+edgeos-vxlan_0.2.1+edgeos3.0.1.e50_all.deb
 
-edgeos-vxlan-kmod_0.2.0+edgeos3.0.1.e50_mipsel.deb
+edgeos-vxlan-kmod_0.2.1+edgeos3.0.1.e50_mipsel.deb
 ```
 
 Packages are compressed using gzip for compatibility with the older `dpkg` version shipped by EdgeOS.
@@ -744,7 +772,7 @@ Packages are compressed using gzip for compatibility with the older `dpkg` versi
 
 ## Tested behavior
 
-Version `0.2.0` has been tested for:
+Version `0.2.1` has been tested for:
 
 * kernel module loading;
 * VXLAN interface creation;
@@ -770,24 +798,32 @@ Version `0.2.0` has been tested for:
 * routed-to-bridged and bridged-to-routed transitions;
 * bridge-to-bridge moves without VXLAN recreation;
 * bridge membership restoration after identity recreation, rollback, and cold boot;
+* mutable bridge port cost and priority updates without VXLAN recreation;
+* reset of deleted bridge port cost and priority to EdgeOS defaults;
+* bridge port cost range validation (`1-65535`);
+* bridge port priority range validation (`0-63`);
+* rejection of bridge port cost or priority without bridge membership;
+* preservation of configured bridge port cost and priority across bridge-to-bridge moves;
+* reapplication of configured bridge port cost and priority after VXLAN identity recreation;
+* restoration of previous live bridge port cost and priority after failed identity recreation;
+* persistence of bridge port cost and priority across save, reboot, and cold boot;
 * rejection of simultaneous VXLAN interface addresses and bridge membership;
 * literal interface descriptions containing shell metacharacters;
 * patched `udp_tunnel.ko` runtime loading and cold boot;
 * repeated VXLAN teardown/recreation under active receive traffic;
-* alternate-source VXLAN receive behavior demonstrating that `remote-ip` is not an ingress ACL.
-* EdgeOS `local` firewall enforcement restricting UDP/4789 to an intended fixed peer;
+* alternate-source VXLAN receive behavior demonstrating that `remote-ip` is not an ingress ACL;
+* EdgeOS `local` firewall enforcement restricting UDP/4789 to an intended fixed peer.
 
 A point-to-point test between the EdgeRouter X and a Linux host successfully passed bidirectional traffic over the VXLAN interface.
 
 ## Known limitations
 
-Version `0.2.0` remains intentionally small in scope.
+Version `0.2.1` remains intentionally small in scope.
 
 Not yet validated or implemented as first-class configuration features:
 
 * EVPN control plane
 * multicast VXLAN
-* bridge-group cost/priority controls
 * VLAN-to-VNI mapping
 * flood-and-learn configuration beyond the basic Linux defaults
 * IPv6 underlay
