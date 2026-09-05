@@ -504,9 +504,50 @@ Removing the integration package also restores the original diverted `Vyatta::In
 
 Hardware testing on the supported EdgeRouter X confirmed that a VNI 42 VXLAN interface configured with one `remote-ip` still accepted and decapsulated valid VNI 42 packets arriving from a different underlay source address. The project therefore does not treat `remote-ip` as a security boundary.
 
-If the VXLAN underlay is not trusted, restrict UDP destination port 4789 on the underlay interface to the intended peer or carry VXLAN over an authenticated, encrypted transport. Source-address filtering reduces exposure but is not cryptographic peer authentication and does not protect against source spoofing on an otherwise untrusted transport.
+### Restricting a fixed VXLAN peer
+
+For a fixed-peer deployment, an EdgeOS `local` firewall policy on the underlay interface can restrict UDP/4789 to the intended remote VTEP.
+
+For example, if the VXLAN underlay uses `eth1` and the intended remote VTEP is `192.0.2.2`:
+
+```text
+configure
+
+set firewall name VXLAN_UNDERLAY_LOCAL default-action accept
+set firewall name VXLAN_UNDERLAY_LOCAL description 'Restrict VXLAN underlay peers'
+
+set firewall name VXLAN_UNDERLAY_LOCAL rule 10 action accept
+set firewall name VXLAN_UNDERLAY_LOCAL rule 10 description 'Allow configured VXLAN peer'
+set firewall name VXLAN_UNDERLAY_LOCAL rule 10 protocol udp
+set firewall name VXLAN_UNDERLAY_LOCAL rule 10 source address 192.0.2.2
+set firewall name VXLAN_UNDERLAY_LOCAL rule 10 destination port 4789
+
+set firewall name VXLAN_UNDERLAY_LOCAL rule 20 action drop
+set firewall name VXLAN_UNDERLAY_LOCAL rule 20 description 'Drop other VXLAN senders'
+set firewall name VXLAN_UNDERLAY_LOCAL rule 20 protocol udp
+set firewall name VXLAN_UNDERLAY_LOCAL rule 20 destination port 4789
+
+set interfaces ethernet eth1 firewall local name VXLAN_UNDERLAY_LOCAL
+
+commit
+save
+exit
+```
+
+If the VXLAN underlay is carried on a VLAN or another EdgeOS interface type, attach the same `local` ruleset to that interface instead.
+
+This policy deliberately uses `default-action accept`; it restricts VXLAN traffic without changing the treatment of unrelated traffic destined for the router on that interface.
+
+On the supported EdgeRouter X, this behavior was validated with a VXLAN interface configured for one `remote-ip`:
+
+* packets from the configured peer were accepted and decapsulated;
+* otherwise identical VNI-matching packets from another underlay source were accepted before filtering;
+* after applying the policy above, packets from the configured peer remained accepted;
+* packets from the alternate source were dropped before reaching the VXLAN interface.
 
 `edgeos-vxlan` does not automatically create or modify firewall policy. Underlay filtering remains an explicit deployment responsibility.
+
+This is a source-address allowlist, not cryptographic authentication. On an untrusted or spoofable underlay, use an authenticated and encrypted transport when peer authenticity or confidentiality is required.
 
 ## Kernel build provenance
 
@@ -735,6 +776,7 @@ Version `0.2.0` has been tested for:
 * patched `udp_tunnel.ko` runtime loading and cold boot;
 * repeated VXLAN teardown/recreation under active receive traffic;
 * alternate-source VXLAN receive behavior demonstrating that `remote-ip` is not an ingress ACL.
+* EdgeOS `local` firewall enforcement restricting UDP/4789 to an intended fixed peer;
 
 A point-to-point test between the EdgeRouter X and a Linux host successfully passed bidirectional traffic over the VXLAN interface.
 
