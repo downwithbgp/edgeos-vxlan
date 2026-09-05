@@ -1,0 +1,368 @@
+#!/bin/bash
+set -eEu -o pipefail
+
+if [ "$(id -g -n)" != "vyattacfg" ]; then
+    echo "This script must be executed from vyatta configuration system."
+    exit 1
+fi
+
+ACTION=${1:?missing commit action}
+INTERFACE=${2:?missing interface}
+
+VYATTA_SBINDIR=${vyatta_sbindir:-/opt/vyatta/sbin}
+VYATTA_API="${VYATTA_SBINDIR}/my_cli_shell_api"
+
+node_exists() {
+    "$VYATTA_API" exists interfaces vxlan "$INTERFACE" "$@"
+}
+
+node_value() {
+    "$VYATTA_API" returnValue interfaces vxlan "$INTERFACE" "$@"
+}
+
+node_values() {
+    "$VYATTA_API" returnValues interfaces vxlan "$INTERFACE" "$@"
+}
+
+interface_exists() {
+    ip link show dev "$INTERFACE" >/dev/null 2>&1
+}
+
+delete_interface() {
+    if interface_exists; then
+        sudo ip link set dev "$INTERFACE" down || true
+        sudo ip link del dev "$INTERFACE"
+    fi
+}
+
+create_vxlan() {
+    local interface=$1
+    local vni=$2
+    local local_ip=$3
+    local remote_ip=$4
+    local port=$5
+
+    sudo ip link add dev "$interface" type vxlan \
+        id "$vni" \
+        local "$local_ip" \
+        remote "$remote_ip" \
+        dstport "$port"
+}
+
+contains_address() {
+    local needle=$1
+    shift
+
+    local address
+    for address in "$@"; do
+        if [ "$address" = "$needle" ]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+derive_mac() {
+    local base_mac
+    local hash
+    local first
+
+    base_mac=$(cat /sys/class/net/eth0/address)
+
+    hash=$(
+        printf '%s' "${base_mac}:${INTERFACE}" |
+            sha256sum |
+            awk '{print $1}'
+    )
+
+    # Force locally-administered + unicast:
+    # bit 1 = 1, bit 0 = 0.
+    first=$(( (0x${hash:0:2} & 0xfc) | 0x02 ))
+
+    printf '%02x:%s:%s:%s:%s:%s\n' \
+        "$first" \
+        "${hash:2:2}" \
+        "${hash:4:2}" \
+        "${hash:6:2}" \
+        "${hash:8:2}" \
+        "${hash:10:2}"
+}
+
+get_live_vxlan_identity() {
+    ip -j -d link show dev "$INTERFACE" |
+        perl -MJSON::PP -0777 -e '
+            my $json = decode_json(<>);
+            exit 1 unless ref($json) eq "ARRAY" && @$json;
+
+            my $linkinfo = $json->[0]{linkinfo} || {};
+            my $data = $linkinfo->{info_data} || {};
+
+            my $kind =
+                defined($linkinfo->{info_kind}) ? $linkinfo->{info_kind} :
+                defined($linkinfo->{kind})      ? $linkinfo->{kind} :
+                "";
+
+            my $id =
+                defined($data->{id}) ? $data->{id} : "";
+
+            my $local =
+                defined($data->{local}) ? $data->{local} : "";
+
+            my $remote =
+                defined($data->{remote}) ? $data->{remote} : "";
+
+            my $port =
+                defined($data->{port})    ? $data->{port} :
+                defined($data->{dstport}) ? $data->{dstport} :
+                "";
+
+            print join("\t", $kind, $id, $local, $remote, $port);
+        '
+}
+
+read_desired_addresses() {
+    DESIRED_ADDRESSES=()
+
+    if node_exists address; then
+        # returnValues emits shell-quoted values.
+        eval "DESIRED_ADDRESSES=( $(node_values address) )"
+    fi
+}
+
+read_live_addresses() {
+    LIVE_ADDRESSES=()
+
+    while read -r address; do
+        if [ -n "$address" ]; then
+            LIVE_ADDRESSES+=("$address")
+        fi
+    done < <(
+        ip -o addr show dev "$INTERFACE" scope global |
+            awk '$3 == "inet" || $3 == "inet6" { print $4 }'
+    )
+}
+
+apply_desired_mutable_state() {
+    local live_mtu
+    local live_description
+    local flags
+    local address
+
+    live_mtu=$(cat "/sys/class/net/$INTERFACE/mtu")
+
+    if [ "$live_mtu" != "$MTU" ]; then
+        sudo ip link set dev "$INTERFACE" mtu "$MTU" || return $?
+    fi
+
+    live_description=$(cat "/sys/class/net/$INTERFACE/ifalias" 2>/dev/null || true)
+
+    if [ "$live_description" != "$DESCRIPTION" ]; then
+        sudo ip link set dev "$INTERFACE" alias "$DESCRIPTION" || return $?
+    fi
+
+    read_desired_addresses
+    read_live_addresses
+
+    for address in "${LIVE_ADDRESSES[@]}"; do
+        if ! contains_address "$address" "${DESIRED_ADDRESSES[@]}"; then
+            sudo ip addr del "$address" dev "$INTERFACE" || return $?
+        fi
+    done
+
+    for address in "${DESIRED_ADDRESSES[@]}"; do
+        if ! contains_address "$address" "${LIVE_ADDRESSES[@]}"; then
+            sudo /opt/vyatta/sbin/vyatta-address \
+                add "$INTERFACE" "$address" || return $?
+        fi
+    done
+
+    flags=$(cat "/sys/class/net/$INTERFACE/flags")
+
+    if node_exists disable; then
+        if (( (flags & 0x1) != 0 )); then
+            sudo ip link set dev "$INTERFACE" down || return $?
+        fi
+    else
+        if (( (flags & 0x1) == 0 )); then
+            sudo ip link set dev "$INTERFACE" up || return $?
+        fi
+    fi
+
+    return 0
+}
+
+capture_live_snapshot() {
+    local identity
+    local flags
+    local address
+
+    OLD_ADDRESSES=()
+
+    identity=$(get_live_vxlan_identity)
+
+    IFS=$'\t' read -r \
+        OLD_KIND \
+        OLD_VNI \
+        OLD_LOCAL_IP \
+        OLD_REMOTE_IP \
+        OLD_PORT <<< "$identity"
+
+    if [ "$OLD_KIND" != "vxlan" ]; then
+        echo "ERROR: $INTERFACE exists but is not a VXLAN interface."
+        return 1
+    fi
+
+    OLD_MAC=$(cat "/sys/class/net/$INTERFACE/address")
+    OLD_MTU=$(cat "/sys/class/net/$INTERFACE/mtu")
+    OLD_DESCRIPTION=$(cat "/sys/class/net/$INTERFACE/ifalias" 2>/dev/null || true)
+
+    flags=$(cat "/sys/class/net/$INTERFACE/flags")
+
+    if (( (flags & 0x1) != 0 )); then
+        OLD_UP=1
+    else
+        OLD_UP=0
+    fi
+
+    while read -r address; do
+        if [ -n "$address" ]; then
+            OLD_ADDRESSES+=("$address")
+        fi
+    done < <(
+        ip -o addr show dev "$INTERFACE" scope global |
+            awk '$3 == "inet" || $3 == "inet6" { print $4 }'
+    )
+
+    return 0
+}
+
+rollback_live_snapshot() {
+    local address
+
+    echo "Rolling back $INTERFACE to previous live state..." >&2
+
+    if interface_exists; then
+        sudo ip link set dev "$INTERFACE" down || true
+        sudo ip link del dev "$INTERFACE" || return 1
+    fi
+
+    create_vxlan \
+        "$INTERFACE" \
+        "$OLD_VNI" \
+        "$OLD_LOCAL_IP" \
+        "$OLD_REMOTE_IP" \
+        "$OLD_PORT" || return 1
+
+    sudo ip link set dev "$INTERFACE" address "$OLD_MAC" || return 1
+    sudo ip link set dev "$INTERFACE" mtu "$OLD_MTU" || return 1
+    sudo ip link set dev "$INTERFACE" alias "$OLD_DESCRIPTION" || return 1
+
+    for address in "${OLD_ADDRESSES[@]}"; do
+        sudo /opt/vyatta/sbin/vyatta-address \
+            add "$INTERFACE" "$address" || return 1
+    done
+
+    if [ "$OLD_UP" -eq 1 ]; then
+        sudo ip link set dev "$INTERFACE" up || return 1
+    fi
+
+    echo "Rollback of $INTERFACE completed." >&2
+    return 0
+}
+
+if [ "$ACTION" = "DELETE" ]; then
+    delete_interface
+    exit 0
+fi
+
+VNI=$(node_value vni)
+LOCAL_IP=$(node_value local-ip)
+REMOTE_IP=$(node_value remote-ip)
+
+if node_exists port; then
+    PORT=$(node_value port)
+else
+    PORT=4789
+fi
+
+if node_exists mtu; then
+    MTU=$(node_value mtu)
+else
+    MTU=1450
+fi
+
+if node_exists description; then
+    DESCRIPTION=$(node_value description)
+else
+    DESCRIPTION=""
+fi
+
+MAC=$(derive_mac)
+
+/sbin/modprobe udp_tunnel
+/sbin/modprobe ip6_udp_tunnel
+/sbin/modprobe vxlan
+
+RECREATE=0
+HAVE_OLD_SNAPSHOT=0
+
+if interface_exists; then
+    capture_live_snapshot
+    HAVE_OLD_SNAPSHOT=1
+
+    if [ "$OLD_VNI" != "$VNI" ] ||
+       [ "$OLD_LOCAL_IP" != "$LOCAL_IP" ] ||
+       [ "$OLD_REMOTE_IP" != "$REMOTE_IP" ] ||
+       [ "$OLD_PORT" != "$PORT" ]; then
+        RECREATE=1
+    fi
+else
+    RECREATE=1
+fi
+
+if [ "$RECREATE" -eq 1 ]; then
+    delete_interface
+
+    set +e
+
+    create_vxlan \
+        "$INTERFACE" \
+        "$VNI" \
+        "$LOCAL_IP" \
+        "$REMOTE_IP" \
+        "$PORT"
+
+    APPLY_RC=$?
+
+    if [ "$APPLY_RC" -eq 0 ]; then
+        sudo ip link set dev "$INTERFACE" address "$MAC"
+        APPLY_RC=$?
+    fi
+
+    if [ "$APPLY_RC" -eq 0 ]; then
+        apply_desired_mutable_state
+        APPLY_RC=$?
+    fi
+
+    set -e
+
+    if [ "$APPLY_RC" -ne 0 ]; then
+        echo "ERROR: Failed to apply requested VXLAN state for $INTERFACE." >&2
+
+        if [ "$HAVE_OLD_SNAPSHOT" -eq 1 ]; then
+            if ! rollback_live_snapshot; then
+                echo "ERROR: Rollback of $INTERFACE also failed." >&2
+                exit 2
+            fi
+        else
+            delete_interface || true
+        fi
+
+        exit "$APPLY_RC"
+    fi
+
+    exit 0
+fi
+
+apply_desired_mutable_state

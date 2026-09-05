@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    depmod -a 4.14.54-UBNT || true
+fi
+
+exit 0

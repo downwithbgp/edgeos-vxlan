@@ -1,0 +1,14 @@
+multi:
+priority: 460
+type: ipv4net,ipv6net
+val_help: ipv4net; IPv4 address and prefix length
+val_help: ipv6net; IPv6 address and prefix length
+help: IP address
+
+syntax:expression: exec "/opt/vyatta/sbin/valid_address $VAR(@)"
+
+commit:expression: exec "sudo /opt/vyatta/sbin/vyatta-interfaces.pl --valid-addr-commit $VAR(@@) --dev $VAR(../@)"
+
+create: sudo sh -c "ip link show dev $VAR(../@) >/dev/null 2>&1 || exit 0; ip -o addr show dev $VAR(../@) scope global 2>/dev/null | grep -F -- ' $VAR(@) ' >/dev/null && exit 0; exec /opt/vyatta/sbin/vyatta-address add $VAR(../@) $VAR(@)"
+
+delete: sudo sh -c "ip link show dev $VAR(../@) >/dev/null 2>&1 || exit 0; ip -o addr show dev $VAR(../@) scope global 2>/dev/null | grep -F -- ' $VAR(@) ' >/dev/null || exit 0; exec /opt/vyatta/sbin/vyatta-address delete $VAR(../@) $VAR(@)"

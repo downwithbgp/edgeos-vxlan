@@ -1,0 +1,24 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove)
+        if [ -f /config/config.boot ] &&
+           grep -Eq '^[[:space:]]+vxlan[[:space:]]+vxlan[0-9]+[[:space:]]*\{' /config/config.boot; then
+            echo "ERROR: Saved VXLAN configuration still exists."
+            echo
+            echo "Remove the VXLAN configuration and save before uninstalling:"
+            echo
+            echo "  configure"
+            echo "  delete interfaces vxlan"
+            echo "  commit"
+            echo "  save"
+            echo "  exit"
+            echo
+            echo "edgeos-vxlan has not been removed."
+            exit 1
+        fi
+        ;;
+esac
+
+exit 0

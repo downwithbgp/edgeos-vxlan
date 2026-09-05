@@ -1,0 +1,5 @@
+help: Disable interface
+
+update: sudo sh -c "ip link show dev $VAR(../@) >/dev/null 2>&1 || exit 0; exec ip link set dev $VAR(../@) down"
+
+delete: sudo sh -c "ip link show dev $VAR(../@) >/dev/null 2>&1 || exit 0; exec ip link set dev $VAR(../@) up"

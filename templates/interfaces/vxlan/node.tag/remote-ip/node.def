@@ -1,0 +1,2 @@
+type: ipv4
+help: Remote VXLAN VTEP IPv4 address [REQUIRED]

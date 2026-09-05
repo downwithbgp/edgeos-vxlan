@@ -1,0 +1,33 @@
+#!/bin/sh
+set -e
+
+KERNEL="4.14.54-UBNT"
+
+case "$1" in
+    install|upgrade)
+        VERSION="$(cat /etc/version 2>/dev/null || true)"
+
+        case "$VERSION" in
+            EdgeRouter.ER-e50.v3.0.1.5862409.*)
+                ;;
+            *)
+                echo "ERROR: Unsupported EdgeOS firmware."
+                echo "Detected: ${VERSION:-unknown}"
+                echo
+                echo "This package has been validated only on:"
+                echo "  EdgeRouter ER-e50"
+                echo "  EdgeOS v3.0.1 build 5862409"
+                exit 1
+                ;;
+        esac
+
+        if [ "$(uname -r)" != "$KERNEL" ]; then
+            echo "ERROR: Unsupported running kernel."
+            echo "Detected: $(uname -r)"
+            echo "Required: $KERNEL"
+            exit 1
+        fi
+        ;;
+esac
+
+exit 0

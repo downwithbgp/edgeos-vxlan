@@ -1,0 +1,20 @@
+Source: edgeos-vxlan
+Section: net
+Priority: optional
+Maintainer: Vadim Petrov <vadim@vadimpetrov.com>
+Build-Depends: debhelper (>= 9)
+Standards-Version: 4.6.2
+
+Package: edgeos-vxlan-kmod
+Architecture: mipsel
+Depends: ${misc:Depends}
+Description: VXLAN kernel module for Ubiquiti EdgeRouter X
+ Linux VXLAN kernel module built for the EdgeRouter X running
+ Linux 4.14.54-UBNT.
+
+Package: edgeos-vxlan
+Architecture: all
+Depends: ${misc:Depends}, edgeos-vxlan-kmod (= ${binary:Version}), vyatta-cfg-system, libvyatta-cfg1 (= 1:1.0.18+t5862406.er.3.0.1.ef8cbcb)
+Description: EdgeOS configuration integration for VXLAN
+ Adds native Vyatta/EdgeOS configuration-mode support for VXLAN
+ interfaces.

@@ -1,0 +1,19 @@
+tag:
+priority: 459
+type: txt
+help: VXLAN interface name
+val_help: <vxlanN>; VXLAN interface name
+
+syntax:expression: pattern $VAR(@) "^vxlan[0-9]+$" \
+    ; "VXLAN interface must be named vxlanN"
+
+commit:expression: $VAR(./vni/) != "" ; \
+    "VNI must be specified for $VAR(@)"
+
+commit:expression: $VAR(./local-ip/) != "" ; \
+    "Local IP must be specified for $VAR(@)"
+
+commit:expression: $VAR(./remote-ip/) != "" ; \
+    "Remote IP must be specified for $VAR(@)"
+
+end: /opt/vyatta/sbin/vyatta-vxlan "$COMMIT_ACTION" "$VAR(@)"

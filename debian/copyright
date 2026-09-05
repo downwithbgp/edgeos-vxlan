@@ -1,0 +1,33 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: edgeos-vxlan
+
+Files: src/vyatta-vxlan
+       templates/*
+       debian/*
+Copyright: 2026 Vadim Petrov
+License: GPL-2.0-only
+
+Files: src/Interface.pm
+       upstream/libvyatta-cfg1/Interface.pm
+Copyright: 2008 Vyatta, Inc.
+           Stephen Hemminger
+License: GPL-2.0-only
+Comment:
+ These files originate from the Vyatta/EdgeOS GPL source. src/Interface.pm
+ contains the minimal VXLAN interface-type integration used by this package.
+
+Files: modules/4.14.54-UBNT/vxlan.ko
+Copyright: Linux kernel contributors
+License: GPL-2.0-only
+Comment:
+ Built from the Linux kernel source distributed in Ubiquiti's EdgeOS GPL
+ source release. Exact source archive, hash, configuration, and toolchain are
+ documented in README.md.
+
+License: GPL-2.0-only
+ This program is free software; you can redistribute it and/or modify it
+ under the terms of version 2 of the GNU General Public License as published
+ by the Free Software Foundation.
+ .
+ On Debian systems, the complete text of the GNU General Public License,
+ version 2, is normally available at /usr/share/common-licenses/GPL-2.

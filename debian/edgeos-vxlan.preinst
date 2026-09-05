@@ -1,0 +1,71 @@
+#!/bin/sh
+set -e
+
+TARGET="/opt/vyatta/share/perl5/Vyatta/Interface.pm"
+DIVERT="/opt/vyatta/share/perl5/Vyatta/Interface.pm.edgeos-vxlan-original"
+EXPECTED_SHA256="f4985acc53058088bda3ed3b989ed2d76e92a3edd9e2582272ff576dd089f721"
+
+case "$1" in
+    install|upgrade)
+        VERSION="$(cat /etc/version 2>/dev/null || true)"
+        case "$VERSION" in
+            EdgeRouter.ER-e50.v3.0.1.5862409.*)
+                ;;
+            *)
+                echo "ERROR: Unsupported EdgeOS firmware."
+                echo "Detected: ${VERSION:-unknown}"
+                echo "Supported: EdgeRouter ER-e50, EdgeOS v3.0.1 build 5862409"
+                exit 1
+                ;;
+        esac
+
+        DIVERSION="$(dpkg-divert --list "$TARGET" 2>/dev/null || true)"
+
+        if [ -n "$DIVERSION" ]; then
+            echo "$DIVERSION" | grep -Fq "by edgeos-vxlan" || {
+                echo "ERROR: $TARGET is already diverted by another package:"
+                echo "$DIVERSION"
+                exit 1
+            }
+
+            if [ ! -f "$DIVERT" ]; then
+                echo "ERROR: Diverted original is missing:"
+                echo "  $DIVERT"
+                exit 1
+            fi
+
+            ACTUAL_SHA256="$(sha256sum "$DIVERT" | awk '{print $1}')"
+        else
+            if [ ! -f "$TARGET" ]; then
+                echo "ERROR: Missing $TARGET"
+                exit 1
+            fi
+
+            ACTUAL_SHA256="$(sha256sum "$TARGET" | awk '{print $1}')"
+
+            if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+                echo "ERROR: Unsupported or locally modified Vyatta::Interface."
+                echo "Expected: $EXPECTED_SHA256"
+                echo "Actual:   $ACTUAL_SHA256"
+                echo "File:     $TARGET"
+                exit 1
+            fi
+
+            dpkg-divert \
+                --package edgeos-vxlan \
+                --add \
+                --rename \
+                --divert "$DIVERT" \
+                "$TARGET"
+        fi
+
+        if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+            echo "ERROR: Unsupported diverted Vyatta::Interface."
+            echo "Expected: $EXPECTED_SHA256"
+            echo "Actual:   $ACTUAL_SHA256"
+            exit 1
+        fi
+        ;;
+esac
+
+exit 0

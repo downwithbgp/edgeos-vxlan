@@ -1,0 +1,6 @@
+type: u32
+help: VXLAN Network Identifier (VNI)
+val_help: u32:1-16777215; VXLAN Network Identifier
+
+syntax:expression: $VAR(@) >= 1 && $VAR(@) <= 16777215 \
+    ; "VNI must be between 1 and 16777215"

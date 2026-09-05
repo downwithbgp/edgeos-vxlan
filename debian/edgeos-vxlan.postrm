@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+
+TARGET="/opt/vyatta/share/perl5/Vyatta/Interface.pm"
+DIVERT="/opt/vyatta/share/perl5/Vyatta/Interface.pm.edgeos-vxlan-original"
+
+case "$1" in
+    remove|purge)
+        DIVERSION="$(dpkg-divert --list "$TARGET" 2>/dev/null || true)"
+
+        if echo "$DIVERSION" | grep -Fq "by edgeos-vxlan"; then
+            dpkg-divert \
+                --package edgeos-vxlan \
+                --remove \
+                --rename \
+                --divert "$DIVERT" \
+                "$TARGET"
+        fi
+        ;;
+esac
+
+exit 0

@@ -1,0 +1,14 @@
+*.deb
+*.build
+*.buildinfo
+*.changes
+*.dsc
+*.tar.*
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/*.substvars
+debian/edgeos-vxlan/
+debian/*.debhelper.log
+debian/*.debhelper
+debian/edgeos-vxlan-kmod/

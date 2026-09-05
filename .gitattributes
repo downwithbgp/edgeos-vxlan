@@ -1,0 +1,2 @@
+upstream/libvyatta-cfg1/Interface.pm -whitespace
+src/Interface.pm -whitespace

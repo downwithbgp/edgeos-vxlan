@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "remove" ]; then
+    if lsmod | grep -q '^vxlan '; then
+        if ip link show type vxlan 2>/dev/null | grep -q .; then
+            echo "VXLAN interfaces are still active."
+            echo "Remove VXLAN configuration before uninstalling edgeos-vxlan-kmod."
+            exit 1
+        fi
+
+        modprobe -r vxlan || true
+    fi
+fi
+
+exit 0

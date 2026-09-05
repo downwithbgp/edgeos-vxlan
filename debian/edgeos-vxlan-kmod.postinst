@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+KERNEL="4.14.54-UBNT"
+
+depmod -a "$KERNEL"
+
+modprobe udp_tunnel
+modprobe ip6_udp_tunnel
+modprobe vxlan
+
+exit 0
