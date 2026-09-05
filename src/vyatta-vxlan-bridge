@@ -1,0 +1,121 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
+
+set -eEu -o pipefail
+
+if [ "$(id -g -n)" != "vyattacfg" ]; then
+    echo "This script must be executed from vyatta configuration system."
+    exit 1
+fi
+
+MODE=reconcile
+
+if [ "${1:-}" = "--validate" ]; then
+    MODE=validate
+    shift
+fi
+
+INTERFACE=${1:?missing interface}
+
+VYATTA_SBINDIR=${vyatta_sbindir:-/opt/vyatta/sbin}
+VYATTA_API="${VYATTA_SBINDIR}/my_cli_shell_api"
+
+node_exists() {
+    "$VYATTA_API" exists interfaces vxlan "$INTERFACE" "$@"
+}
+
+node_value() {
+    "$VYATTA_API" returnValue interfaces vxlan "$INTERFACE" "$@"
+}
+
+interface_exists() {
+    ip link show dev "$INTERFACE" >/dev/null 2>&1
+}
+
+get_live_bridge() {
+    local link
+
+    if [ ! -L "/sys/class/net/${INTERFACE}/brport/bridge" ]; then
+        return 0
+    fi
+
+    link=$(readlink "/sys/class/net/${INTERFACE}/brport/bridge") || return 0
+    basename "$link"
+}
+
+validate_config() {
+    if node_exists bridge-group bridge &&
+       node_exists address; then
+        echo "ERROR: Can not configure addresses on $INTERFACE while it is a bridge port." >&2
+        return 1
+    fi
+
+    return 0
+}
+
+reconcile_bridge() {
+    local desired_bridge=$1
+    local current_bridge
+    local rc
+
+    current_bridge=$(get_live_bridge)
+
+    if [ "$current_bridge" = "$desired_bridge" ]; then
+        return 0
+    fi
+
+    if [ -n "$desired_bridge" ] &&
+       [ ! -d "/sys/class/net/${desired_bridge}/bridge" ]; then
+        echo "ERROR: Bridge $desired_bridge does not exist." >&2
+        return 1
+    fi
+
+    if [ -n "$current_bridge" ]; then
+        sudo /usr/sbin/brctl delif \
+            "$current_bridge" "$INTERFACE" || return $?
+    fi
+
+    if [ -n "$desired_bridge" ]; then
+        sudo /usr/sbin/brctl addif \
+            "$desired_bridge" "$INTERFACE" || {
+            rc=$?
+
+            echo "ERROR: Failed to add $INTERFACE to $desired_bridge." >&2
+
+            if [ -n "$current_bridge" ] &&
+               [ -d "/sys/class/net/${current_bridge}/bridge" ]; then
+                echo "Restoring $INTERFACE to $current_bridge..." >&2
+
+                sudo /usr/sbin/brctl addif \
+                    "$current_bridge" "$INTERFACE" || {
+                    echo "ERROR: Failed to restore bridge membership." >&2
+                    return 2
+                }
+            fi
+
+            return "$rc"
+        }
+    fi
+
+    return 0
+}
+
+validate_config
+
+if [ "$MODE" = "validate" ]; then
+    exit 0
+fi
+
+# During initial configuration/boot, child handlers may run before the
+# parent VXLAN reconciler has created the netdevice.
+if ! interface_exists; then
+    exit 0
+fi
+
+DESIRED_BRIDGE=""
+
+if node_exists bridge-group bridge; then
+    DESIRED_BRIDGE=$(node_value bridge-group bridge)
+fi
+
+reconcile_bridge "$DESIRED_BRIDGE"

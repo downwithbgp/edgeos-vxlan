@@ -12,3 +12,5 @@ commit:expression: exec "sudo /opt/vyatta/sbin/vyatta-interfaces.pl --valid-addr
 create: sudo sh -c "ip link show dev $VAR(../@) >/dev/null 2>&1 || exit 0; ip -o addr show dev $VAR(../@) scope global 2>/dev/null | grep -F -- ' $VAR(@) ' >/dev/null && exit 0; exec /opt/vyatta/sbin/vyatta-address add $VAR(../@) $VAR(@)"
 
 delete: sudo sh -c "ip link show dev $VAR(../@) >/dev/null 2>&1 || exit 0; ip -o addr show dev $VAR(../@) scope global 2>/dev/null | grep -F -- ' $VAR(@) ' >/dev/null || exit 0; exec /opt/vyatta/sbin/vyatta-address delete $VAR(../@) $VAR(@)"
+
+commit:expression: exec "/opt/vyatta/sbin/vyatta-vxlan-bridge --validate '$VAR(../@)'"

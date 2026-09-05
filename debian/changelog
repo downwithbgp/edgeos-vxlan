@@ -1,3 +1,9 @@
+edgeos-vxlan (0.2.0~dev2+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * Add bridge-aware VXLAN reconciliation and rollback.
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Sat, 05 Sep 2026 08:30:00 -0400
+
 edgeos-vxlan (0.1.1+edgeos3.0.1.e50) unstable; urgency=medium
 
   * Fix one-shot installer Markdown fence.

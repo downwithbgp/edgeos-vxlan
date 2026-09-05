@@ -28,6 +28,64 @@ interface_exists() {
     ip link show dev "$INTERFACE" >/dev/null 2>&1
 }
 
+get_live_bridge() {
+    local link
+
+    if [ ! -L "/sys/class/net/${INTERFACE}/brport/bridge" ]; then
+        return 0
+    fi
+
+    link=$(readlink "/sys/class/net/${INTERFACE}/brport/bridge") || return 0
+    basename "$link"
+}
+
+reconcile_bridge() {
+    local desired_bridge=$1
+    local current_bridge
+    local rc
+
+    current_bridge=$(get_live_bridge)
+
+    if [ "$current_bridge" = "$desired_bridge" ]; then
+        return 0
+    fi
+
+    if [ -n "$desired_bridge" ] &&
+       [ ! -d "/sys/class/net/${desired_bridge}/bridge" ]; then
+        echo "ERROR: Bridge $desired_bridge does not exist." >&2
+        return 1
+    fi
+
+    if [ -n "$current_bridge" ]; then
+        sudo /usr/sbin/brctl delif \
+            "$current_bridge" "$INTERFACE" || return $?
+    fi
+
+    if [ -n "$desired_bridge" ]; then
+        sudo /usr/sbin/brctl addif \
+            "$desired_bridge" "$INTERFACE" || {
+            rc=$?
+
+            echo "ERROR: Failed to add $INTERFACE to $desired_bridge." >&2
+
+            if [ -n "$current_bridge" ] &&
+               [ -d "/sys/class/net/${current_bridge}/bridge" ]; then
+                echo "Restoring $INTERFACE to $current_bridge..." >&2
+
+                sudo /usr/sbin/brctl addif \
+                    "$current_bridge" "$INTERFACE" || {
+                    echo "ERROR: Failed to restore bridge membership." >&2
+                    return 2
+                }
+            fi
+
+            return "$rc"
+        }
+    fi
+
+    return 0
+}
+
 delete_interface() {
     if interface_exists; then
         sudo ip link set dev "$INTERFACE" down || true
@@ -164,6 +222,11 @@ apply_desired_mutable_state() {
     read_desired_addresses
     read_live_addresses
 
+    # Detach from a bridge before configuring L3 addresses.
+    if [ -z "$BRIDGE" ]; then
+        reconcile_bridge "" || return $?
+    fi
+
     for address in "${LIVE_ADDRESSES[@]}"; do
         if ! contains_address "$address" "${DESIRED_ADDRESSES[@]}"; then
             sudo ip addr del "$address" dev "$INTERFACE" || return $?
@@ -176,6 +239,12 @@ apply_desired_mutable_state() {
                 add "$INTERFACE" "$address" || return $?
         fi
     done
+
+    # When transitioning to L2 operation, remove addresses first and only
+    # then attach the interface to the requested bridge.
+    if [ -n "$BRIDGE" ]; then
+        reconcile_bridge "$BRIDGE" || return $?
+    fi
 
     flags=$(cat "/sys/class/net/$INTERFACE/flags")
 
@@ -216,6 +285,7 @@ capture_live_snapshot() {
     OLD_MAC=$(cat "/sys/class/net/$INTERFACE/address")
     OLD_MTU=$(cat "/sys/class/net/$INTERFACE/mtu")
     OLD_DESCRIPTION=$(cat "/sys/class/net/$INTERFACE/ifalias" 2>/dev/null || true)
+    OLD_BRIDGE=$(get_live_bridge)
 
     flags=$(cat "/sys/class/net/$INTERFACE/flags")
 
@@ -263,6 +333,8 @@ rollback_live_snapshot() {
             add "$INTERFACE" "$address" || return 1
     done
 
+    reconcile_bridge "$OLD_BRIDGE" || return 1
+
     if [ "$OLD_UP" -eq 1 ]; then
         sudo ip link set dev "$INTERFACE" up || return 1
     fi
@@ -296,6 +368,20 @@ if node_exists description; then
     DESCRIPTION=$(node_value description)
 else
     DESCRIPTION=""
+fi
+
+if node_exists bridge-group bridge; then
+    BRIDGE=$(node_value bridge-group bridge)
+else
+    BRIDGE=""
+fi
+
+read_desired_addresses
+
+if [ -n "$BRIDGE" ] &&
+   [ "${#DESIRED_ADDRESSES[@]}" -ne 0 ]; then
+    echo "ERROR: Can not add interface $INTERFACE with addresses to bridge." >&2
+    exit 1
 fi
 
 MAC=$(derive_mac)

@@ -1,0 +1,4 @@
+priority: 460
+help: Add this interface to a bridge group
+
+end: /opt/vyatta/sbin/vyatta-vxlan-bridge "$VAR(../@)"

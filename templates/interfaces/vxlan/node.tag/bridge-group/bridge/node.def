@@ -1,0 +1,11 @@
+type: txt
+help: Bridge group name
+
+syntax:expression: pattern $VAR(@) "^br[0-9]+$" \
+    ; "$VAR(@): not a valid name for a bridge"
+
+commit:expression: exec "/usr/sbin/ubnt-ifctl valid-intf '$VAR(@)' bridge"
+
+allowed: /usr/sbin/ubnt-ifctl list-sys-intfs bridge
+
+commit:expression: exec "/opt/vyatta/sbin/vyatta-vxlan-bridge --validate '$VAR(../../@)'"
