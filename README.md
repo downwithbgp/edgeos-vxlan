@@ -2,7 +2,7 @@
 
 Native VXLAN support for the Ubiquiti EdgeRouter X running EdgeOS 3.0.1.
 
-This project adds the missing Linux `vxlan.ko` kernel module and integrates VXLAN interfaces into the native EdgeOS/Vyatta configuration system.
+This project adds the missing Linux `vxlan.ko` kernel module and integrates VXLAN interfaces into the native EdgeOS/Vyatta configuration system. The v0.2 kernel package also carries a narrowly scoped `udp_tunnel.ko` backport for CVE-2022-50405 on the supported EdgeOS 3.0.1 kernel.
 
 Example:
 
@@ -66,9 +66,11 @@ sudo sh install.sh
 
 The installer is pinned to release `v0.1.1`; it does not execute the moving `main` branch.
 
+Until `v0.2.0` is tagged and its release artifacts are published, the quick-install commands above intentionally continue to install the current published `v0.1.1` release.
+
 ## Supported platform
 
-Version `0.1.1` is deliberately restricted to the platform on which it has been built and tested.
+Version `0.2.0` is deliberately restricted to the platform on which it has been built and tested.
 
 ```text
 Device:       Ubiquiti EdgeRouter X / ER-e50
@@ -93,6 +95,7 @@ Do not install the package on other EdgeRouter models, EdgeOS releases, or kerne
 `edgeos-vxlan` currently provides:
 
 * Linux VXLAN kernel support through `vxlan.ko`
+* A narrowly scoped `udp_tunnel.ko` security backport for CVE-2022-50405
 * Native `interfaces vxlan vxlanN` EdgeOS configuration
 * Persistent configuration through `/config/config.boot`
 * Automatic module loading
@@ -101,6 +104,8 @@ Do not install the package on other EdgeRouter models, EdgeOS releases, or kerne
 * Integration with `show configuration commands`
 * IPv4 and IPv6 interface-address syntax
 * Native address validation
+* Native bridge membership through `bridge-group bridge brN`
+* Validation that prevents a VXLAN interface from being both bridged and directly addressed
 * Configurable:
 
   * VNI
@@ -111,9 +116,9 @@ Do not install the package on other EdgeRouter models, EdgeOS releases, or kerne
   * interface addresses
   * description
   * administrative disable state
-* Non-disruptive updates for mutable interface properties
+* Non-disruptive updates for mutable interface properties, including bridge membership
 * Controlled interface recreation for VXLAN identity changes
-* Rollback to the previous live interface state if recreation fails
+* Rollback to the previous live interface state, including bridge membership, if recreation fails
 * Deterministic locally administered MAC addresses
 
 ## Packages
@@ -132,7 +137,16 @@ Installs:
 
 ```text
 /lib/modules/4.14.54-UBNT/extra/vxlan.ko
+/lib/modules/4.14.54-UBNT/kernel/net/ipv4/udp_tunnel.ko
 ```
+
+The second file is a minimally patched rebuild of the EdgeOS `udp_tunnel.ko` dependency containing the CVE-2022-50405 backport described below. Before replacing the vendor file, the package verifies its expected SHA-256 hash and preserves it with `dpkg-divert` as:
+
+```text
+/lib/modules/4.14.54-UBNT/kernel/net/ipv4/udp_tunnel.ko.edgeos-vxlan-stock
+```
+
+Removing the kernel package restores the preserved vendor module. If `udp_tunnel` is already loaded during an upgrade, the package does not forcibly unload it; the newly installed module takes effect after a safe reload or reboot.
 
 The package runs `depmod` and loads:
 
@@ -154,6 +168,7 @@ Provides:
 
 * EdgeOS configuration templates
 * the `vyatta-vxlan` reconciliation helper
+* the `vyatta-vxlan-bridge` bridge-membership helper
 * VXLAN recognition in `Vyatta::Interface`
 
 It depends on the exact matching kernel package and the tested EdgeOS configuration packages.
@@ -166,14 +181,14 @@ Install the kernel module first:
 
 ```bash
 sudo dpkg -i \
-  edgeos-vxlan-kmod_0.1.1+edgeos3.0.1.e50_mipsel.deb
+  edgeos-vxlan-kmod_0.2.0+edgeos3.0.1.e50_mipsel.deb
 ```
 
 Then install the EdgeOS integration package:
 
 ```bash
 sudo dpkg -i \
-  edgeos-vxlan_0.1.1+edgeos3.0.1.e50_all.deb
+  edgeos-vxlan_0.2.0+edgeos3.0.1.e50_all.deb
 ```
 
 Verify that the module is loaded:
@@ -191,6 +206,8 @@ udp_tunnel
 ```
 
 ## Configuration
+
+### Routed VXLAN
 
 A basic point-to-point VXLAN tunnel can be configured as follows:
 
@@ -235,6 +252,33 @@ The latter should show values similar to:
 }
 ```
 
+
+### Bridged VXLAN
+
+A VXLAN interface can be attached to a native EdgeOS bridge:
+
+```text
+configure
+
+set interfaces bridge br42
+set interfaces bridge br42 address 198.51.100.1/30
+
+set interfaces vxlan vxlan42 bridge-group bridge br42
+set interfaces vxlan vxlan42 local-ip 192.0.2.1
+set interfaces vxlan vxlan42 remote-ip 192.0.2.2
+set interfaces vxlan vxlan42 vni 42
+set interfaces vxlan vxlan42 port 4789
+set interfaces vxlan vxlan42 mtu 1450
+
+commit
+save
+exit
+```
+
+A bridged VXLAN interface must not also have an `address` configured directly on the VXLAN interface. If Layer 3 connectivity is required, assign the address to the bridge, as shown above. EdgeOS commit validation rejects simultaneous `bridge-group bridge` and VXLAN interface-address configuration.
+
+Bridge membership is mutable. Moving `vxlan42` between bridges, adding it to a bridge, or removing it from a bridge does not by itself recreate the VXLAN interface. If a VXLAN identity change does require recreation, the configured bridge membership is restored afterward and is also included in rollback and boot restoration.
+
 ## Configuration tree
 
 The current configuration tree is:
@@ -243,6 +287,9 @@ The current configuration tree is:
 interfaces {
     vxlan vxlanN {
         address <address/prefix>
+        bridge-group {
+            bridge <brN>
+        }
         description <text>
         disable
         local-ip <IPv4 address>
@@ -276,6 +323,7 @@ The following properties are changed in place without recreating the interface:
 
 * MTU
 * interface addresses
+* bridge membership
 * description
 * administrative state
 
@@ -291,7 +339,7 @@ When an identity change is committed, the integration:
 1. captures the existing live VXLAN state;
 2. removes the old interface;
 3. creates the requested VXLAN interface;
-4. restores the configured mutable state;
+4. restores the configured mutable state, including bridge membership;
 5. brings the interface to the requested administrative state.
 
 If creation or reconciliation fails, the helper attempts to restore the previous live VXLAN interface, including:
@@ -304,6 +352,7 @@ If creation or reconciliation fails, the helper attempts to restore the previous
 * MTU
 * description
 * configured global addresses
+* bridge membership
 * administrative state
 
 The failed configuration operation still returns an error so that EdgeOS reports the commit failure.
@@ -416,7 +465,7 @@ commit succeeded
 teardown succeeded
 ```
 
-After reboot, the VXLAN kernel module, native configuration, deterministic MAC address, MTU, interface address, and operational state are restored.
+After reboot, the VXLAN kernel module, patched UDP-tunnel dependency, native configuration, deterministic MAC address, MTU, interface address or bridge membership, and operational state are restored.
 
 ## Removal
 
@@ -447,13 +496,23 @@ The packages contain safeguards against:
 * removing `edgeos-vxlan` while saved VXLAN configuration exists;
 * removing `edgeos-vxlan-kmod` while live VXLAN interfaces remain.
 
-Removing the integration package also restores the original diverted `Vyatta::Interface` file.
+Removing the integration package also restores the original diverted `Vyatta::Interface` file. Removing the kernel package restores the original EdgeOS `udp_tunnel.ko` preserved by its separate `dpkg-divert`.
+
+## Underlay trust and security
+
+`remote-ip` configures the normal outbound VXLAN destination. It is not an inbound peer allowlist and does not authenticate a sender.
+
+Hardware testing on the supported EdgeRouter X confirmed that a VNI 42 VXLAN interface configured with one `remote-ip` still accepted and decapsulated valid VNI 42 packets arriving from a different underlay source address. The project therefore does not treat `remote-ip` as a security boundary.
+
+If the VXLAN underlay is not trusted, restrict UDP destination port 4789 on the underlay interface to the intended peer or carry VXLAN over an authenticated, encrypted transport. Source-address filtering reduces exposure but is not cryptographic peer authentication and does not protect against source spoofing on an otherwise untrusted transport.
+
+`edgeos-vxlan` does not automatically create or modify firewall policy. Underlay filtering remains an explicit deployment responsibility.
 
 ## Kernel build provenance
 
 The EdgeRouter X firmware does not ship `vxlan.ko`.
 
-The module included with this project was built from Ubiquiti's published EdgeOS GPL source.
+The `vxlan.ko` module included with this project was built from Ubiquiti's published EdgeOS GPL source. Version 0.2 also rebuilds the vendor `udp_tunnel.ko` dependency from the same corresponding source with one security backport.
 
 GPL source archive:
 
@@ -538,13 +597,41 @@ depends: udp_tunnel,ip6_udp_tunnel
 vermagic: 4.14.54-UBNT SMP mod_unload MIPS32_R2 32BIT
 ```
 
+### CVE-2022-50405 UDP-tunnel backport
+
+The corresponding EdgeOS 3.0.1 GPL source clears `sk_user_data` and then immediately shuts down and releases the UDP tunnel socket. It lacks the RCU grace-period wait used by the upstream fix for CVE-2022-50405, a race between VXLAN receive processing and tunnel teardown.
+
+The v0.2 kernel package applies the repository patch:
+
+```text
+patches/4.14.54-UBNT/CVE-2022-50405.patch
+```
+
+which adds the required `synchronize_rcu()` before socket shutdown. On this kernel configuration that call resolves to the exported `synchronize_sched` symbol.
+
+For the tested firmware, the preserved vendor module SHA-256 is:
+
+```text
+14fbf8c469a7c902ce53d79de581e3e14982a9d52dbc80515d5ab481afb0fa94
+```
+
+The patched module SHA-256 is:
+
+```text
+6d58ee597d8ae50898efe90ec61a4803ae4f0549f29fba9c4132ca92260405cc
+```
+
+The package installs the patched module at the canonical EdgeOS module path so existing VXLAN, L2TP, and WireGuard module dependencies continue to resolve normally, while preserving the original vendor file with `dpkg-divert`.
+
+Validation on the supported EdgeRouter X included a cold boot with the patched module and repeated VXLAN identity recreation while valid VXLAN receive traffic was arriving. No kernel Oops, BUG, call trace, panic, use-after-free diagnostic, or RCU stall was observed during that stress test.
+
 ## RC9 / EdgeOS 3.0.1 compatibility evidence
 
 The available GPL source release predates the final EdgeOS 3.0.1 firmware build.
 
 Compatibility was validated by comparing an existing kernel module supplied by EdgeOS against a module rebuilt from the GPL source.
 
-The stock final-firmware `udp_tunnel.ko` and the rebuilt module had:
+Before applying the security backport, the stock final-firmware `udp_tunnel.ko` and an unmodified module rebuilt from the GPL source had:
 
 * matching size;
 * matching module metadata;
@@ -559,7 +646,7 @@ The `.text` section SHA-256 was:
 
 The Vyatta `Interface.pm` from the GPL source was also byte-for-byte identical to the stock EdgeOS 3.0.1 copy used during development.
 
-This provides strong evidence that the relevant kernel and Vyatta interface code did not materially change between the published GPL release and the tested final firmware.
+This provides strong evidence that the relevant kernel and Vyatta interface code did not materially change between the published GPL release and the tested final firmware. The v0.2 `udp_tunnel.ko` intentionally differs from the vendor binary because it includes the CVE-2022-50405 backport.
 
 It does not imply compatibility with other EdgeOS builds.
 
@@ -580,9 +667,9 @@ dpkg-buildpackage -us -uc -b -a mipsel
 The build produces:
 
 ```text
-edgeos-vxlan_0.1.1+edgeos3.0.1.e50_all.deb
+edgeos-vxlan_0.2.0+edgeos3.0.1.e50_all.deb
 
-edgeos-vxlan-kmod_0.1.1+edgeos3.0.1.e50_mipsel.deb
+edgeos-vxlan-kmod_0.2.0+edgeos3.0.1.e50_mipsel.deb
 ```
 
 Packages are compressed using gzip for compatibility with the older `dpkg` version shipped by EdgeOS.
@@ -594,10 +681,15 @@ Packages are compressed using gzip for compatibility with the older `dpkg` versi
 ├── debian/
 ├── modules/
 │   └── 4.14.54-UBNT/
+│       ├── udp_tunnel.ko
 │       └── vxlan.ko
+├── patches/
+│   └── 4.14.54-UBNT/
+│       └── CVE-2022-50405.patch
 ├── src/
 │   ├── Interface.pm
-│   └── vyatta-vxlan
+│   ├── vyatta-vxlan
+│   └── vyatta-vxlan-bridge
 ├── templates/
 │   └── interfaces/
 │       └── vxlan/
@@ -612,7 +704,7 @@ Packages are compressed using gzip for compatibility with the older `dpkg` versi
 
 ## Tested behavior
 
-Version `0.1.1` has been tested for:
+Version `0.2.0` has been tested for:
 
 * kernel module loading;
 * VXLAN interface creation;
@@ -633,19 +725,28 @@ Version `0.1.1` has been tested for:
 * stable deterministic MAC addresses across successful recreations;
 * stable deterministic MAC addresses across reboot;
 * package removal safeguards;
-* `dpkg-divert` restoration of the stock EdgeOS Perl module.
+* `dpkg-divert` restoration of the stock EdgeOS Perl module;
+* native bridge attachment and detachment;
+* routed-to-bridged and bridged-to-routed transitions;
+* bridge-to-bridge moves without VXLAN recreation;
+* bridge membership restoration after identity recreation, rollback, and cold boot;
+* rejection of simultaneous VXLAN interface addresses and bridge membership;
+* literal interface descriptions containing shell metacharacters;
+* patched `udp_tunnel.ko` runtime loading and cold boot;
+* repeated VXLAN teardown/recreation under active receive traffic;
+* alternate-source VXLAN receive behavior demonstrating that `remote-ip` is not an ingress ACL.
 
 A point-to-point test between the EdgeRouter X and a Linux host successfully passed bidirectional traffic over the VXLAN interface.
 
 ## Known limitations
 
-Version `0.1.1` is intentionally small in scope.
+Version `0.2.0` remains intentionally small in scope.
 
 Not yet validated or implemented as first-class configuration features:
 
 * EVPN control plane
 * multicast VXLAN
-* bridge integration
+* bridge-group cost/priority controls
 * VLAN-to-VNI mapping
 * flood-and-learn configuration beyond the basic Linux defaults
 * IPv6 underlay
@@ -655,7 +756,7 @@ Not yet validated or implemented as first-class configuration features:
 * other EdgeRouter models
 * other EdgeOS releases
 
-The current implementation has primarily been validated as a point-to-point VXLAN tunnel over an IPv4 underlay.
+The current implementation has been validated for routed point-to-point VXLAN and native bridge attachment over an IPv4 underlay. It remains a fixed-remote, Linux VXLAN dataplane integration rather than a VXLAN control-plane implementation.
 
 ### EdgeOS userspace warnings
 
