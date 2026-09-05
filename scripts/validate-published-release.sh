@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-CI_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+CI_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 ASSET_DIR=${1:-.}
 SOURCE_ROOT=${2:-$CI_ROOT}
 

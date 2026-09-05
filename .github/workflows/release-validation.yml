@@ -38,11 +38,15 @@ jobs:
             crossbuild-essential-mipsel \
             debhelper \
             devscripts \
-            fakeroot
+            fakeroot \
+            shellcheck
 
       - name: Source sanity
         run: |
           sh -n install.sh
+          sh -n scripts/validate-release.sh
+          sh -n scripts/validate-published-release.sh
+          shellcheck install.sh scripts/*.sh
           git diff --check
 
       - name: Build Debian packages
