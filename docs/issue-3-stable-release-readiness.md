@@ -154,10 +154,11 @@ loaded `udp_tunnel` alone; the integration package has no `postinst` at all.
    off-device but unconfirmed on the target. **Impact:** a wrong guess fails *closed* — the commit is
    refused; it can never silently rebind an address. Low severity.
 5. **Evidence filing and documentation debt.** Raw hardware transcripts are not yet attached to the
-   issue; `README.md` still describes v0.2.1 (limitations list, MTU guidance, IPv6 firewall example,
-   tested-behavior list); the MTU/readiness timing note is unwritten; the Phase-1 design-variant note
-   is unwritten. All are release tasks (§11) — **these are the only things this review would not
-   publish without.**
+   issue (still pending publication). The documentation items are now delivered in the v0.2.2 release
+   preparation: `README.md` and the release notes describe v0.2.2, the static-endpoint/readiness
+   limitation is stated (no timing *measurement* exists because the dynamic scenario is untested),
+   and the Phase-1 design-variant record is §1 of this report. **The remaining item is the raw
+   captures (§11 item 4).**
 6. **Bridged-tunnel traffic and the IPv6 firewall drop direction** are undemonstrated (membership,
    cost, priority, and the positive firewall path *are* demonstrated).
 7. **Byte-reproducibility caveat (pre-existing):** clean-room builds from the same tree reproduce
@@ -178,10 +179,10 @@ The evidence document lists these in full; for release purposes:
 | 2 | Bridged-tunnel traffic | Cosmetic to the claim, not to the datapath (bridging does not alter encapsulation) |
 | 3 | Upgrade from v0.2.1 with a committed IPv4 tunnel | Bounded: no interface-touching code runs during an upgrade; v4 identity handling has hardware and suite coverage |
 | 4 | Non-canonical IPv4 binding on the target | Fails closed (see §6.4) |
-| 5 | Dynamic prefix / readiness timing | To be documented as a static-VTEP requirement (§6.2; checklist item 3); after a prefix change the stored endpoints must be updated |
+| 5 | Dynamic prefix / readiness timing | Documented as a static-VTEP requirement (README, release notes; §6.2); after a prefix change the stored endpoints must be updated |
 | 6 | Snapshot fail-closed on the target (Phase 5.5) | Off-device suites cover it; the hardware scenario cannot be induced safely |
 | 7 | Failure injection on a family transition | Mock-covered; no safe hardware variant identified |
-| 8 | IPv6 firewall drop direction | Positive path demonstrated; IPv4 analogue demonstrated; documentation task |
+| 8 | IPv6 firewall drop direction | Positive path demonstrated; IPv4 analogue demonstrated; README example delivered; the alternate-source drop direction remains undemonstrated |
 | 9 | CI execution of the suite (pending a qualifying event) | Process gap only — the suite is green locally and the workflow is standard |
 | 10 | Target oversized-packet capture (Phase 1 step 7) | The documented guidance does not rely on outer fragmentation, and the 1430 default is hardware-observed on the standard path |
 
@@ -195,9 +196,10 @@ and security patch unchanged, and the acceptance-criteria gaps confined to the i
 
 **Process-level blockers (must be done before publication, not before a decision):**
 
-1. Documentation accuracy — `README.md` (limitations, MTU guidance + formula, IPv6 examples and
-   `firewall ipv6-name`, partial-commit operational rule, tested-behavior list with the platform
-   named, installer links), the timing note, and the design-variant note (§6.5).
+1. Documentation accuracy — **complete** in the v0.2.2 release preparation: `README.md` (limitations,
+   MTU guidance + formula, IPv6 examples and `firewall ipv6-name`, partial-commit operational rule,
+   interface-index semantics, tested-behavior list with the platform named, installer links) and the
+   release notes; the timing limitation and the design-variant record are covered (§1, §6.5).
 2. Raw hardware captures attached to the issue/PR (sanitised).
 3. The release mechanics — final changelog entry, clean build, `validate-release.sh`, pins and
    `SHA256SUMS`, the PR/CI run, tag and publication (§11).
@@ -243,11 +245,12 @@ if either surprises — and complete the release tasks first.
 
 ## 11. Release checklist (prepared; **not executed**)
 
-**Status (2026-10-10, v0.2.2 release preparation):** items 3 and 6–10 are complete — README/release
-notes delivered; changelog entry added; clean-room builds byte-identical; `validate-release.sh` and
-the published-check dry run PASS; pins and `SHA256SUMS` committed. Items 4 (captures), 11 (PR + CI),
-12 (tag) and 13–15 (publication) remain; `docs/issue-3-v0.2.2-release-gate.md` §8 tracks the
-publication procedure.
+**Status (2026-10-10, v0.2.2 release preparation):** complete: item 3 (README/release notes),
+item 5 (the readiness-timing limitation and the design-variant record are covered — §1, §6.5), and
+items 6–10 (changelog entry; double clean-room builds byte-identical; `validate-release.sh` and the
+published-check dry run PASS; pins and `SHA256SUMS`). Remaining: item 2 (T1/T2 timing decision),
+item 4 (captures), item 11 (PR + CI) and items 12–15 (tag, publish, verify);
+`docs/issue-3-v0.2.2-release-gate.md` §8 tracks the publication procedure.
 
 **A. Freeze and content**
 1. Confirm the stable payload is RC2's code plus documentation/changelog only (`diff` the built

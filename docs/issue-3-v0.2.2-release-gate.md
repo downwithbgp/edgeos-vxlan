@@ -20,7 +20,7 @@ LIMITATIONS** — carried into this gate as **GO** for publication, conditional 
   review-driven fixes) are **documentation-only commits**. The tag is applied to the **merge commit
   of the release PR on `main`** (the v0.2.1 precedent); the PR head at merge time is the
   authoritative final preparation SHA and carries the same tree as recorded here.
-* Branch: `feat/ipv6-underlay`; nothing pushed; `main` remains at v0.2.1 (`dc99bce`).
+* Branch: `feat/ipv6-underlay`; nothing pushed; `origin/main` remains at v0.2.1 (`dc99bce`).
 
 ## 2. Stable package files, sizes and SHA-256 checksums
 
