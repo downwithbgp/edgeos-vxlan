@@ -203,9 +203,9 @@ and security patch unchanged, and the acceptance-criteria gaps confined to the i
 
 ## 9. Minimal final hardware test plan
 
-Phases 0–4, 5.1–5.3 and 6 have already passed on hardware and **should not be repeated** — there is
-no new uncertainty to resolve. The following set is the *only* remaining hardware work worth
-proposing, each justified individually:
+Phases 0–4 (except 1.7, the non-canonical IPv4 probe), 5.1–5.3 and 6 have already passed on
+hardware and **should not be repeated** — there is no new uncertainty of the kind they cover. The
+following set is the *only* remaining hardware work worth proposing, each justified individually:
 
 | # | Test (procedure) | Uncertainty it resolves | Why existing evidence is insufficient | Live changes | Expected result | Recovery | Class |
 |---|---|---|---|---|---|---|---|
