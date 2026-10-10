@@ -15,8 +15,9 @@ configuration atomicity FAIL.** The reconciler restored the interface correctly,
 commit still left the changed leaf value (`mtu 64`) in the active configuration while the kernel held
 the pre-commit value. The procedure below now carries the configuration-versus-kernel check (5.4.5b)
 and the recovery that was executed successfully on the hardware; the mechanism and the recommended
-correction are in `issue-3-partial-commit-analysis.md`. **Phase 6 (bridging) is the one remaining
-procedure that has not been run.**
+correction are in `issue-3-partial-commit-analysis.md`. **Of the original hazardous pair, Phase 6
+(bridging) is the one still unrun**; the remaining open items overall are listed in
+`issue-3-hardware-evidence.md`.
 
 The exact underlay addresses are deployment-specific: the sanitised deployment runbook
 (`issue-3-deployment-runbook.md`) carries placeholders, and the instance with the live values is held

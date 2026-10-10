@@ -34,7 +34,7 @@ This is recorded as **kernel rollback PASS / full configuration atomicity FAIL**
 
 ## 2. Why it happens — the engine commits per priority subtree, without a transaction
 
-The commit engine is `commit::doCommit()` (`src/commit/commit-algorithm.cpp:1219`, vendor
+The commit engine is `commit::doCommit()` (`src/commit/commit-algorithm.cpp:1220`, vendor
 `vyatta-cfg` source drop for EdgeOS 3.0):
 
 1. It builds the tree of changed nodes and splits it into **priority subtrees**
@@ -67,18 +67,24 @@ Our templates decide where the boundaries fall:
 | `mtu`, `address`, `bridge-group` | 460 | each is its **own sibling subtree**, committed independently of the reconciler |
 
 The failed commit changed exactly two things: `vni` (in the vxlan subtree) and `mtu` (its own
-subtree). The sequence was:
+subtree). Those two subtrees are committed **independently, in either order** — the queue is a
+min-heap on priority, so here the priority-459 vxlan subtree is popped before the priority-460 `mtu`
+subtree — and the outcome does not depend on which runs first:
 
 1. The **mtu subtree** is checked and executed. Its `update:` action is guarded by
    `vyatta-vxlan-addr identity-matches`, which compares the desired configuration with the live
    interface. At that moment the desired VNI is 902 and the live interface is still 901, so the guard
-   is **false**, the action does nothing, and the shell returns success. The subtree is therefore
-   **marked committed — MTU 64 enters the active configuration.**
+   is **false**, the action does nothing, and the shell returns success. A guarded no-op is
+   indistinguishable from a successful application, so the subtree is **marked committed — MTU 64
+   enters the active configuration.**
 2. The **vxlan subtree** reaches its `end:` action. The reconciler deletes and recreates the
    interface, the kernel refuses `mtu 64`, the reconciler rolls the *kernel* back and exits non-zero.
    The subtree is **not marked committed — VNI 902 never enters the active configuration.**
 3. `commitConfig()` writes the partial result. Active configuration: VNI 901, MTU 64. Kernel:
    VNI 901, MTU 1430.
+
+Which subtree is processed first does not change the outcome: the guard compares the *desired*
+configuration with the live interface, and that comparison is 902-against-901 either way.
 
 The identity guards that were added to the leaf handlers (so they cannot act out of order) are
 exactly what makes the mtu subtree "succeed" here: a guarded no-op is indistinguishable from a
