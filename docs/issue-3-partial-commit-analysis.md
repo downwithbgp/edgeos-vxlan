@@ -69,17 +69,18 @@ Our templates decide where the boundaries fall:
 The failed commit changed exactly two things: `vni` (in the vxlan subtree) and `mtu` (its own
 subtree). Those two subtrees are committed **independently, in either order** — the queue is a
 min-heap on priority, so here the priority-459 vxlan subtree is popped before the priority-460 `mtu`
-subtree — and the outcome does not depend on which runs first:
+subtree — and the outcome does not depend on which runs first. Read the two steps below as what
+happens to each subtree, not as a strict sequence:
 
-1. The **mtu subtree** is checked and executed. Its `update:` action is guarded by
+1. The **vxlan subtree** reaches its `end:` action. The reconciler deletes and recreates the
+   interface, the kernel refuses `mtu 64`, the reconciler rolls the *kernel* back and exits non-zero.
+   The subtree is **not marked committed — VNI 902 never enters the active configuration.**
+2. The **mtu subtree** is checked and executed. Its `update:` action is guarded by
    `vyatta-vxlan-addr identity-matches`, which compares the desired configuration with the live
    interface. At that moment the desired VNI is 902 and the live interface is still 901, so the guard
    is **false**, the action does nothing, and the shell returns success. A guarded no-op is
    indistinguishable from a successful application, so the subtree is **marked committed — MTU 64
    enters the active configuration.**
-2. The **vxlan subtree** reaches its `end:` action. The reconciler deletes and recreates the
-   interface, the kernel refuses `mtu 64`, the reconciler rolls the *kernel* back and exits non-zero.
-   The subtree is **not marked committed — VNI 902 never enters the active configuration.**
 3. `commitConfig()` writes the partial result. Active configuration: VNI 901, MTU 64. Kernel:
    VNI 901, MTU 1430.
 
