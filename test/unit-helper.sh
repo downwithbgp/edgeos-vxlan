@@ -133,6 +133,9 @@ EOF
 cat >"$TMP/group.json" <<'EOF'
 [{"ifindex":2,"ifname":"vxlan42","linkinfo":{"info_kind":"vxlan","info_data":{"id":42,"group6":"ff02::1","port":4789}}}]
 EOF
+cat >"$TMP/group_remote.json" <<'EOF'
+[{"ifindex":2,"ifname":"vxlan42","linkinfo":{"info_kind":"vxlan","info_data":{"id":42,"remote6":"2001:db8:1::2","local6":"2001:db8:1::1","group6":"ff02::1","port":4789}}}]
+EOF
 cat >"$TMP/nonvxlan.json" <<'EOF'
 [{"ifindex":2,"ifname":"br0","linkinfo":{"info_kind":"bridge","info_data":{}}}]
 EOF
@@ -144,7 +147,17 @@ eq_stdin "parse-live v6 no local" "$(printf 'vxlan\t42\t4789\tv6\t-\t2001:db8:1:
 eq_stdin "parse-live dstport fallback" "$(printf 'vxlan\t7\t8472\tv6\t2001:db8:1::1\t2001:db8:1::2')" "$TMP/v6_dstport.json" "$H" parse-live
 ck "parse-live mixed keys" 1 "$H" parse-live <"$TMP/mixed.json"
 ck "parse-live missing remote" 1 "$H" parse-live <"$TMP/noremote.json"
-ck "parse-live multicast group" 1 "$H" parse-live <"$TMP/group.json"
+ck "parse-live group6 without remote" 1 "$H" parse-live <"$TMP/group.json"
+ck "parse-live multicast group is refused" 1 "$H" parse-live <"$TMP/group_remote.json"
+if "$H" parse-live <"$TMP/group_remote.json" >"$TMP/out" 2>"$TMP/err"; then
+    FAIL=$((FAIL + 1))
+    echo "FAIL: parse-live multicast group fixture unexpectedly accepted"
+elif grep -q "multicast group endpoint is not supported" "$TMP/err"; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: parse-live multicast group rejection message"
+fi
 ck "parse-live non-vxlan" 1 "$H" parse-live <"$TMP/nonvxlan.json"
 ck "parse-live malformed" 1 "$H" parse-live <"$TMP/bad.json"
 

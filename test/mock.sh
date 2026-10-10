@@ -42,6 +42,26 @@ EOF
 cat >"$BIN/brctl" <<'EOF'
 #!/bin/sh
 echo "brctl $*" >>"$IPLOG"
+op=$1
+bridge=$2
+interface=$3
+case "$op" in
+    addif)
+        mkdir -p "$VXLAN_SYSFS_ROOT/class/net/$interface/brport"
+        ln -sfn "../../$bridge" "$VXLAN_SYSFS_ROOT/class/net/$interface/brport/bridge"
+        printf '%s\n' "100" >"$VXLAN_SYSFS_ROOT/class/net/$interface/brport/path_cost"
+        printf '%s\n' "32" >"$VXLAN_SYSFS_ROOT/class/net/$interface/brport/priority"
+        ;;
+    delif)
+        rm -rf "$VXLAN_SYSFS_ROOT/class/net/$interface/brport"
+        ;;
+    setpathcost)
+        printf '%s\n' "$4" >"$VXLAN_SYSFS_ROOT/class/net/$interface/brport/path_cost"
+        ;;
+    setportprio)
+        printf '%s\n' "$4" >"$VXLAN_SYSFS_ROOT/class/net/$interface/brport/priority"
+        ;;
+esac
 exit 0
 EOF
 
@@ -120,9 +140,27 @@ if [ "$1" = "link" ] && [ "$2" = "set" ]; then
     ifname=$4
     case "$5" in
         address) printf '%s\n' "$6" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/address" ;;
-        mtu) printf '%s\n' "$6" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/mtu" ;;
-        alias) printf '%s\n' "$6" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/ifalias" ;;
-        up) printf '%s\n' "0x1003" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags" ;;
+        mtu)
+            if [ "${FAIL_MTU:-0}" = "1" ] && [ ! -f "$IPSTATE/failed_mtu" ]; then
+                : >"$IPSTATE/failed_mtu"
+                exit 2
+            fi
+            printf '%s\n' "$6" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/mtu"
+            ;;
+        alias)
+            if [ "${FAIL_ALIAS:-0}" = "1" ] && [ ! -f "$IPSTATE/failed_alias" ]; then
+                : >"$IPSTATE/failed_alias"
+                exit 2
+            fi
+            printf '%s\n' "$6" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/ifalias"
+            ;;
+        up)
+            if [ "${FAIL_UP:-0}" = "1" ] && [ ! -f "$IPSTATE/failed_up" ]; then
+                : >"$IPSTATE/failed_up"
+                exit 2
+            fi
+            printf '%s\n' "0x1003" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags"
+            ;;
         down)
             [ "${FAIL_DOWN:-0}" = "1" ] && exit 2
             printf '%s\n' "0x1002" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags"
@@ -170,8 +208,20 @@ echo "vyatta-address $*" >>"$IPLOG"
 ifname=$2
 addr=$3
 case "$1" in
-    add) printf '%s\n' "$addr" >>"$IPSTATE/addrs" ;;
-    delete) sed -i "\|^$addr\$|d" "$IPSTATE/addrs" 2>/dev/null || true ;;
+    add)
+        if [ "${FAIL_ADDR_ADD:-0}" = "1" ] && [ ! -f "$IPSTATE/failed_addr_add" ]; then
+            : >"$IPSTATE/failed_addr_add"
+            exit 2
+        fi
+        printf '%s\n' "$addr" >>"$IPSTATE/addrs"
+        ;;
+    delete)
+        if [ "${FAIL_ADDR_DEL:-0}" = "1" ] && [ ! -f "$IPSTATE/failed_addr_del" ]; then
+            : >"$IPSTATE/failed_addr_del"
+            exit 2
+        fi
+        sed -i "\|^$addr\$|d" "$IPSTATE/addrs" 2>/dev/null || true
+        ;;
 esac
 exit 0
 EOF
@@ -179,6 +229,10 @@ EOF
 cat >"$SBIN/vyatta-vxlan-bridge" <<'EOF'
 #!/bin/sh
 echo "vyatta-vxlan-bridge $*" >>"$IPLOG"
+if [ "${FAIL_BRIDGE:-0}" = "1" ] && [ ! -f "$IPSTATE/failed_bridge" ]; then
+    : >"$IPSTATE/failed_bridge"
+    exit 2
+fi
 exit 0
 EOF
 
@@ -344,7 +398,8 @@ else
     bad "mixed family rejection must not touch the interface"
 fi
 
-# Scenario 10: bridge rollback restores membership and port options.
+# Scenario 10: a failed identity recreation of a bridge port rolls back the
+# membership, path cost and port priority captured in the snapshot.
 reset_sandbox
 set_live v6 2001:db8:1::1 2001:db8:1::2 4789
 mkdir -p "$SYS/class/net/br42/bridge" "$SYS/class/net/$IF/brport"
@@ -354,9 +409,22 @@ printf '%s\n' 10 >"$SYS/class/net/$IF/brport/priority"
 set_conf vni 42
 set_conf remote-ip "2001:db8:1::9"
 set_conf local-ip "2001:db8:1::1"
-set_conf bridge-group bridge br42
-if run_reconciler >/dev/null 2>&1 &&
-    log_has "vyatta-vxlan-bridge $IF"; then ok; else bad "bridge reconcile after recreation"; fi
+printf '%s' "br42" >"$CONF/$IF.bridge-group.bridge"
+if FAIL_ADD=1 run_reconciler >/dev/null 2>&1; then
+    bad "failed bridge recreation should exit non-zero"
+elif grep -q "Rolling back" "$TMP/err" &&
+    log_has "link add dev $IF type vxlan id 42 local 2001:db8:1::1 remote 2001:db8:1::2 dstport 4789" &&
+    log_has "brctl addif br42 $IF" &&
+    log_has "brctl setpathcost br42 $IF 200" &&
+    log_has "brctl setportprio br42 $IF 10" &&
+    [ -L "$SYS/class/net/$IF/brport/bridge" ] &&
+    [ "$(basename "$(readlink "$SYS/class/net/$IF/brport/bridge")")" = "br42" ] &&
+    [ "$(cat "$SYS/class/net/$IF/brport/path_cost")" = "200" ] &&
+    [ "$(cat "$SYS/class/net/$IF/brport/priority")" = "10" ]; then
+    ok
+else
+    bad "bridge rollback must restore membership, path cost and priority"
+fi
 
 # Scenario 11: hexadecimal sysfs flags — an idempotent commit on an up
 # interface must not toggle it (UP bit read from 0x1003).
@@ -521,6 +589,138 @@ elif grep -q "cannot normalise live address 'not-an-address/24'" "$TMP/err" &&
     ok
 else
     bad "unparseable live address diagnostic must name the value"
+fi
+
+# ---------------------------------------------------------------------------
+# Per-step failure injection.
+#
+# Scenarios 22-24 pin the *pre-existing* documented semantics of commits that
+# do not change the identity: the commit fails, the interface is not deleted,
+# there is no rollback, and mutable state already applied before the failure
+# stays applied (IM-3 / acceptance matrix row 32).  These are not IPv6-specific
+# regressions and are asserted here so the IPv6 work cannot alter them.
+# Scenarios 25-28 pin the recreation contract: a failed apply after recreation
+# restores the snapshot.
+# ---------------------------------------------------------------------------
+
+# Scenario 22: mutable-only commit, MTU application fails.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_conf mtu 1400
+if FAIL_MTU=1 run_reconciler >/dev/null 2>&1; then
+    bad "failing MTU application should fail the commit"
+elif log_lacks "link del" && log_lacks "link add" &&
+    ! grep -q "Rolling back" "$TMP/err" &&
+    [ "$(cat "$SYS/class/net/$IF/mtu")" = "1500" ]; then
+    ok
+else
+    bad "mutable-only MTU failure must not delete the interface"
+fi
+
+# Scenario 23: mutable-only commit, address add fails after a delete.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+printf '198.51.100.1/24\n' >"$STATE/addrs"
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+printf '203.0.113.9/24\n' >"$CONF/$IF.address"
+if FAIL_ADDR_ADD=1 run_reconciler >/dev/null 2>&1; then
+    bad "failing address add should fail the commit"
+elif log_has "vyatta-address delete $IF 198.51.100.1/24" &&
+    log_lacks "link del" && log_lacks "link add" &&
+    ! grep -q "Rolling back" "$TMP/err" &&
+    ! grep -q "^198.51.100.1/24$" "$STATE/addrs"; then
+    ok
+else
+    bad "mutable-only address failure semantics"
+fi
+
+# Scenario 24: mutable-only commit, address delete fails.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+printf '198.51.100.1/24\n' >"$STATE/addrs"
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+if FAIL_ADDR_DEL=1 run_reconciler >/dev/null 2>&1; then
+    bad "failing address delete should fail the commit"
+elif log_has "vyatta-address delete $IF 198.51.100.1/24" &&
+    log_lacks "link del" && log_lacks "link add" &&
+    grep -q "^198.51.100.1/24$" "$STATE/addrs"; then
+    ok
+else
+    bad "mutable-only address-delete failure semantics"
+fi
+
+# Scenario 25: recreation with a failing MTU step rolls back the snapshot.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+printf '1400\n' >"$SYS/class/net/$IF/mtu"
+set_conf vni 42
+set_conf remote-ip "2001:db8:1::2"
+set_conf local-ip "2001:db8:1::1"
+set_conf mtu 1400
+if FAIL_MTU=1 run_reconciler >/dev/null 2>&1; then
+    bad "failing MTU during recreation should fail the commit"
+elif grep -q "Rolling back" "$TMP/err" &&
+    log_has "link add dev $IF type vxlan id 42 local 192.0.2.1 remote 192.0.2.2 dstport 4789" &&
+    [ "$(cat "$SYS/class/net/$IF/mtu")" = "1400" ]; then
+    ok
+else
+    bad "recreation MTU failure must roll back the snapshot"
+fi
+
+# Scenario 26: recreation with a failing description step rolls back.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+printf 'old-desc\n' >"$SYS/class/net/$IF/ifalias"
+set_conf vni 42
+set_conf remote-ip "2001:db8:1::2"
+set_conf local-ip "2001:db8:1::1"
+set_conf description "new-desc"
+if FAIL_ALIAS=1 run_reconciler >/dev/null 2>&1; then
+    bad "failing alias application during recreation should fail the commit"
+elif grep -q "Rolling back" "$TMP/err" &&
+    [ "$(cat "$SYS/class/net/$IF/ifalias")" = "old-desc" ]; then
+    ok
+else
+    bad "recreation alias failure must roll back the description"
+fi
+
+# Scenario 27: recreation with a failing bridge step rolls back the identity.
+reset_sandbox
+set_live v6 2001:db8:1::1 2001:db8:1::2 4789
+mkdir -p "$SYS/class/net/br42/bridge"
+set_conf vni 42
+set_conf remote-ip "2001:db8:1::9"
+set_conf local-ip "2001:db8:1::1"
+printf '%s' "br42" >"$CONF/$IF.bridge-group.bridge"
+if FAIL_BRIDGE=1 run_reconciler >/dev/null 2>&1; then
+    bad "failing bridge reconcile during recreation should fail the commit"
+elif grep -q "Rolling back" "$TMP/err" &&
+    log_has "link add dev $IF type vxlan id 42 local 2001:db8:1::1 remote 2001:db8:1::2 dstport 4789"; then
+    ok
+else
+    bad "recreation bridge failure must roll back the previous identity"
+fi
+
+# Scenario 28: recreation with a failing administrative-up step rolls back.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "2001:db8:1::2"
+set_conf local-ip "2001:db8:1::1"
+if FAIL_UP=1 run_reconciler >/dev/null 2>&1; then
+    bad "failing administrative-up during recreation should fail the commit"
+elif grep -q "Rolling back" "$TMP/err" &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ]; then
+    ok
+else
+    bad "recreation admin-state failure must roll back to up"
 fi
 
 echo "mock: pass=$PASS fail=$FAIL"
