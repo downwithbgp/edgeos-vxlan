@@ -483,7 +483,7 @@ must come back attached with the same port options.
 
 ```
 configure
-set interfaces vxlan vxlan901 vni 903
+set interfaces vxlan vxlan901 vni 902
 commit
 exit
 ```
@@ -501,8 +501,13 @@ set interfaces vxlan vxlan901 description <the 256-character value>   # injectio
 commit
 ```
 
-Expected: the commit fails and rolls back, and afterwards the interface is back on VNI 901, **still a
-member of `br901`**, with `path_cost` 200 and `priority` 10, and `br901` still has no other member.
+Expected: the commit fails and rolls back, and afterwards the interface is back on **VNI 902** (the
+pre-commit identity), **still a member of `br901`**, with `path_cost` 200 and `priority` 10, and
+`br901` still has no other member.
+
+*(Executed on RC1 with the MTU injection: `vxlan901` was at VNI 902 when the commit failed, and the
+rollback restored VNI 902, `br901` membership, cost 200, priority 10, MTU 1430 and the previous MAC,
+with the index moving 31 → 33 — see `issue-3-hardware-evidence.md`.)*
 
 **6.6 — optional dataplane.** Only if the peer has a matching `vxlan901` with an address and is not
 bridged into a LAN: `ping` between the two overlay addresses. Membership and port options do not need

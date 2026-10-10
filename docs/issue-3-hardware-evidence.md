@@ -196,10 +196,10 @@ validation runbook. Reported as passed:
 
 * **Recreation preserved the bridge state.** A VNI recreation kept `br901` membership, path cost 200,
   port priority 10, MTU 1430 and the interface MAC.
-* **Failed recreation restored the bridge state.** With the deterministic failure injection, the
-  rollback restored VNI 902, MTU 1430, bridge membership, cost 200, priority 10, the MAC and the `UP`
-  state. `vxlan901`'s ifindex changed 31 → 33 — expected, since the index is not promised across
-  recreation.
+* **Failed recreation restored the bridge state.** The run had started from VNI 902; with the
+  deterministic failure injection the rollback restored VNI 902, MTU 1430, `br901` membership, cost
+  200, priority 10, the MAC and the `UP` state. `vxlan901`'s ifindex changed 31 → 33 — expected,
+  since the index is not promised across recreation.
 * **The partial-commit limitation reproduced.** As in Phase 5.4, the failed commit left `mtu 64` in
   the active EdgeOS configuration while the kernel had restored 1430. This is the second independent
   reproduction of the behaviour analysed in `issue-3-partial-commit-analysis.md`; it is
