@@ -183,6 +183,7 @@ The evidence document lists these in full; for release purposes:
 | 7 | Failure injection on a family transition | Mock-covered; no safe hardware variant identified |
 | 8 | IPv6 firewall drop direction | Positive path demonstrated; IPv4 analogue demonstrated; documentation task |
 | 9 | CI execution of the suite (pending a qualifying event) | Process gap only — the suite is green locally and the workflow is standard |
+| 10 | Target oversized-packet capture (Phase 1 step 7) | The documented guidance does not rely on outer fragmentation, and the 1430 default is hardware-observed on the standard path |
 
 None of these has a failure mode that would damage a remote router or silently corrupt user traffic.
 
@@ -203,9 +204,10 @@ and security patch unchanged, and the acceptance-criteria gaps confined to the i
 
 ## 9. Minimal final hardware test plan
 
-Phases 0–4 (except 1.7, the non-canonical IPv4 probe), 5.1–5.3 and 6 have already passed on
-hardware and **should not be repeated** — there is no new uncertainty of the kind they cover. The
-following set is the *only* remaining hardware work worth proposing, each justified individually:
+Phases 0–4 (except 1.7, the non-canonical IPv4 probe, and the drop half of 3.4), 5.1–5.3 and
+Phase 6 (except its optional traffic step 6.6) have already passed on hardware and **should not be
+repeated** — there is no new uncertainty of the kind they cover. The following set is the *only*
+remaining hardware work worth proposing, each justified individually:
 
 | # | Test (procedure) | Uncertainty it resolves | Why existing evidence is insufficient | Live changes | Expected result | Recovery | Class |
 |---|---|---|---|---|---|---|---|
@@ -261,8 +263,10 @@ if either surprises — and complete the release tasks first.
 
 **C. Version and changelog**
 6. Add the final entry `edgeos-vxlan (0.2.2+edgeos3.0.1.e50) unstable; urgency=medium` (no `~`;
-   RC1/RC2 entries stay). Confirm `scripts/validate-release.sh`'s prerelease guard no longer applies
-   and the `VERSION`/`PKG_VERSION` cross-check will pass at the next step.
+   RC1/RC2 entries stay), and update `install.sh` `VERSION`/`PKG_VERSION` to match in the same
+   commit. `scripts/validate-release.sh` enforces `install.sh` `PKG_VERSION` == changelog version
+   for non-prerelease builds, so the validator cannot pass before this bump; the SHA-256 pins stay
+   for step 9 (that script does not compare them, and the published-release check runs later).
 
 **D. Build and validate**
 7. Build from a clean tree (or use CI artifacts): `dpkg-buildpackage -us -uc -b -a mipsel`;
@@ -271,9 +275,9 @@ if either surprises — and complete the release tasks first.
    builds are byte-stable; working-tree builds are not).
 
 **E. Pins and checksums (checksums model; no GPG signing exists in the project today)**
-9. Compute SHA-256 of the two packages; update `install.sh` `VERSION`, `PKG_VERSION`,
-   `KMOD_SHA256`, `INTEGRATION_SHA256`; regenerate `SHA256SUMS`. (Optional hardening, not required
-   by precedent: sign the tag and/or assets.)
+9. Compute SHA-256 of the two packages; update `install.sh` `KMOD_SHA256` and `INTEGRATION_SHA256`;
+   regenerate `SHA256SUMS`; commit. (`install.sh` is not packaged, so this cannot change the built
+   package bytes.) Optional hardening, not required by precedent: sign the tag and/or assets.
 10. Re-verify: `install.sh` pins equal the built packages' hashes; `SHA256SUMS` matches;
     `dpkg-deb -f` versions/architectures correct.
 
