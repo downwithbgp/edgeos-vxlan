@@ -17,12 +17,32 @@ CHANGELOG_VERSION=$(dpkg-parsechangelog -S Version)
 [ -n "$VERSION" ] || fail "could not read VERSION from install.sh"
 [ -n "$INSTALLER_PKG_VERSION" ] || fail "could not read PKG_VERSION from install.sh"
 
-[ "$INSTALLER_PKG_VERSION" = "$CHANGELOG_VERSION" ] ||
-    fail "install.sh PKG_VERSION ($INSTALLER_PKG_VERSION) != changelog ($CHANGELOG_VERSION)"
+PRERELEASE=no
+CROSS_CHECK=enforced
 
+# Prerelease (`~`) builds are not releases.  install.sh keeps the version and
+# the artifact checksums of the last published release until the release commit
+# updates them, so the installer cross-check applies to release versions only —
+# and never to a tagged build, which is a release by definition.
 case "$CHANGELOG_VERSION" in
-    "$VERSION"+edgeos3.0.1.e50) ;;
-    *) fail "package version $CHANGELOG_VERSION does not match release version $VERSION" ;;
+    *~*)
+        PRERELEASE=yes
+        CROSS_CHECK="skipped (prerelease)"
+
+        [ "${GITHUB_REF_TYPE:-}" != "tag" ] ||
+            fail "refusing to validate prerelease $CHANGELOG_VERSION for tag ${GITHUB_REF_NAME:-unknown}"
+
+        echo "NOTE: prerelease $CHANGELOG_VERSION; skipping the install.sh cross-check." >&2
+        ;;
+    *)
+        [ "$INSTALLER_PKG_VERSION" = "$CHANGELOG_VERSION" ] ||
+            fail "install.sh PKG_VERSION ($INSTALLER_PKG_VERSION) != changelog ($CHANGELOG_VERSION)"
+
+        case "$CHANGELOG_VERSION" in
+            "$VERSION"+edgeos3.0.1.e50) ;;
+            *) fail "package version $CHANGELOG_VERSION does not match release version $VERSION" ;;
+        esac
+        ;;
 esac
 
 KMOD="../edgeos-vxlan-kmod_${CHANGELOG_VERSION}_mipsel.deb"
@@ -80,5 +100,7 @@ echo
 echo "Release validation: PASS"
 echo "Version:             $VERSION"
 echo "Package version:     $CHANGELOG_VERSION"
+echo "Prerelease:          $PRERELEASE"
+echo "Installer check:     $CROSS_CHECK"
 echo "Kmod SHA256:         $ACTUAL_KMOD_SHA"
 echo "Integration SHA256:  $ACTUAL_INTEGRATION_SHA"

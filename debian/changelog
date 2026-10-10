@@ -1,3 +1,19 @@
+edgeos-vxlan (0.2.2~rc1+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * Release candidate 1 for 0.2.2: IPv6 VXLAN underlay support.
+  * Accept an IPv4 or IPv6 address pair for local-ip/remote-ip, and reject
+    mixed-family, malformed and unusable IPv6 endpoints before any mutation.
+  * Read the tunnel identity from the kernel's local6/remote6 JSON fields so
+    IPv6 tunnels reconcile and stay idempotent across commits.
+  * Fail closed when any component of the live state cannot be captured.
+  * Restore the previous administrative state when interface deletion fails.
+  * Parse the kernel's hexadecimal sysfs interface flags.
+  * Normalise VNI, UDP port and overlay addresses before comparing them, and
+    reject out-of-range values.
+  * Guard every leaf handler with an identity check.
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Sat, 10 Oct 2026 16:43:14 +0000
+
 edgeos-vxlan (0.2.1+edgeos3.0.1.e50) unstable; urgency=medium
 
   * Add native bridge port cost and priority configuration for VXLAN

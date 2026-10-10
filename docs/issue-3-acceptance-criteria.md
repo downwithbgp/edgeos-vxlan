@@ -2,6 +2,7 @@
 
 These criteria describe demonstrable behaviour on the supported platform (EdgeRouter X / ER-e50, EdgeOS 3.0.1 build 5862409, kernel `4.14.54-UBNT`). Unchecked items are pending implementation and hardware validation. Copy to the issue body only after review.
 **Revision 2 (post-review):** updated for the corrected MTU evidence (no fragmentation reliance), scoped rollback claims, snapshot-read failures, deterministic failure injection, the IPv4 literal policy, interface-index semantics, dynamic-address boot, and the existing-policy firewall case.
+**Revision 3 (post-hardware, 2026-10-10):** the dataplane criteria marked as demonstrated below were verified on the supported hardware **by hand** (`ip link add`), not through the package's configuration integration — see `issue-3-hardware-evidence.md`. Everything else stays unchecked: the native integration path, MTU semantics, rollback, bridging, persistence and packaging criteria are all still unverified, and the release candidate exists precisely to test them.
 
 ---
 
@@ -17,9 +18,9 @@ These criteria describe demonstrable behaviour on the supported platform (EdgeRo
 
 ## Dataplane
 
-- [ ] A VXLAN with IPv6 `local-ip`/`remote-ip` is created and passes bidirectional IPv4 overlay traffic to an IPv6-connected peer.
-- [ ] The same tunnel passes bidirectional IPv6 overlay traffic.
-- [ ] `ip -j -d link show dev vxlanN` on the router reports the tunnel with `local6`, `remote6`, `id`, and `port` matching the configured values (raw output attached as evidence).
+- [x] A VXLAN with IPv6 `local-ip`/`remote-ip` is created and passes bidirectional IPv4 overlay traffic to an IPv6-connected peer. *(Demonstrated on hardware by hand, not through the integration.)*
+- [x] The same tunnel passes bidirectional IPv6 overlay traffic. *(Demonstrated on hardware by hand, not through the integration.)*
+- [ ] `ip -j -d link show dev vxlanN` on the router reports the tunnel with `local6`, `remote6`, `id`, and `port` matching the configured values (raw output attached as evidence). *(Only the attachment is outstanding — the values themselves were verified in the hardware session. Note that the non-JSON form of the same query is corrupt on this platform, so diagnostics must use the JSON form; see the evidence document.)*
 - [ ] With `mtu` unset, an IPv6-underlay tunnel comes up with MTU 1430 on a standard untagged 1500-byte underlay path (and 1450 for IPv4 underlays); an explicit `mtu` value is always honoured; the documentation states the path-MTU formula (VLAN/PPPoE adjustments) and that over-sized outer packets are not relied upon to fragment.
 - [ ] A bridged VXLAN over an IPv6 underlay passes traffic and keeps its bridge membership, path cost, and port priority.
 
@@ -47,12 +48,12 @@ These criteria describe demonstrable behaviour on the supported platform (EdgeRo
 ## Security and documentation
 
 - [ ] The documentation states that `remote-ip` is not an ingress allowlist for IPv6 either, with a tested `firewall ipv6-name` example that drops UDP/4789 from other sources while preserving unrelated traffic — including the case where the underlay interface already has a local IPv6 policy attached (extend the existing ruleset; do not replace it; the management path is preserved).
-- [ ] IPv6 UDP checksum defaults are not weakened (no `udp6zerocsumtx`/`noudpcsum`-style options are introduced or configured by the integration).
+- [x] IPv6 UDP checksum defaults are not weakened (no `udp6zerocsumtx`/`noudpcsum`-style options are introduced or configured by the integration). *(No such option exists in the integration source, and the hardware session confirmed an IPv6 VXLAN with UDP checksum enabled and the zero-checksum options disabled.)*
 - [ ] `README.md` no longer lists IPv6 underlay as a limitation, and the tested-behavior list reflects only tests that were actually executed, with the platform identified.
 
 ## Evidence requirements
 
 - [ ] Raw command outputs for every hardware row of the acceptance matrix (`ip -Version`, `ip -j -d link show`, `ip -6 addr/route`, counters, `dmesg`, packet captures) are attached to the PR or issue.
-- [ ] Automated tests run in CI without hardware: endpoint validation (including the non-canonical IPv4 policy), canonicalization, live-JSON parsing fixtures, recreation/rollback decision tests, snapshot-read failure tests, deterministic failure-injection scenarios, and the interface-index assertions.
+- [x] Automated tests run in CI without hardware: endpoint validation (including the non-canonical IPv4 policy), canonicalization, live-JSON parsing fixtures, recreation/rollback decision tests, snapshot-read failure tests, deterministic failure-injection scenarios, and the interface-index assertions. *(120/120 checks pass locally; the CI workflow runs that same suite plus ShellCheck on pushes to `main` and `ci/**`, on tags, and on pull requests.)*
 - [ ] The Phase 1 probe results (IPv4 literal parsing, engine default semantics, handler ordering, oversized-packet capture) are recorded before the implementation is merged, and the chosen design variants (MTU default, IPv4 literal policy) are documented.
 - [ ] Isolated Linux namespace results are labelled as general-Linux evidence and are not presented as EdgeOS validation.

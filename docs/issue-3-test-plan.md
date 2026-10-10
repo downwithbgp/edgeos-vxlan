@@ -2,6 +2,7 @@
 
 **Baseline:** `dc99bce4a1bcfc5d57daed7fc167e98df4441e81` (v0.2.1) — feature not yet implemented.
 **Revision 2 (post-review):** adds the probe evidence (§C0), non-canonical IPv4 policy tests, snapshot-read failure tests, deterministic failure injection, and the index/boot/firewall rows, aligned with the release-blocking mapping in the implementation plan §0.1.
+**Revision 3 (post-hardware, 2026-10-10):** Layers A and B are implemented and green (120 checks; run by CI on pushes to `main` and `ci/**`, on tags, and on pull requests). Layer D has been executed **only** for the manual dataplane probe recorded in `issue-3-hardware-evidence.md`; the native-integration procedures in that layer have not been run and are now ordered in `issue-3-hardware-validation-runbook.md`. Layer C results remain general-Linux evidence.
 **Golden rule of this plan:** an isolated Linux namespace test proves general Linux behaviour; it does **not** prove EdgeOS 3.0.1 or EdgeRouter X behaviour. Every result below carries its environment.
 
 ## 1. Existing test infrastructure inventory

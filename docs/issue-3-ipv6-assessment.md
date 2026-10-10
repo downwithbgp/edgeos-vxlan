@@ -126,7 +126,7 @@ From `gregkh/linux` `v4.14.54`:
 
 ### 4.2 The shipped `vxlan.ko` is IPv6-capable — **Verified**
 
-From `modules/4.14.54-UBNT/vxlan.ko` (sha256 `7c346342bf00202820e8581bfdfc28851add052d2b0e5dde1560819f90bf82b6`, matching `scripts/validate-release.sh` lines 60–64):
+From `modules/4.14.54-UBNT/vxlan.ko` (sha256 `7c346342bf00202820e8581bfdfc28851add052d2b0e5dde1560819f90bf82b6`, matching the `EXPECTED_VXLAN_SHA` / `EXPECTED_UDP_SHA` pins in `scripts/validate-release.sh`):
 
 - `modinfo`: `depends: udp_tunnel,ip6_udp_tunnel`; `vermagic: 4.14.54-UBNT SMP mod_unload MIPS32_R2 32BIT`.
 - Undefined symbols include `udp_tunnel6_xmit_skb`, `ip6_dst_hoplimit`, `dst_cache_get_ip6`, `dst_cache_set_ip6`, `__ipv6_addr_type`, `ipv6_stub`.
