@@ -103,7 +103,7 @@ if [ "$1" = "link" ] && [ "$2" = "add" ]; then
     printf '%s\n' "00:11:22:33:44:55" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/address"
     printf '%s\n' "1500" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/mtu"
     : >"$VXLAN_SYSFS_ROOT/class/net/$ifname/ifalias"
-    printf '%s\n' "4098" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags"
+    printf '%s\n' "0x1002" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags"
     exit 0
 fi
 
@@ -122,8 +122,8 @@ if [ "$1" = "link" ] && [ "$2" = "set" ]; then
         address) printf '%s\n' "$6" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/address" ;;
         mtu) printf '%s\n' "$6" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/mtu" ;;
         alias) printf '%s\n' "$6" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/ifalias" ;;
-        up) printf '%s\n' "4099" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags" ;;
-        down) printf '%s\n' "4098" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags" ;;
+        up) printf '%s\n' "0x1003" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags" ;;
+        down) printf '%s\n' "0x1002" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags" ;;
     esac
     exit 0
 fi
@@ -208,7 +208,7 @@ set_live() { # set_live <family> <local> <remote> <port>
     printf '%s\n' "00:11:22:33:44:55" >"$SYS/class/net/$IF/address"
     printf '%s\n' "1500" >"$SYS/class/net/$IF/mtu"
     : >"$SYS/class/net/$IF/ifalias"
-    printf '%s\n' "4099" >"$SYS/class/net/$IF/flags"
+    printf '%s\n' "0x1003" >"$SYS/class/net/$IF/flags"
 }
 
 run_reconciler() {
@@ -233,7 +233,8 @@ set_conf local-ip "2001:db8:1::1"
 if run_reconciler >/dev/null 2>&1 &&
     log_has "link add dev $IF type vxlan id 42 local 2001:db8:1::1 remote 2001:db8:1::2 dstport 4789" &&
     log_has "link set dev $IF mtu 1430" &&
-    log_has "link set dev $IF up"; then ok; else bad "fresh IPv6 creation"; fi
+    log_has "link set dev $IF up" &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ]; then ok; else bad "fresh IPv6 creation"; fi
 
 # Scenario 2: unchanged identity with a reformatted IPv6 spelling -> no recreation.
 reset_sandbox
@@ -353,6 +354,56 @@ set_conf local-ip "2001:db8:1::1"
 set_conf bridge-group bridge br42
 if run_reconciler >/dev/null 2>&1 &&
     log_has "vyatta-vxlan-bridge $IF"; then ok; else bad "bridge reconcile after recreation"; fi
+
+# Scenario 11: hexadecimal sysfs flags — an idempotent commit on an up
+# interface must not toggle it (UP bit read from 0x1003).
+reset_sandbox
+set_live v6 2001:db8:1::1 2001:db8:1::2 4789
+set_conf vni 42
+set_conf remote-ip "2001:db8:1::2"
+set_conf local-ip "2001:db8:1::1"
+if run_reconciler >/dev/null 2>&1 &&
+    log_lacks "link set dev $IF up" && log_lacks "link set dev $IF down" &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ]; then ok; else bad "hex flags: idempotent up interface"; fi
+
+# Scenario 12: hexadecimal sysfs flags — a down interface without `disable`
+# is brought up (DOWN bit read from 0x1002).
+reset_sandbox
+set_live v6 2001:db8:1::1 2001:db8:1::2 4789
+printf '%s\n' "0x1002" >"$SYS/class/net/$IF/flags"
+set_conf vni 42
+set_conf remote-ip "2001:db8:1::2"
+set_conf local-ip "2001:db8:1::1"
+if run_reconciler >/dev/null 2>&1 &&
+    log_has "link set dev $IF up" &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ]; then ok; else bad "hex flags: down interface is brought up"; fi
+
+# Scenario 13: hexadecimal sysfs flags — `disable` takes an up interface down.
+reset_sandbox
+set_live v6 2001:db8:1::1 2001:db8:1::2 4789
+set_conf vni 42
+set_conf remote-ip "2001:db8:1::2"
+set_conf local-ip "2001:db8:1::1"
+set_conf disable 1
+if run_reconciler >/dev/null 2>&1 &&
+    log_has "link set dev $IF down" &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1002" ]; then ok; else bad "hex flags: disable takes the interface down"; fi
+
+# Scenario 14: malformed sysfs flags are refused before anything is deleted.
+reset_sandbox
+set_live v6 2001:db8:1::1 2001:db8:1::2 4789
+printf '%s\n' "0x100Z" >"$SYS/class/net/$IF/flags"
+set_conf vni 42
+set_conf remote-ip "2001:db8:1::9"
+set_conf local-ip "2001:db8:1::1"
+if run_reconciler >/dev/null 2>&1; then
+    bad "malformed flags should abort the commit"
+elif log_lacks "link del" && log_lacks "link add" &&
+    grep -q "unexpected administrative state '0x100Z'" "$TMP/err"; then
+    ok
+else
+    bad "malformed flags must not delete or create"
+fi
 
 echo "mock: pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]

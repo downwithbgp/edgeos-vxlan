@@ -39,6 +39,37 @@ interface_exists() {
     ip link show dev "$INTERFACE" >/dev/null 2>&1
 }
 
+# Administrative-state bitmask of $INTERFACE as a decimal number.  The kernel
+# prints this sysfs attribute as 0x-prefixed hexadecimal (net-sysfs fmt_hex
+# with the %#x format); bare decimal is accepted too for other sources.
+# Anything else is rejected before any arithmetic is attempted.
+read_iface_flags() {
+    local raw digits
+    if ! raw=$(cat "${VXLAN_SYSFS_ROOT}/class/net/$INTERFACE/flags" 2>/dev/null); then
+        echo "ERROR: cannot read administrative state of $INTERFACE." >&2
+        return 1
+    fi
+    case "$raw" in
+        0[xX]*)
+            digits=${raw#0[xX]}
+            case "$digits" in
+                '' | *[!0-9a-fA-F]*)
+                    echo "ERROR: unexpected administrative state '$raw'." >&2
+                    return 1
+                    ;;
+            esac
+            printf '%d\n' "$((0x$digits))"
+            ;;
+        '' | *[!0-9]*)
+            echo "ERROR: unexpected administrative state '$raw'." >&2
+            return 1
+            ;;
+        *)
+            printf '%d\n' "$((10#$raw))"
+            ;;
+    esac
+}
+
 # Canonical endpoint text; an unspecified local address is represented as "-"
 # so it compares equal to a live interface that has no `local`/`local6` key.
 canon_endpoint() {
@@ -264,13 +295,9 @@ apply_desired_mutable_state() {
         "${VYATTA_SBINDIR}/vyatta-vxlan-bridge" "$INTERFACE" || return $?
     fi
 
-    flags=$(cat "${VXLAN_SYSFS_ROOT}/class/net/$INTERFACE/flags")
-    case "$flags" in
-        '' | *[!0-9]*)
-            echo "ERROR: cannot read administrative state of $INTERFACE." >&2
-            return 1
-            ;;
-    esac
+    if ! flags=$(read_iface_flags); then
+        return 1
+    fi
 
     if node_exists disable; then
         if (((flags & 0x1) != 0)); then
@@ -358,15 +385,9 @@ capture_live_snapshot() {
         fi
     fi
 
-    if ! flags=$(cat "${VXLAN_SYSFS_ROOT}/class/net/$INTERFACE/flags" 2>/dev/null); then
-        echo "ERROR: cannot read administrative state." >&2
+    if ! flags=$(read_iface_flags); then
         return 1
     fi
-    case "$flags" in '' | *[!0-9]*)
-        echo "ERROR: unexpected administrative state '$flags'." >&2
-        return 1
-        ;;
-    esac
     if (((flags & 0x1) != 0)); then
         OLD_UP=1
     else
