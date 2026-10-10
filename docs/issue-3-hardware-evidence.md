@@ -4,11 +4,11 @@ This document records what has actually been demonstrated on real hardware, what
 not establish, and what remains untested. It is deliberately separated from the acceptance criteria,
 which continue to track the integration as a whole.
 
-**Method note.** These results were produced by hand on the router — a VXLAN interface created with
-the platform's `ip` command — not through the package's configuration integration. They establish
-that the kernel, the module payload and the platform's userspace support the feature. They do **not**
-establish that this release candidate's native EdgeOS configuration path works; that is the purpose
-of the validation runbook and it has not been executed yet.
+**Method note.** The results in the first half of this document were produced by hand on the router —
+a VXLAN interface created with the platform's `ip` command — not through the package's configuration
+integration. They establish that the kernel, the module payload and the platform's userspace support
+the feature. The native EdgeOS configuration path was exercised later, against the release candidate;
+those results are recorded below.
 
 **Environment** (results reported to this repository on 2026-10-10; the owner's delegated prefix is
 not published, and `<PREFIX>` stands for it):
@@ -65,23 +65,35 @@ and bidirectional forwarding of both IPv4 and IPv6 overlay traffic, with Neighbo
 over the tunnel. It also confirms the two kernel-side assumptions the implementation depends on: the
 hexadecimal sysfs flags format, and the `local6`/`remote6` JSON field names.
 
+## Native-integration results (reported 2026-10-10)
+
+The release candidate was subsequently installed on this router and the native EdgeOS configuration
+path was exercised. Reported as passed:
+
+* evaluation of the endpoint templates with IPv6 literals, and rejection of malformed addresses;
+* rejection of mixed-family `local-ip`/`remote-ip` commits without disturbing live state;
+* interface creation through the configuration system, and dual-stack dataplane over the tunnel;
+* IPv6 endpoint canonicalisation — a reformatted but equivalent endpoint does not recreate the
+  interface;
+* family-aware MTU defaulting with `mtu` unset, and restoration of the MTU when the node is removed;
+* recreation on an identity change (VNI), including the IPv4↔IPv6 family transitions;
+* deletion of the interface through the configuration system;
+* idempotent (no-op) commits.
+
+Raw command output for these has not been attached to the issue yet, so this section records the
+result rather than the captures, and the corresponding acceptance criteria are left unticked pending
+them.
+
 ## What remains untested
 
-Everything on the integration path. Still to be demonstrated on hardware, in the order given in the
-validation runbook:
+1. Rollback after a deterministic recreation failure — Phase 5.4 of the validation runbook, written
+   out in full for a disposable `vxlan901`.
+2. Bridge membership and bridge port-option restoration on an IPv6 underlay — Phase 6.
+3. Persistence across `save` and reboot, including a dynamically-arriving underlay address — Phase 7.
+4. Package upgrade compatibility on the router itself — Phase 8.
+5. Previously accepted non-canonical IPv4 syntax, end to end.
+6. Leaf-handler ordering effects beyond what the mocked tests pin, and the snapshot fail-closed path
+   when a live-state component cannot be read — Phase 5.5.
 
-1. Evaluation of the native EdgeOS endpoint templates with IPv6 literals (and rejection of
-   malformed or mixed-family input without disturbing live state).
-2. Native commit behaviour: interface creation through the configuration system.
-3. Leaf-handler ordering effects beyond what the mocked tests pin.
-4. Family-aware MTU defaults with `mtu` unset, and removal of an explicit `mtu`.
-5. IPv4 → IPv6 and IPv6 → IPv4 identity transitions.
-6. Rollback after a deterministic recreation failure.
-7. Bridge membership and bridge port-option restoration on IPv6 underlay.
-8. Persistence across `save` and reboot, including a dynamically-arriving underlay address.
-9. Package upgrade compatibility on the router itself.
-10. Previously accepted non-canonical IPv4 syntax end to end.
-
-None of these may be marked as passed until they are executed. In particular, no document in this
-repository should describe the native integration as hardware-validated before that runbook has been
-executed and its captures attached.
+No document in this repository should describe the native integration as fully hardware-validated
+while any of those are outstanding.

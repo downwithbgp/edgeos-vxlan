@@ -2,7 +2,8 @@
 
 These criteria describe demonstrable behaviour on the supported platform (EdgeRouter X / ER-e50, EdgeOS 3.0.1 build 5862409, kernel `4.14.54-UBNT`). Unchecked items are pending implementation and hardware validation. Copy to the issue body only after review.
 **Revision 2 (post-review):** updated for the corrected MTU evidence (no fragmentation reliance), scoped rollback claims, snapshot-read failures, deterministic failure injection, the IPv4 literal policy, interface-index semantics, dynamic-address boot, and the existing-policy firewall case.
-**Revision 3 (post-hardware, 2026-10-10):** the dataplane criteria marked as demonstrated below were verified on the supported hardware **by hand** (`ip link add`), not through the package's configuration integration — see `issue-3-hardware-evidence.md`. Everything else stays unchecked: the native integration path, MTU semantics, rollback, bridging, persistence and packaging criteria are all still unverified, and the release candidate exists precisely to test them.
+**Revision 3 (post-hardware, 2026-10-10):** the dataplane criteria marked as demonstrated below were verified on the supported hardware **by hand** (`ip link add`), not through the package's configuration integration — see `issue-3-hardware-evidence.md`.
+**Revision 4 (post-RC1, 2026-10-10):** the release candidate was installed and the native EdgeOS integration path exercised: creation, dual-stack dataplane, endpoint canonicalisation, family-aware MTU defaulting and restoration, VNI recreation, IPv4↔IPv6 transitions, deletion, malformed-address and mixed-family rejection, and no-op commits all passed. Those criteria are **deliberately left unticked here** until the raw captures are attached — the result is recorded, the evidence is not yet filed. Rollback, bridging, persistence and packaging criteria remain unverified; the validation runbook now spells out the two hazardous remaining procedures (Phases 5.4 and 6).
 
 ---
 
