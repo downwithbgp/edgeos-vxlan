@@ -193,5 +193,15 @@ EOF
 chmod +x "$TMP/ipjson4"
 API_DIR="$TMP/api" VXLAN_BIN_IP="$TMP/ipjson4" vyatta_sbindir="$TMP/bin" ck "guard matches noncanonical v4" 0 "$H" identity-matches vxlan42
 
+printf '042' >"$TMP/api/vxlan42.vni"
+printf '2001:db8:1::1' >"$TMP/api/vxlan42.local-ip"
+printf '2001:db8:1::2' >"$TMP/api/vxlan42.remote-ip"
+printf '04789' >"$TMP/api/vxlan42.port"
+API_DIR="$TMP/api" VXLAN_BIN_IP="$TMP/ipjson" vyatta_sbindir="$TMP/bin" ck "guard normalises numeric vni/port spellings" 0 "$H" identity-matches vxlan42
+printf '4x2' >"$TMP/api/vxlan42.vni"
+rm -f "$TMP/api/vxlan42.port"
+API_DIR="$TMP/api" VXLAN_BIN_IP="$TMP/ipjson" vyatta_sbindir="$TMP/bin" ck "guard refuses non-numeric vni" 2 "$H" identity-matches vxlan42
+printf '42' >"$TMP/api/vxlan42.vni"
+
 echo "unit-helper: pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -299,6 +299,8 @@ sub cmd_identity_matches {
         && $vni ne "" && $local ne "" && $remote ne "";
     my $port = api_value($if, "port");
     $port = $DEFAULT_PORT if !defined $port || $port eq "";
+    return 2 unless $vni =~ /^[0-9]+$/;
+    return 2 unless $port =~ /^[0-9]+$/;
 
     my ($lf, $lb) = parse_addr($local) or return 2;
     my ($rf, $rb) = parse_addr($remote) or return 2;
@@ -308,8 +310,8 @@ sub cmd_identity_matches {
 
     my $live = live_identity($if);
     return 1 unless defined $live;
-    return 0 if $live->{id} eq "$vni"
-        && $live->{port} eq "$port"
+    return 0 if $live->{id} == $vni
+        && $live->{port} == $port
         && $live->{family} eq $rf
         && $live->{local} eq $d_local
         && $live->{remote} eq $d_remote;

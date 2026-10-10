@@ -287,7 +287,7 @@ read_desired_addresses() {
 }
 
 read_live_addresses() {
-    local out c line
+    local out c line raw
     LIVE_ADDRESSES=()
     if ! out=$(ip -o addr show dev "$INTERFACE" scope global); then
         echo "ERROR: cannot read live addresses of $INTERFACE." >&2
@@ -300,8 +300,9 @@ read_live_addresses() {
         esac
         c=$(printf '%s\n' "$line" | awk '{print $4}')
         [ -n "$c" ] || continue
-        if ! c=$(canon_prefixed "$c"); then
-            echo "ERROR: cannot normalise live address '$c'." >&2
+        raw=$c
+        if ! c=$(canon_prefixed "$raw"); then
+            echo "ERROR: cannot normalise live address '$raw'." >&2
             return 1
         fi
         LIVE_ADDRESSES+=("$c")
@@ -512,6 +513,22 @@ if node_exists port; then
 else
     PORT=4789
 fi
+
+case "$VNI" in
+    '' | *[!0-9]*)
+        echo "ERROR: vni '$VNI' is not a numeric VNI." >&2
+        exit 1
+        ;;
+esac
+case "$PORT" in
+    '' | *[!0-9]*)
+        echo "ERROR: port '$PORT' is not a numeric UDP port." >&2
+        exit 1
+        ;;
+esac
+# Normalise leading zeros so the identity comparison below is numeric.
+VNI=$((10#$VNI))
+PORT=$((10#$PORT))
 
 # Defence in depth: validate the desired endpoints before any mutation, even
 # though the configuration templates validate them as well (RB-7).

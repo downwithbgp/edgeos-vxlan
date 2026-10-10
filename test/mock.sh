@@ -481,5 +481,47 @@ else
     bad "unreadable bridge state must refuse without deleting"
 fi
 
+# Scenario 19: a leading-zero VNI spelling must compare numerically, so an
+# unchanged identity is not recreated.
+reset_sandbox
+set_live v6 2001:db8:1::1 2001:db8:1::2 4789
+set_conf vni 042
+set_conf remote-ip "2001:db8:1::2"
+set_conf local-ip "2001:db8:1::1"
+if run_reconciler >/dev/null 2>&1 &&
+    log_lacks "link del" && log_lacks "link add"; then ok; else bad "numeric VNI normalisation"; fi
+
+# Scenario 20: a non-numeric VNI is refused before any mutation.
+reset_sandbox
+set_live v6 2001:db8:1::1 2001:db8:1::2 4789
+set_conf vni 4x2
+set_conf remote-ip "2001:db8:1::2"
+set_conf local-ip "2001:db8:1::1"
+if run_reconciler >/dev/null 2>&1; then
+    bad "non-numeric VNI should be refused"
+elif log_lacks "link del" && log_lacks "link add" &&
+    grep -q "is not a numeric VNI" "$TMP/err"; then
+    ok
+else
+    bad "non-numeric VNI must be refused without mutation"
+fi
+
+# Scenario 21: an unparseable live address keeps the offending value in the
+# diagnostic (the value used to be lost by the canonicalisation assignment).
+reset_sandbox
+set_live v6 2001:db8:1::1 2001:db8:1::2 4789
+printf 'not-an-address/24\n' >"$STATE/addrs"
+set_conf vni 42
+set_conf remote-ip "2001:db8:1::2"
+set_conf local-ip "2001:db8:1::1"
+if run_reconciler >/dev/null 2>&1; then
+    bad "unparseable live address should fail the commit"
+elif grep -q "cannot normalise live address 'not-an-address/24'" "$TMP/err" &&
+    log_lacks "link del" && log_lacks "link add"; then
+    ok
+else
+    bad "unparseable live address diagnostic must name the value"
+fi
+
 echo "mock: pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]
