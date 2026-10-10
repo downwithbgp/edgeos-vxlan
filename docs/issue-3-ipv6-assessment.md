@@ -4,6 +4,7 @@
 **Repository:** https://github.com/downwithbgp/edgeos-vxlan — issue #3 "Add IPv6 VXLAN underlay support"
 **Target platform:** Ubiquiti EdgeRouter X / ER-e50, EdgeOS 3.0.1 build 5862409, kernel `4.14.54-UBNT`, mipsel
 **Status of this document:** investigation and planning only. No production code was modified. No device access, no code pushes, no issue edits.
+**Revision 2 (post-review):** incorporates the maintainer review findings of 2026-10-10 — IPv4 literal compatibility, snapshot capture completeness, commit atomicity, deterministic failure injection, revised MTU evidence, defence-in-depth validation, extended tests, firewall deployment guidance, and a citation revalidation against the published `dc99bce` commit. The release-blocking / improvement / optional classification lives in `docs/issue-3-implementation-plan.md` §0.1.
 
 ## Evidence legend
 
@@ -33,8 +34,10 @@ Evidence sources used:
 1. **Feasibility.** IPv6 underlay support is feasible on the existing EdgeRouter X platform and requires **no kernel change**. The shipped `vxlan.ko` already contains the IPv6 code paths and links against the stock `ip6_udp_tunnel` module; the target firmware ships `ip6_udp_tunnel.ko`; the target `ip` binary supports IPv6 VXLAN creation and its JSON output carries `local6`/`remote6` keys (**Verified**: module symbols, stock firmware contents, target `ip` binary strings, upstream 4.14.54 source). The exact JSON text emitted for an IPv6 tunnel is **Strongly indicated** until captured on the device (§5.3, §9).
 2. **Kernel module.** No new or rebuilt kernel module is needed. The existing v0.2 `edgeos-vxlan-kmod` payload (including the CVE-2022-50405 backport) remains byte-identical. **Verified.**
 3. **Existing IPv4 semantics.** They can be preserved. Nothing in the recommended design changes the meaning of existing IPv4 configuration: the same nodes are extended with an additional accepted address family, and the IPv4 code paths (validation, comparison, MTU default, creation, rollback) keep equivalent behavior. **Recommendation**, with a regression test matrix to prove it.
-4. **Most significant risks.** (a) the reconciliation helper presently reads only the IPv4 JSON keys `local`/`remote`, so an IPv6 interface would be misidentified and repeatedly recreated — and the rollback snapshot would lose its endpoints (mandatory fixes); (b) IPv6 textual representations make naive string comparison a false-positive change detector; (c) the MTU default of 1450 is IPv4-oriented and would over-size an IPv6-underlay tunnel on a 1500-byte path. All three are in userspace and are addressed by the plan.
+4. **Most significant risks.** (a) the reconciliation helper presently reads only the IPv4 JSON keys `local`/`remote`, so an IPv6 interface would be misidentified and repeatedly recreated — and the rollback snapshot would lose its endpoints (mandatory fixes); (b) IPv6 textual representations make naive string comparison a false-positive change detector — and EdgeOS additionally accepts non-canonical IPv4 literals whose octal meaning must not be silently reinterpreted (§5.4); (c) the MTU default of 1450 over-sizes IPv6-underlay tunnels, and the outer packets are **not fragmented** by this path: probes show first-packet loss and recovery only through PMTU feedback/inner fragmentation, so 1430 is the default for a standard 1500-byte path (§4.4); (d) live-state capture and rollback contain status-swallowing paths, and leaf handlers may be able to mutate state before the parent reconciler snapshots (target check), so rollback claims are now explicitly scoped (§8).
 5. **Readiness.** The repository is ready to begin implementation once the small set of target-capability checks in Phase 1 (Section 8) are executed on the device. Nothing found so far blocks the feature.
+
+**Revision 2 summary (maintainer review).** All nine review findings are reflected in this revision: an IPv4-normalisation policy that never contradicts the platform parser (§5.4, RB-6); snapshot capture that checks every component and propagates failures (RB-2); an explicit atomicity investigation plus a leaf-handler guard or a scoped rollback claim (RB-4); deterministic creation-failure injection for rollback tests (RB-5); a corrected MTU story with measured evidence (RB-3); defence-in-depth validation in the reconciler (RB-7); extended tests (failed snapshot reads, combined changes, partial mutable-state application, interface-index semantics, dynamic-address boot); deployment guidance for underlay interfaces that already carry a local IPv6 policy; and a full citation revalidation against the published commit (one line reference corrected; tree diff empty and line counts exact).
 
 **Confidence:** high on kernel/module capability and on the required userspace changes; medium-high on the exact target JSON output (binary strings + upstream source make it near-certain, but one hardware capture should confirm it before release).
 
@@ -71,7 +74,7 @@ Evidence sources used:
 
 1. **User enters config** — `set interfaces vxlan vxlanN …` (nodes from `templates/interfaces/vxlan/`).
 2. **CLI syntax validation** — `type:` checks (stock Vyatta validator, e.g. `ipv4`/`ipv6` regexes in `/opt/vyatta/share/perl5/Vyatta/TypeChecker.pm`), plus `syntax:expression` checks (e.g. `local_ip` warning, `mtu` bounds and `ubnt-hal getMtu` cap).
-3. **Commit validation** — `commit:expression` checks: required `vni`/`local-ip`/`remote-ip` (`node.def` lines 10–17), bridge/address mutual exclusions (`address` node line 10, `bridge` node line 11, `cost`/`priority` lines 7–8), bridge port options etc.
+3. **Commit validation** — `commit:expression` checks: required `vni`/`local-ip`/`remote-ip` (`node.def` lines 10–17), bridge/address mutual exclusions (`address` node line 16, `bridge` node line 11, `cost`/`priority` lines 7–8), bridge port options etc.
 4. **Commit handlers run** — leaf `create`/`update`/`delete` handlers may act directly (idempotent by design, `README.md` lines 452–475), then the parent `end:` runs `/opt/vyatta/sbin/vyatta-vxlan "$COMMIT_ACTION" "$VAR(@)"` (`node.def` line 19).
 5. **Reconciler reads desired state** — via `/opt/vyatta/sbin/my_cli_shell_api` (`exists`, `returnValue`; `src/vyatta-vxlan` lines 15–25).
 6. **Modules loaded** — `modprobe udp_tunnel`, `ip6_udp_tunnel`, `vxlan` (lines 425–427). Note: `ip6_udp_tunnel` is already loaded today.
@@ -139,11 +142,13 @@ Extracted from the v3.0.1 firmware:
 - `/lib/modules/4.14.54-UBNT/kernel/net/ipv4/udp_tunnel.ko` — present, sha256 `14fbf8c469a7c902ce53d79de581e3e14982a9d52dbc80515d5ab481afb0fa94`, **identical to the hash the repository's `preinst` expects** (`debian/edgeos-vxlan-kmod.preinst` line 7).
 - `vxlan.ko` — **absent** (matches `README.md` line 581: the firmware does not ship it).
 
-### 4.4 MTU semantics — **Verified** (source), **Unverified** (target behaviour with the repo's argument style)
+### 4.4 MTU and outer-packet size — **Verified** (source + isolated probe); target capture pending
 
-- With a lower device known (i.e. `dev LINK` passed, or a later `ip link set dev … mtu`), the kernel derives/clamps `dev->mtu = lowerdev->mtu − headroom`: 1450 for an IPv4 underlay on a 1500 path, 1430 for IPv6 (`vxlan_config_apply` lines 3110–3133; `vxlan_change_mtu` lines 2500–2520).
-- The repository does **not** pass the lower-link `dev <link>` option (`src/vyatta-vxlan` lines 123–127 — note the command's `dev "$interface"` argument is the *name of the new interface*, not a lower link). Then `*lower = NULL` (line 3045), so no derivation and **no clamp** occurs: an explicit MTU is accepted as-is, and if no MTU were given the device would keep the default 1500. Since the integration always sets an explicit MTU (`apply_desired_mutable_state` lines 230–234; default 1450 lines 397–401), a 1450-MTU IPv6 tunnel over a 1500 path will encapsulate full-size frames into 1520-byte outer datagrams and rely on outer IPv6 fragmentation.
-- The isolated probe confirmed kernel-derived 1430 when `dev` is supplied (general Linux behaviour, not EdgeOS).
+- With a lower device known (`dev <link>` passed to the create command, so the kernel can clamp), the kernel derives/clamps `dev->mtu = lowerdev->mtu − headroom`: 1450 for an IPv4 underlay on a 1500-byte path, 1430 for IPv6 (`vxlan_config_apply` lines 3110–3133; `vxlan_change_mtu` lines 2500–2520). The isolated probe reproduced both: with `dev` set the MTU came up at 1430, and raising it to 1450 was rejected (`RTNETLINK answers: Invalid argument`).
+- The repository does **not** pass the lower-link `dev <link>` option (`src/vyatta-vxlan` lines 123–127 — the command's `dev "$interface"` argument is the *name of the new interface*, not a lower link). Then `*lower = NULL` (line 3045), no derivation and **no clamp** occurs, and an explicit 1450 is kept as-is.
+- **An oversized outer IPv6 packet is not fragmented by this path.** `ip6_fragment()` refuses to fragment locally generated skbs unless `skb->ignore_df` is set (v4.14.54 `net/ipv6/ip6_output.c` lines 626–632 → `fail_toobig` at :880: ICMPv6 Packet-Too-Big + `EMSGSIZE` + `IPSTATS_MIB_FRAGFAILS`), and the VXLAN IPv6 transmit path never sets `ignore_df` (the DF logic in `vxlan.c` lines 2134–2172 is IPv4-only).
+- **Probe evidence** (isolated namespaces, modern Linux — **not** EdgeOS): with MTU 1450 on a 1500-byte path, a full-size frame would produce a 1520-byte outer datagram; full-size pings lost packets in every run (2 of 3, then 20 %, then 33 %), `Ip6FragCreates` stayed 0 and `Ip6FragFails` incremented. The capture shows that the 1520-byte datagram never leaves unfragmented: after the first failure, 1512-byte outer frames carry **inner IPv4 fragments** (1428+42 bytes, implying an effective inner MTU of ≈1430 learned from the kernel's own Packet-Too-Big feedback). Recovery therefore comes from inner fragmentation after initial loss, not from outer fragmentation. The 1430 control (outer exactly 1500) was lossless in every run; the IPv4-outer 1450 control was lossless.
+- **Recommendation:** default MTU **1430** for an IPv6 underlay on a standard, untagged 1500-byte path (1450 for IPv4); explicit `mtu` is authoritative; 1430 is not universal (VLAN tags subtract 4 bytes each on the outer path, PPPoE 8 bytes, and any non-1500 underlay changes the number — formula and examples in `docs/issue-3-test-plan.md`). Do not rely on outer fragmentation or on PMTU feedback. Phase 7 captures the target's actual behaviour (initial-loss window, recovery, hardware-MAC handling of oversized frames).
 
 ### 4.5 CVE-2022-50405 backport and IPv6 — **Verified**
 
@@ -207,6 +212,13 @@ The isolated modern-Linux probe reproduced the resulting JSON (`iproute2-v7.0.0`
 
 **Residual (Strongly indicated, to be confirmed):** the exact JSON text emitted by the *target* binary — the key names are verified from the binary; the rendered output is not. This is a one-command hardware check (Phase 1) and must be done before release; the parser design is fail-closed so a surprise cannot silently destroy state.
 
+### 5.4 IPv4 literal compatibility (non-canonical forms) — **Verified** (platform behaviour); policy to be settled in Phase 1
+
+- The stock validator (`Vyatta::TypeChecker.pm:79–84`) requires exactly four decimal octets ≤ 255 and therefore **accepts leading-zero octets** such as `010.1.2.3` (it treats them as digit strings).
+- glibc's `inet_pton(AF_INET, "010.1.2.3")` **rejects** them (probe: `reject`), so a naive `inet_pton`-based canonicalizer would refuse syntax the EdgeOS validator accepts.
+- The platform tooling does not reject them: iproute2 (glibc `getaddrinfo` path, iproute2 6.15) accepts `local 010.1.2.3 remote 010.1.2.4` and binds them as **octal** `8.1.2.3` / `8.1.2.4` (probe: live `ip -d link show` output). The same config text therefore means different things to different parsers, and v0.2.1's raw string comparison would also loop on recreation for such values.
+- **Policy (Recommendation):** never canonicalise to a value different from what the platform would bind. Two acceptable variants: (a) emulate the platform's exact interpretation (octal octets) once the Phase 1 target probe confirms it; or (b) reject non-canonical octets at commit validation with an explicit, documented message. The plan's default is **reject-with-message**, with platform-parity emulation as the reviewed alternative. Either way the behaviour is covered by dedicated tests (`U-V4-NC-*`) and never by silent decimal reinterpretation. Canonical IPv4 literals are unaffected; only non-canonical octet forms are subject to the new policy.
+
 ---
 
 ## 6. Repository IPv4-specific assumptions (file:line)
@@ -226,6 +238,10 @@ The isolated modern-Linux probe reproduced the resulting JSON (`iproute2-v7.0.0`
 | 11 | `templates/…/mtu/node.def:18` | `delete` handler resets MTU to literal `1450` |
 | 12 | `src/vyatta-vxlan:286–337` | Snapshot silently tolerates empty identity fields; nothing prevents a delete of an interface whose identity could not be captured |
 | 13 | `README.md:829` | Documents "IPv6 underlay" as not implemented (accurate) |
+| 14 | `src/vyatta-vxlan:211–222`, `:327–334` | Address collection uses process substitution; a failing `ip -o addr`/`awk` leaves an empty list with status 0 (demonstrated), so a snapshot can silently miss every address |
+| 15 | `templates/…/node.tag/{mtu,address,disable}/node.def` + parent `end:` | Leaf handlers can mutate live properties outside the reconciler's snapshot/create/apply ordering; rollback fidelity under combined changes depends on engine ordering (unverified — RB-4) |
+| 16 | `templates/…/local-ip/node.def` (stock validator) | Accepts non-canonical IPv4 literals whose platform meaning is octal (§5.4 — RB-6) |
+| 17 | `src/vyatta-vxlan:170–200` consumers | The reconciler re-validates nothing itself; defence-in-depth checks are needed before mutations if the reconciler is ever invoked without the template layer (RB-7) |
 
 Explicitly **not** IPv4-specific (verified by reading): module loading (line 425–427 already loads `ip6_udp_tunnel`), MAC derivation (144–168), bridge reconciliation (`src/vyatta-vxlan-bridge`), address read/apply (202–222, 251–262 use `inet`/`inet6`), `Interface.pm`, packaging.
 
@@ -242,9 +258,12 @@ Functional:
 5. Semantically equal IPv6 addresses compare equal regardless of spelling; different addresses compare unequal; IPv4 comparison behaviour is unchanged.
 6. Family transitions (v4→v6 and v6→v4) are recognised as identity changes, recreate exactly once, and restore every mutable property.
 7. Idempotent commits (no config change) do not recreate the interface, even when the configured IPv6 spelling differs from the kernel's canonical form.
-8. MTU: IPv4 default remains 1450; IPv6 default should be 1430 for a 1500-byte path, and explicit `mtu` always wins. No behaviour change for existing IPv4 configs that rely on the 1450 default.
-9. Rollback must faithfully restore family, endpoints, VNI, port, MAC, MTU, addresses, description, bridge membership/cost/priority, and admin state; if the snapshot cannot be captured completely, abort **before** deleting anything.
-10. No new runtime dependencies; no kernel-module change; no packaging-model change.
+8. MTU: IPv4 default remains 1450; the IPv6 default is 1430 for a standard, untagged 1500-byte path (not a universal constant — explicit `mtu` otherwise), and explicit `mtu` always wins. No behaviour change for existing IPv4 configs that rely on the 1450 default. Over-sized outer packets must not be relied upon to fragment (§4.4).
+9. Rollback must restore the state captured at snapshot time — family, endpoints, VNI, port, MAC, MTU, addresses, description, bridge membership/cost/priority, admin state — and no destructive step may run unless every snapshot component was read successfully (RB-2). The stronger guarantee ("the pre-commit state is restored") holds only in so far as leaf handlers cannot mutate the interface before the snapshot is taken (RB-4: demonstrate on target or implement the guard). The interface index is not preserved by recreation (IM-1).
+10. The reconciler validates the desired endpoint family/classes itself before any mutation (defence in depth, RB-7).
+11. Non-canonical IPv4 literals are either interpreted exactly as the platform parser interprets them or refused with an explicit message — never silently reinterpreted (RB-6, §5.4).
+12. Rollback tests use deterministic, controlled creation failures (RB-5); boot behaviour with dynamic underlay addressing is characterised (IM-2).
+13. No new runtime dependencies; no kernel-module change; no packaging-model change.
 
 Non-functional: keep the change surface small (one new helper plus targeted edits), preserve the existing transactional design, keep fixtures/tests runnable off-hardware.
 
@@ -252,23 +271,21 @@ Non-functional: keep the change surface small (one new helper plus targeted edit
 
 ## 8. Confirmed blockers and required changes
 
-Three mandatory userspace blockers, all localized:
+The review-response classification (release-blocking vs improvements vs optional follow-ups) is in `docs/issue-3-implementation-plan.md` §0.1. The confirmed defects the revision must resolve:
 
-- **B1 — live-state parsing** (`src/vyatta-vxlan:170–200`): must read `local6`/`remote6`. Without this, every commit against an IPv6 tunnel mis-detects identity, recreates the device each time, and cannot snapshot/roll back.
-- **B2 — identity comparison** (`src/vyatta-vxlan:436–441`): must compare canonicalised addresses. Without this, even correct parsing yields spurious changes whenever the configured spelling differs from `inet_ntop` output.
-- **B3 — MTU default** (`src/vyatta-vxlan:397–401`, `templates/…/mtu/node.def:14,18`): must become family-aware; otherwise IPv6 tunnels default to 1450 and fragment full-size frames on a 1500 path.
+**Release-blocking:**
 
-One reinforcing change that the investigation classifies as mandatory for safe rollback:
-
-- **B4 — fail-closed snapshots** (`src/vyatta-vxlan:286–337`): if the live VXLAN's identity cannot be captured completely and consistently, refuse to proceed rather than delete the interface and try to restore it from empty values.
-
-And one enabling change:
-
-- **B5 — validation** (`templates/…/{local-ip,remote-ip}/node.def`, parent `node.def`): dual-family acceptance plus class/family checks (see 7.2–7.3).
+- **RB-1 — live-state parsing and comparison** (`src/vyatta-vxlan:170–200`, `:436–441`): must read `local6`/`remote6` and compare canonically. Without this, every commit against an IPv6 tunnel mis-detects identity, recreates the device each time, and cannot snapshot/roll back.
+- **RB-2 — status-checked, complete snapshots** (`src/vyatta-vxlan:286–337`): every component read must be checked and the address collection must not swallow failures (demonstrated: `while read … done < <(false)` continues with an empty list and status 0). Abort before deleting anything.
+- **RB-3 — MTU default** (`src/vyatta-vxlan:397–401`, `templates/…/mtu/node.def:14,18`): must become family-aware. The evidence in §4.4 shows oversized outer packets are dropped rather than fragmented, so 1450 over a 1500-byte IPv6 path is not merely inefficient. Preferred design keeps the template default and probes the engine's explicit-vs-default accessors (implementation plan Phase 4).
+- **RB-4 — rollback scope under combined changes**: investigate leaf-handler ordering on target; if leaves can mutate before the snapshot, add the identity-aware guard or scope the claim (implementation plan Phase 5).
+- **RB-5 — deterministic failure injection** in the rollback tests (VNI/port collision for identity-changing commits; mocked failures otherwise).
+- **RB-6 — IPv4 literal policy** (planned `src/vyatta-vxlan-addr`): never canonicalise differently from the platform parser (§5.4).
+- **RB-7 — reconciler-side validation** (`templates/…/{local-ip,remote-ip}/node.def`, parent `node.def`, and the reconciler itself): dual-family acceptance plus class/family checks — the same check runs in the reconciler before any mutation (defence in depth).
 
 **No kernel blocker exists.** The kmod package payload does not need to change.
 
-Phase 1 target-capability checks (on the device, before code is finalised — read-only except one reversible create/delete of a spare-VNI test interface):
+Phase 1 target-capability checks (on the device, before code is finalised — read-only except reversible test-interface create/delete):
 
 ```bash
 uname -a; cat /etc/version                        # kernel + firmware identity
@@ -277,6 +294,12 @@ lsmod | grep -E '^(vxlan|udp_tunnel|ip6_udp_tunnel)'
 modinfo vxlan | head -20                          # depends: udp_tunnel,ip6_udp_tunnel
 ip -j -d link show dev <existing-ipv4-vxlan>      # confirm JSON keys on the target
 ip -6 route show; ip -6 addr show                 # underlay addressing
+
+# Revision 2 additions (procedures in implementation plan Phase 1):
+#  - IPv4 literal probe: `ip link add … local 010.1.2.3 …` -> octal 8.1.2.3, or rejected?
+#  - engine default semantics: existsActive / returnActiveValue / `delete mtu`
+#  - handler-ordering observation for combined (identity + mutable) commits
+#  - oversized-packet capture at MTU 1450 vs 1430 (Ip6FragFails, dmesg, tcpdump)
 ```
 
 Then, after a *test* IPv6 tunnel is configured on a spare VNI, the decisive capture:
@@ -293,12 +316,16 @@ ip -j -d link show dev vxlan42 | perl -MJSON::PP -0777 -ne 'print $_'
 | # | Assumption | Evidence level | How to verify |
 |---|---|---|---|
 | 1 | Target emits `local6`/`remote6` JSON keys | Strongly indicated (binary strings + upstream source + modern probe) | Phase 1 capture above |
-| 2 | `mtu` template default does not silently materialise as an explicit value after removal | Unverified | On the device: configure a v6 tunnel without `mtu`, check `show interfaces vxlanN` / live MTU is 1430; check `show configuration commands` for a persisted `mtu` |
-| 3 | Engine ordering guarantees for `end:` vs leaf handlers | Documented by the author from earlier hardware tests (`README.md:452–475`); not re-derived from engine source | Observe one commit's handler sequence during Phase 7 (log inspection) |
+| 2 | Engine default/explicit semantics (`existsActive`/`returnActiveValue`; whether `delete mtu` restores a default) | Unverified — the revised design (IM-6) depends on the Phase 1 probe; the fallback design avoids it | Phase 1 probe: tunnel without `mtu`, read the verbs and `show configuration commands`; then `set mtu 1400` + `delete mtu` and watch the live MTU |
+| 3 | Engine ordering: commit validations vs handlers, `end:` vs leaf handlers, and **combined** identity+mutable changes | Documented for simple cases (`README.md:452–475`); combined-change ordering unverified and load-bearing for the rollback claim (RB-4) | Phase 1 step 6 / Phase 7: log handler order for MTU-only, identity-only and combined commits |
 | 4 | Boot ordering when the IPv6 underlay address arrives via SLAAC/DHCPv6 | Unverified | Phase 7 reboot test with the underlay in its real configuration |
 | 5 | Acceptability of specific edge literals under `type: ipv4,ipv6` (stock `TypeChecker` regex is permissive, e.g. accepts `::ffff:1.2.3.4`) | Verified for acceptance; behaviour is inherited stock behaviour | Unit tests on target-compatible logic + helper class checks |
 | 6 | Whether any EdgeOS NSM warning appears for IPv6 vxlan | Unverified | Phase 7 log inspection (IPv4 already produces benign NSM messages per `README.md:838–857`) |
 | 7 | How `brctl` path cost/priority behave for a v6-underlay vxlan | Unverified (bridge code is family-agnostic; bridge sees only the Ethernet device) | Phase 7 bridged test |
+| 8 | Target `ip` parsing of non-canonical IPv4 literals (`010.1.2.3` → octal, or rejected) | Unverified on target; verified on modern glibc/iproute2 (octal) | Phase 1 step 4 |
+| 9 | Target behaviour for oversized outer IPv6 packets (loss window, recovery, hardware-MAC handling) | Strongly indicated (source + isolated probe); target unverified | Phase 1 step 7 / Phase 7 capture |
+| 10 | Interface-index change on recreation and its consequences (routes/conntrack referencing the old index) | Deterministic kernel behaviour (new index), consequences not yet documented/measured | Phase 7 matrix row: record `ifindex` before/after recreation and after rollback; document the consequence |
+| 11 | SLAAC/DHCPv6 boot timing for the underlay address | Unverified | Phase 7 reboot test with the real underlay configuration (IM-2) |
 
 ---
 
@@ -320,10 +347,10 @@ set firewall ipv6-name VXLAN_UNDERLAY_LOCAL6 rule 20 destination port 4789
 set interfaces ethernet eth1 firewall local ipv6-name VXLAN_UNDERLAY_LOCAL6
 ```
 
-Behavioural verification remains a hardware item (Phase 7 / matrix row 24).
+Behavioural verification remains a hardware item (Phase 7 / matrix row 24). **Deployment note (review finding 8):** if the underlay interface already has a local IPv6 policy attached (`interfaces <if> firewall local ipv6-name <existing>`), do **not** attach a second ruleset — the interface holds one local `ipv6-name`; instead add the two VXLAN rules to the existing ruleset (choose rule numbers that fit its ordering, keep its existing rules and default-action). Replacing the attached ruleset can lock out management traffic: keep an out-of-band path and verify with `show firewall` plus counters before disconnecting. If a dedicated ruleset is preferred, merge the existing rules into it *before* attaching it.
 - **UDP checksums.** Default TX checksum is computed and RX accepts zero-checksums only when explicitly configured (4.6). Do not disable.
-- **Fragmentation.** With the IPv4-oriented default MTU the outer IPv6 datagrams can be fragmented; integrity filters that drop fragments can then break the tunnel. This is an MTU/documentation issue, not a kernel defect.
-- **Extension headers / PMTUD.** Outer-header handling is the kernel's normal IPv6 path; ICMPv6 Packet Too Big is honoured by the IP stack. Operational validation is a hardware item.
+- **Fragmentation.** Oversized outer IPv6 packets are **not** fragmented by this path — they are dropped with an ICMPv6 Packet-Too-Big/EMSGSIZE and first-packet loss, with recovery only via PMTU feedback/inner fragmentation (§4.4). Size the tunnel MTU correctly (1430 for a standard 1500-byte IPv6 path) rather than relying on fragmentation; this is an MTU/documentation matter, not a kernel defect.
+- **Extension headers / PMTUD.** Outer-header handling is the kernel's normal IPv6 path; ICMPv6 Packet Too Big is honoured by the IP stack, but the design must not depend on it (RB-3). Operational validation is a hardware item.
 - **CVE-2022-50405 coverage.** The existing backport covers the IPv6 teardown path (4.5). Do not alter the patch or rebuild the module for this feature.
 - **No encryption/authentication** is added or implied by VXLAN; unchanged from the IPv4 guidance.
 
@@ -331,9 +358,9 @@ Behavioural verification remains a hardware item (Phase 7 / matrix row 24).
 
 ## 11. Recommended architecture (summary)
 
-1. **Configuration:** extend the existing nodes — `local-ip` and `remote-ip` become `type: ipv4,ipv6` (the firmware's own dual-family idiom, used by ≥19 stock nodes). Add one commit-level endpoint check enforcing: valid literal (stock type), same family, and permitted IPv6 classes (global unicast or ULA; reject link-local/multicast/unspecified/loopback/v4-mapped). Keep the local-address *warning* behaviour, implemented family-aware. → Option A (extend the existing nodes); Option B (separate `local-ipv6`/`remote-ipv6` nodes) is rejected because it duplicates the tree, requires ambiguity rules, and is not the native idiom.
+1. **Configuration:** extend the existing nodes — `local-ip` and `remote-ip` become `type: ipv4,ipv6` (the firmware's own dual-family idiom, used by ≥19 stock nodes). Add one commit-level endpoint check enforcing: valid literal (stock type), same family, and permitted IPv6 classes (global unicast or ULA; reject link-local/multicast/unspecified/loopback/v4-mapped). Keep the local-address *warning* behaviour, implemented family-aware. → Option A (extend the existing nodes); Option B (separate `local-ipv6`/`remote-ipv6` nodes) is rejected because it duplicates the tree, requires ambiguity rules, and is not the native idiom. The **local** endpoint may be unspecified (`0.0.0.0`/`::`, matching today's IPv4 behaviour and the kernel's "pick a source" semantics); non-canonical IPv4 literals follow the platform-parity or reject-with-message policy (§5.4).
 2. **One small new helper** (installed into `/opt/vyatta/sbin/`), implemented in Perl using only core modules already present (`Socket` for `inet_pton/ntop`, `JSON::PP` for live JSON). Responsibilities: address family/class validation, canonicalization, equality, and parsing `ip -j -d link show` output into a complete, canonical live identity. This keeps the reconciler's logic testable off-hardware with fixtures.
-3. **Reconciler:** use the helper for config-value canonicalization and live parsing; compare canonical values (binary-equivalent text) for idempotency; snapshot/restore canonical endpoint text so rollback is faithful; make snapshots fail-closed; compute the MTU default from the underlay family (1450 v4 / 1430 v6) with explicit `mtu` always winning.
+3. **Reconciler:** use the helper for config-value canonicalization and live parsing; compare canonical values (binary-equivalent text) for idempotency; validate the desired endpoints itself before any mutation (defence in depth, RB-7); snapshot/restore canonical endpoint text with every component read status-checked and explicit captures instead of process substitution (RB-2); make snapshots fail-closed; compute the MTU default from the underlay family (1450 v4 / 1430 v6) with explicit `mtu` winning, keeping the template default where the engine allows explicit-vs-default detection. If the target shows leaf handlers can run before the parent reconciler, add the identity-aware leaf guard so combined changes cannot mutate state ahead of the snapshot (RB-4).
 4. **Kernel, packaging model, diverts, interface recognition, bridge code:** unchanged. Only the userspace package grows; the kmod payload stays byte-identical.
 
 Rejected alternatives (details in `docs/issue-3-implementation-plan.md`):
@@ -353,7 +380,8 @@ Rejected alternatives (details in `docs/issue-3-implementation-plan.md`):
 | Target `ip` can create/inspect IPv6 VXLAN; JSON keys | High (exact output: medium-high) | Binary strings, package metadata, upstream print code; one hardware capture outstanding |
 | Required userspace changes are localized and testable | High | Full code audit + probe |
 | IPv4 behaviour can be preserved | High | Changes touch only family-sensitive points; regression matrix defined |
-| Rollback safety after the changes | High (design) | Fail-closed snapshot + canonical endpoints; scenarios enumerated in the test plan |
+| Rollback safety after the changes | Medium-high (design; scoped claims) | Fail-closed, status-checked snapshot + canonical endpoints + leaf-guard option; the pre-commit-state guarantee is explicitly contingent on the Phase 1/7 ordering demonstration (RB-4) |
+| MTU / outer-packet behaviour | High (mechanism + isolated probe) | 4.14 source + probe (no outer fragmentation; initial loss; 1430 clean); target capture pending (RB-3) |
 | Hardware-level dataplane (EdgeOS, NSM, boot timing) | Medium | Requires Phase 7 |
 
-No blocker prevents starting implementation; Phase 1 (Section 8) should nevertheless be executed on the device before the implementation is merged, and Phase 7 before any release.
+No blocker prevents starting implementation; Phase 1 (Section 8) should nevertheless be executed on the device before the implementation is merged — its Revision 2 probes settle the IPv4-literal policy, the MTU-default design and the rollback-ordering premise — and Phase 7 before any release. The release-blocking / improvement / optional split is in `docs/issue-3-implementation-plan.md` §0.1.
