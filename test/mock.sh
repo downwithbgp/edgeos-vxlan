@@ -801,5 +801,38 @@ else
     bad "out-of-range port must be refused without mutation"
 fi
 
+# Scenario 35: a non-canonical overlay-address spelling is a no-op (the
+# reconciler canonicalises the literal part before comparing).
+reset_sandbox
+set_live v4 8.1.2.3 8.1.2.4 4789
+printf '8.1.2.3/24\n' >"$STATE/addrs"
+set_conf vni 42
+set_conf remote-ip "010.1.2.4"
+set_conf local-ip "010.1.2.3"
+set_conf address "010.1.2.3/24"
+if run_reconciler >/dev/null 2>&1 &&
+    log_lacks "link del" && log_lacks "link add" && log_lacks "vyatta-address"; then
+    ok
+else
+    bad "canonical address comparison must not re-add the address"
+fi
+
+# Scenario 36: a prefix-only change is still detected through the canonical
+# comparison (delete the old prefix, add the new one).
+reset_sandbox
+set_live v4 8.1.2.3 8.1.2.4 4789
+printf '8.1.2.3/24\n' >"$STATE/addrs"
+set_conf vni 42
+set_conf remote-ip "010.1.2.4"
+set_conf local-ip "010.1.2.3"
+set_conf address "010.1.2.3/25"
+if run_reconciler >/dev/null 2>&1 &&
+    log_has "vyatta-address delete $IF 8.1.2.3/24" &&
+    log_has "vyatta-address add $IF 8.1.2.3/25"; then
+    ok
+else
+    bad "prefix-only change must be applied"
+fi
+
 echo "mock: pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]
