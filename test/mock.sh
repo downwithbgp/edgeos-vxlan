@@ -123,7 +123,10 @@ if [ "$1" = "link" ] && [ "$2" = "set" ]; then
         mtu) printf '%s\n' "$6" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/mtu" ;;
         alias) printf '%s\n' "$6" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/ifalias" ;;
         up) printf '%s\n' "0x1003" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags" ;;
-        down) printf '%s\n' "0x1002" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags" ;;
+        down)
+            [ "${FAIL_DOWN:-0}" = "1" ] && exit 2
+            printf '%s\n' "0x1002" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags"
+            ;;
     esac
     exit 0
 fi
@@ -403,6 +406,62 @@ elif log_lacks "link del" && log_lacks "link add" &&
     ok
 else
     bad "malformed flags must not delete or create"
+fi
+
+# Scenario 15: a failed deletion of an up interface fails the commit, leaves
+# the old interface in place and restores its administrative state.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "2001:db8:1::2"
+set_conf local-ip "2001:db8:1::1"
+FAIL_DEL=1 run_reconciler >/dev/null 2>&1
+rc=$?
+if [ "$rc" -ne 0 ] &&
+    log_has "link del" && log_lacks "link add" &&
+    grep -q "failed to delete $IF" "$TMP/err" &&
+    grep -q "Restoring $IF to the up state" "$TMP/err" &&
+    [ -f "$SYS/class/net/$IF/flags" ] &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ]; then
+    ok
+else
+    bad "failed deletion must keep the up interface and restore its state (rc=$rc)"
+fi
+
+# Scenario 16: a failed deletion of a down interface leaves it down.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+printf '%s\n' "0x1002" >"$SYS/class/net/$IF/flags"
+set_conf vni 42
+set_conf remote-ip "2001:db8:1::2"
+set_conf local-ip "2001:db8:1::1"
+FAIL_DEL=1 run_reconciler >/dev/null 2>&1
+rc=$?
+if [ "$rc" -ne 0 ] &&
+    log_has "link del" && log_lacks "link add" &&
+    ! grep -q "Restoring $IF to the up state" "$TMP/err" &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1002" ]; then
+    ok
+else
+    bad "failed deletion of a down interface must leave it down (rc=$rc)"
+fi
+
+# Scenario 17: a failure of the administrative-down step aborts the deletion
+# without touching the interface.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "2001:db8:1::2"
+set_conf local-ip "2001:db8:1::1"
+FAIL_DOWN=1 run_reconciler >/dev/null 2>&1
+rc=$?
+if [ "$rc" -ne 0 ] &&
+    log_lacks "link del" && log_lacks "link add" &&
+    grep -q "failed to set $IF down before deletion" "$TMP/err" &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ]; then
+    ok
+else
+    bad "failed administrative-down must abort the deletion (rc=$rc)"
 fi
 
 echo "mock: pass=$PASS fail=$FAIL"

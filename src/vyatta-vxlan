@@ -149,11 +149,43 @@ reconcile_bridge() {
     return 0
 }
 
+# Delete $INTERFACE.  The interface is taken down before deletion so the
+# kernel tears it down cleanly, but a failure must not leave the previous
+# interface administratively down: its up/down state is captured first and
+# restored if the deletion fails.  A failed administrative-down aborts the
+# deletion without touching the interface.
 delete_interface() {
-    if interface_exists; then
-        sudo ip link set dev "$INTERFACE" down || true
-        sudo ip link del dev "$INTERFACE"
+    local flags was_up=0
+
+    if ! interface_exists; then
+        return 0
     fi
+
+    if ! flags=$(read_iface_flags); then
+        echo "ERROR: refusing to delete $INTERFACE: administrative state could not be read." >&2
+        return 1
+    fi
+    if (((flags & 0x1) != 0)); then
+        was_up=1
+    fi
+
+    if ! sudo ip link set dev "$INTERFACE" down; then
+        echo "ERROR: failed to set $INTERFACE down before deletion." >&2
+        return 1
+    fi
+
+    if ! sudo ip link del dev "$INTERFACE"; then
+        echo "ERROR: failed to delete $INTERFACE." >&2
+        if [ "$was_up" -eq 1 ]; then
+            echo "Restoring $INTERFACE to the up state..." >&2
+            if ! sudo ip link set dev "$INTERFACE" up; then
+                echo "ERROR: failed to restore $INTERFACE to the up state." >&2
+            fi
+        fi
+        return 1
+    fi
+
+    return 0
 }
 
 create_vxlan() {
