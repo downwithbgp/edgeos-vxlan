@@ -49,6 +49,11 @@ jobs:
           shellcheck install.sh scripts/*.sh
           git diff --check
 
+      - name: Off-device test suite
+        run: |
+          bash test/run.sh
+          shellcheck src/vyatta-vxlan src/vyatta-vxlan-bridge test/*.sh
+
       - name: Build Debian packages
         run: |
           dpkg-buildpackage -us -uc -b -a mipsel

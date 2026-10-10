@@ -329,7 +329,6 @@ printf '%s\n' "198.51.100.1/24" >"$STATE/addrs"
 set_conf vni 42
 set_conf remote-ip "2001:db8:1::2"
 set_conf local-ip "2001:db8:1::1"
-FAIL_ADD=1
 if FAIL_ADD=1 run_reconciler >/dev/null 2>&1; then
     bad "failed recreation should exit non-zero"
 elif log_has "link add dev $IF type vxlan id 42 local 2001:db8:1::1 remote 2001:db8:1::2 dstport 4789" &&
@@ -360,7 +359,6 @@ set_live v6 2001:db8:1::1 2001:db8:1::2 4789
 set_conf vni 42
 set_conf remote-ip "2001:db8:1::9"
 set_conf local-ip "2001:db8:1::1"
-FAIL_ADDR=1
 if FAIL_ADDR=1 run_reconciler >/dev/null 2>&1; then
     bad "snapshot address failure should abort"
 elif log_lacks "link del" && log_lacks "link add"; then
