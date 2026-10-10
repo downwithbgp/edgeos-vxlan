@@ -243,6 +243,12 @@ if either surprises — and complete the release tasks first.
 
 ## 11. Release checklist (prepared; **not executed**)
 
+**Status (2026-10-10, v0.2.2 release preparation):** items 3 and 6–10 are complete — README/release
+notes delivered; changelog entry added; clean-room builds byte-identical; `validate-release.sh` and
+the published-check dry run PASS; pins and `SHA256SUMS` committed. Items 4 (captures), 11 (PR + CI),
+12 (tag) and 13–15 (publication) remain; `docs/issue-3-v0.2.2-release-gate.md` §8 tracks the
+publication procedure.
+
 **A. Freeze and content**
 1. Confirm the stable payload is RC2's code plus documentation/changelog only (`diff` the built
    integration payload against the RC2 payload; expected differences: changelog and any committed

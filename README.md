@@ -471,6 +471,8 @@ If creation or reconciliation fails, the helper attempts to restore the previous
 
 The failed configuration operation still returns an error so that EdgeOS reports the commit failure.
 
+The kernel interface index (`ifindex`) changes on recreation and is **not** preserved; the properties listed above are reapplied or restored.
+
 ### Failed commits and partial configuration
 
 EdgeOS configuration commits are not universally atomic: the engine commits each priority subtree independently and can write the successful part of a commit that failed overall. If a VXLAN commit fails, **do not `save`** — first compare the active configuration with the kernel, for example:
@@ -959,7 +961,7 @@ Version `0.2.2` has been tested on the supported platform (EdgeRouter X / ER-e50
 * deterministic-failure rollback with bridge state (membership, path cost, port priority) preserved across recreation and restored after a failed one (release-candidate build);
 * package upgrade with a live tunnel (release-candidate pair; no interface recreation).
 
-Point-to-point tests between the EdgeRouter X and a Linux host passed bidirectional IPv4 and IPv6 overlay traffic over both IPv4 and IPv6 VXLAN underlays.
+Point-to-point tests between the EdgeRouter X and a Linux host passed bidirectional IPv4 and IPv6 overlay traffic over an IPv6 VXLAN underlay; the earlier (v0.2.1) hardware testing validated bidirectional IPv4 overlay traffic over an IPv4 VXLAN underlay.
 
 ## Known limitations
 
@@ -982,7 +984,7 @@ Not yet validated or implemented as first-class configuration features:
 * other EdgeRouter models
 * other EdgeOS releases
 
-The current implementation has been validated for routed point-to-point VXLAN over IPv4 and IPv6 underlays (dual-stack overlays) and for native bridge attachment on the supported platform. It remains a fixed-remote, Linux VXLAN dataplane integration rather than a VXLAN control-plane implementation.
+The current implementation has been validated for routed point-to-point VXLAN — dual-stack overlays over IPv6 underlays and IPv4 overlays over IPv4 underlays — and for native bridge attachment on the supported platform. It remains a fixed-remote, Linux VXLAN dataplane integration rather than a VXLAN control-plane implementation.
 
 ### EdgeOS userspace warnings
 
