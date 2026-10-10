@@ -34,7 +34,7 @@
 
 | File / area | Reason |
 |---|---|
-| `src/vyatta-vxlan-bridge`, `templates/.../bridge-group/**` | Bridge logic operates on the Ethernet netdevice (`brctl` + `/sys/class/net/*/brport`); no underlay-family interaction. Verified by code read. |
+| `src/vyatta-vxlan-bridge`, `templates/.../bridge-group/**` | Bridge logic operates on the Ethernet netdevice (`brctl` + `/sys/class/net/*/brport`); no underlay-family interaction. Verified by code read. Known pre-existing limitation (not addressed in this pass): this script's own `get_live_bridge()` still treats an unreadable `brport/bridge` link as "not bridged"; the snapshot-side copy in `src/vyatta-vxlan` fails closed. |
 | `templates/.../address/node.def` | Already `type: ipv4net,ipv6net` and uses family-aware `/opt/vyatta/sbin/vyatta-address`. |
 | `templates/.../{description,disable,vni,port}/node.def` | Family-independent. |
 | `src/Interface.pm`, `upstream/libvyatta-cfg1/Interface.pm` | Interface-name recognition only; hash-pinned by `preinst`. |

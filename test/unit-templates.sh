@@ -45,7 +45,7 @@ engine_varref() { # engine_varref <ref> <sibling-value> <current-value>
     case "$inner" in
         '@') printf '%s' "$current" ;;
         */@) printf '%s' "$sibling" ;;
-        *) printf '%s' "${inner##*/}" ;;
+        *) inner=${inner%/}; printf '%s' "${inner##*/}" ;;
     esac
 }
 
@@ -95,6 +95,14 @@ else
     else
         FAIL=$((FAIL + 1))
         echo "FAIL: bare reference model does not reproduce the node-name failure"
+    fi
+    # A trailing-slash presence reference (the form used by the parent
+    # node.def) resolves to the node name, not to an empty string.
+    if [ "$(engine_varref "\$VAR(./vni/)" "" "")" = "vni" ]; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1))
+        echo "FAIL: trailing-slash presence reference model"
     fi
 fi
 

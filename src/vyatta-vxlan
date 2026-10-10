@@ -520,15 +520,31 @@ case "$VNI" in
         exit 1
         ;;
 esac
+if [ "${#VNI}" -gt 8 ]; then
+    echo "ERROR: vni '$VNI' is outside 1-16777215." >&2
+    exit 1
+fi
 case "$PORT" in
     '' | *[!0-9]*)
         echo "ERROR: port '$PORT' is not a numeric UDP port." >&2
         exit 1
         ;;
 esac
+if [ "${#PORT}" -gt 5 ]; then
+    echo "ERROR: port '$PORT' is outside 1-65535." >&2
+    exit 1
+fi
 # Normalise leading zeros so the identity comparison below is numeric.
 VNI=$((10#$VNI))
 PORT=$((10#$PORT))
+if [ "$VNI" -lt 1 ] || [ "$VNI" -gt 16777215 ]; then
+    echo "ERROR: vni '$VNI' is outside 1-16777215." >&2
+    exit 1
+fi
+if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+    echo "ERROR: port '$PORT' is outside 1-65535." >&2
+    exit 1
+fi
 
 # Defence in depth: validate the desired endpoints before any mutation, even
 # though the configuration templates validate them as well (RB-7).

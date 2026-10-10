@@ -268,14 +268,15 @@ set_live() { # set_live <family> <local> <remote> <port>
     printf '%s\n' "0x1003" >"$SYS/class/net/$IF/flags"
 }
 
-run_reconciler() {
+run_reconciler() { # run_reconciler [SET|DELETE]
+    local action=${1:-SET}
     env PATH="$BIN:/usr/bin:/bin" \
         vyatta_sbindir="$SBIN" \
         vxlan_sysfs_root="$SYS" \
         vxlan_bin_brctl="$BIN/brctl" \
         vxlan_bin_modprobe="$BIN/modprobe" \
         IFNAME="$IF" CONF="$CONF" IPSTATE="$STATE" IPLOG="$TMP/log" VXLAN_SYSFS_ROOT="$SYS" \
-        bash "$ROOT/src/vyatta-vxlan" SET "$IF" >"$TMP/out" 2>"$TMP/err"
+        bash "$ROOT/src/vyatta-vxlan" "$action" "$IF" >"$TMP/out" 2>"$TMP/err"
 }
 
 log_has() { grep -qF -- "$1" "$TMP/log"; }
@@ -719,6 +720,85 @@ elif grep -q "Rolling back" "$TMP/err" &&
     ok
 else
     bad "recreation admin-state failure must roll back to up"
+fi
+
+# ---------------------------------------------------------------------------
+# DELETE action and numeric-range coverage.
+# ---------------------------------------------------------------------------
+
+# Scenario 29: DELETE removes the interface (down, then delete).
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+if run_reconciler DELETE >/dev/null 2>&1 &&
+    log_has "link set dev $IF down" &&
+    log_has "link del" &&
+    [ ! -e "$SYS/class/net/$IF/flags" ]; then
+    ok
+else
+    bad "DELETE action must remove the interface"
+fi
+
+# Scenario 30: a failed DELETE restores the administrative state.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+FAIL_DEL=1 run_reconciler DELETE >/dev/null 2>&1
+rc=$?
+if [ "$rc" -ne 0 ] &&
+    [ -f "$SYS/class/net/$IF/flags" ] &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ]; then
+    ok
+else
+    bad "failed DELETE must restore the up state (rc=$rc)"
+fi
+
+# Scenario 31: DELETE on an absent interface is a no-op.
+reset_sandbox
+if run_reconciler DELETE >/dev/null 2>&1 &&
+    log_lacks "link del"; then ok; else bad "DELETE on absent interface"; fi
+
+# Scenario 32: DELETE with unreadable flags refuses without touching the device.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+printf 'garbage\n' >"$SYS/class/net/$IF/flags"
+if run_reconciler DELETE >/dev/null 2>&1; then
+    bad "DELETE with unreadable flags should refuse"
+elif log_lacks "link del" &&
+    grep -q "refusing to delete $IF" "$TMP/err" &&
+    [ -f "$SYS/class/net/$IF/flags" ]; then
+    ok
+else
+    bad "DELETE refusal on unreadable flags"
+fi
+
+# Scenario 33: an out-of-range VNI is refused before any mutation.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 99999999
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+if run_reconciler >/dev/null 2>&1; then
+    bad "out-of-range VNI should be refused"
+elif log_lacks "link del" && log_lacks "link add" &&
+    grep -q "outside 1-16777215" "$TMP/err"; then
+    ok
+else
+    bad "out-of-range VNI must be refused without mutation"
+fi
+
+# Scenario 34: an out-of-range port is refused before any mutation.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_conf port 70000
+if run_reconciler >/dev/null 2>&1; then
+    bad "out-of-range port should be refused"
+elif log_lacks "link del" && log_lacks "link add" &&
+    grep -q "outside 1-65535" "$TMP/err"; then
+    ok
+else
+    bad "out-of-range port must be refused without mutation"
 fi
 
 echo "mock: pass=$PASS fail=$FAIL"
