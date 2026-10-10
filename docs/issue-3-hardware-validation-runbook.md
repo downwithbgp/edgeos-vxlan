@@ -51,7 +51,7 @@ this file records only the conclusions.
 | # | Action | Expected | Stop if |
 |---|---|---|---|
 | 0.1 | `show version` and `cat /etc/version` | ER-e50, EdgeOS v3.0.1 build 5862409; `uname -r` = `4.14.54-UBNT` | Anything else |
-| 0.2 | `dpkg -l edgeos-vxlan edgeos-vxlan-kmod` | Both `ii` at `0.2.2~rc1+edgeos3.0.1.e50`; `dpkg --audit` empty | Either package not `ii`, or audit non-empty |
+| 0.2 | `dpkg -l edgeos-vxlan edgeos-vxlan-kmod` | Both `ii` at the version under test (`0.2.2~rc2+edgeos3.0.1.e50` for the current run); `dpkg --audit` empty apart from the known pre-existing `squid`/`ssmtp` checksum-metadata warnings | Either package not `ii`, or audit shows anything beyond those known warnings |
 | 0.3 | `lsmod \| grep -E '^(vxlan\|udp_tunnel\|ip6_udp_tunnel)'` | All three present | Any missing |
 | 0.4 | `ip -j link show \| grep -c vxlan` | 0 — no live VXLAN interface | Any VXLAN interface present; investigate before proceeding |
 | 0.5 | `sha256sum /lib/modules/4.14.54-UBNT/extra/vxlan.ko /lib/modules/4.14.54-UBNT/kernel/net/ipv4/udp_tunnel.ko` | `7c346342…` and `6d58ee59…` | Any mismatch |

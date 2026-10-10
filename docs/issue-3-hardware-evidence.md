@@ -25,6 +25,9 @@ not published, and `<PREFIX>` stands for it):
 | Router underlay | `switch0.65`, `<PREFIX>::1/64` |
 | Peer host | peer uplink `<PEER_IF>`, `<PREFIX>:<PEER_IID>/64`, kernel `6.8.0-139-generic` |
 
+The release-candidate runs recorded further down were performed on this same router: RC1 was
+installed over v0.2.1, and RC2 over RC1; each section states which build its results belong to.
+
 Underlay connectivity between the two hosts was verified bidirectionally before the tunnel tests.
 
 **Test configuration under test:** `vxlan900`, VNI 900, UDP destination port 4789, MTU 1430,
@@ -65,24 +68,98 @@ and bidirectional forwarding of both IPv4 and IPv6 overlay traffic, with Neighbo
 over the tunnel. It also confirms the two kernel-side assumptions the implementation depends on: the
 hexadecimal sysfs flags format, and the `local6`/`remote6` JSON field names.
 
-## Native-integration results (reported 2026-10-10)
+## Native-integration and validation results — RC1 (reported 2026-10-10)
 
 The release candidate was subsequently installed on this router and the native EdgeOS configuration
-path was exercised. Reported as passed:
+path was exercised. Reported as passed on RC1:
 
-* evaluation of the endpoint templates with IPv6 literals, and rejection of malformed addresses;
-* rejection of mixed-family `local-ip`/`remote-ip` commits without disturbing live state;
-* interface creation through the configuration system, and dual-stack dataplane over the tunnel;
+* evaluation of the endpoint templates with IPv6 literals; rejection of a malformed address and of
+  an endpoint containing a CIDR prefix;
+* rejection of mixed-family `local-ip`/`remote-ip` commits with the expected message, **without
+  modifying the live interface** — the invalid configuration left the working interface untouched;
+* interface creation through the configuration system, with the correct kernel VNI, UDP port, MTU,
+  endpoint identity, MAC and overlay addresses, and dual-stack dataplane over the tunnel;
 * IPv6 endpoint canonicalisation — a reformatted but equivalent endpoint does not recreate the
   interface;
-* family-aware MTU defaulting with `mtu` unset, and restoration of the MTU when the node is removed;
+* family-aware MTU defaulting with `mtu` unset — 1430 over an IPv6 underlay, 1450 over an IPv4
+  underlay — mutable MTU changes without recreation, and removal of an MTU override restoring the
+  automatic default;
 * recreation on an identity change (VNI), including the IPv4↔IPv6 family transitions;
+* unrelated VXLAN interfaces preserved throughout;
 * deletion of the interface through the configuration system;
 * idempotent (no-op) commits.
 
 Raw command output for these has not been attached to the issue yet, so this section records the
-result rather than the captures, and the corresponding acceptance criteria are left unticked pending
-them.
+result rather than the captures; the acceptance criteria note this explicitly (Revision 7).
+
+## RC2 installation and upgrade (reported 2026-10-10)
+
+The RC2 pair — `edgeos-vxlan 0.2.2~rc2+edgeos3.0.1.e50` and `edgeos-vxlan-kmod
+0.2.2~rc2+edgeos3.0.1.e50` — was installed over RC1 on this router: both packages in one `dpkg`
+invocation, kernel package first. Installation passed and `dpkg -V edgeos-vxlan edgeos-vxlan-kmod`
+reported no modified files. `dpkg --audit` reports only the pre-existing `squid` and `ssmtp`
+checksum-metadata warnings, which predate RC1 and RC2; neither of this project's packages is
+affected.
+
+**The live tunnel survived the RC1 → RC2 upgrade without interface recreation**: `vxlan900` kept its
+ifindex (20) across the package transaction.
+
+## RC2 minimum-MTU validation (reported 2026-10-10)
+
+The one behavioural change in RC2 — the `mtu` template minimum raised from 64 to 68, the kernel's
+own minimum — was checked on the router against the candidate configuration only: `mtu 64` and
+`mtu 67` were rejected immediately (the runbook's test 1.8), as was the out-of-range `mtu 8025`.
+The candidate configuration was unchanged after every rejection; no commit was attempted and no
+live state was touched by these checks.
+
+## RC2 save and reboot restoration (reported 2026-10-10)
+
+The router configuration was saved — including the deployment-specific UDP/4789 firewall exception
+noted below — and the router was rebooted. No manual VXLAN recreation and no subsequent
+configuration commit was necessary. After the reboot:
+
+| Observation | Result |
+|---|---|
+| Installed packages | both RC2 packages still installed (`ii`) |
+| Underlay | the router's IPv6 underlay address restored |
+| Interface | `vxlan900` appeared automatically |
+| Interface index | 20 → 16 (expected — the index is not promised across boot or recreation) |
+| VNI / UDP port | 900 / 4789, correct |
+| JSON identity | correct `local6` and `remote6` endpoints |
+| MTU | 1430 |
+| MAC | `e6:69:92:17:3e:e9` — unchanged |
+| Overlay addresses | `10.255.254.1/30` and `fd42:900::1/64` restored |
+| Modules | `vxlan`, `udp_tunnel` and `ip6_udp_tunnel` loaded |
+
+**Firewall note.** The saved configuration carries one deployment-specific exception: an accept
+rule for UDP/4789 in the underlay's existing IPv6 local ruleset, restricted to the peer source
+address, the router destination and the VXLAN UDP destination port; its description still identifies
+it as a temporary test — the saved text reads "Temporary IPv6 VXLAN test" (the runbook prescribed a
+differently-worded placeholder). This rule belongs to the deployment, not to the package —
+`edgeos-vxlan` does not create or modify firewall policy — and it should be renamed or removed when
+the test setup is retired.
+
+## RC2 post-reboot dataplane (reported 2026-10-10)
+
+Run after the reboot above, over the restored tunnel, with the restricted rule in place:
+
+| Direction | Overlay protocol | Packets | Average RTT |
+|---|---|---|---|
+| EdgeRouter → peer | IPv4 | 5/5 | 1.393 ms |
+| peer → EdgeRouter | IPv4 | 5/5 | 1.121 ms |
+| EdgeRouter → peer | IPv6 | 5/5 | 1.679 ms |
+| peer → EdgeRouter | IPv6 | 5/5 | 1.304 ms |
+
+**Total: 20/20 packets received, zero loss.**
+
+**Scope.** This establishes save/reboot restoration of the native IPv6-underlay VXLAN and dual-stack
+overlay connectivity with the *existing* delegated prefix. It does not test a delegated-prefix
+change, power-loss recovery, repeated boots, or peer-router reboot persistence; those are separate
+scenarios and none of them may be claimed from this run.
+
+**Peer note.** The Ubuntu peer's VXLAN was configured manually. That configuration is outside the
+EdgeOS package's responsibility and is not a persistent two-endpoint deployment; it should not be
+read as one.
 
 ## Phase 5.4 result — kernel rollback PASS, configuration atomicity FAIL (reported 2026-10-10)
 
@@ -104,6 +181,13 @@ disposable `vxlan901`. Recorded outcome: **kernel rollback PASS, full configurat
 
 The mechanism behind this, and the correction it implies, are analysed in
 `issue-3-partial-commit-analysis.md`.
+
+**RC2 status.** The reconciler and the bridge handling in RC2 are byte-identical to RC1 (verified by
+extracting both candidate packages and diffing their payloads — the integration package differs only
+in the `mtu` template and the changelog), so these RC1 results describe the RC2 code as well. The
+RC2-specific failure injection — a 256-character description, the runbook's replacement for the MTU
+injection RC2 removed — has **not** been executed on the router; its efficacy premise (the target
+kernel refusing a 256-character alias) is currently measured off-device only.
 
 ## Phase 6 result — isolated bridge: PASS (reported 2026-10-10)
 
@@ -127,16 +211,36 @@ validation runbook. Reported as passed:
 Traffic over the bridged tunnel was not part of this run, so the bridged-dataplane acceptance
 criterion stays unticked.
 
+**RC2 status.** Same code as RC1 in this area (see the payload-diff note in the Phase 5.4 section);
+the RC2 re-run has not been executed.
+
 ## What remains untested
 
-1. Persistence across `save` and reboot, including a dynamically-arriving underlay address — Phase 7.
-2. Package upgrade compatibility on the router itself — Phase 8.
-3. Previously accepted non-canonical IPv4 syntax, end to end.
-4. Leaf-handler ordering effects beyond what the mocked tests pin, and the snapshot fail-closed path
-   when a live-state component cannot be read — Phase 5.5.
-5. Re-running Phase 5.4 on RC2, where the minimum-MTU correction moves the rejection into the
-   validation phase and the rollback injection is a 256-character description instead (the bridge-removal method is kept
-   as an optional drift-observation variant).
+Physical hardware, listed with the reason it has not been exercised:
+
+1. **RC2-specific failure injection** — the runbook's 256-character description injection (Phase 5.4
+   re-run). The RC1 rollback evidence covers the same reconciler code, but the replacement
+   injection's efficacy on the target kernel is measured off-device only.
+2. **Bridged-tunnel traffic** — Phase 6 validated membership, cost and priority, not packets over
+   the bridge.
+3. **Upgrade from v0.2.1 with an existing, configured IPv4 tunnel**, end to end (Phase 8.1–8.3).
+   The upgrade transaction has been studied off-device and executed on the router twice
+   (v0.2.1 → RC1 → RC2, the second time with a live IPv6 tunnel), but never with a committed IPv4
+   VXLAN configuration in `/config/config.boot`.
+4. **Non-canonical IPv4 literal behaviour on the target** (Phase 1.7 / matrix row 31) — the
+   platform-parity octal interpretation is implemented and unit-tested, but the target's own parser
+   has not been asked to bind such a literal.
+5. **Delegated-prefix change and underlay readiness timing** — the successful reboot used the prefix
+   that was already present. A prefix change on the ISP side, or an underlay address that arrives
+   after the configuration replay, is not covered (Phase 7.4).
+6. **Snapshot fail-closed path on the target** (Phase 5.5) — covered by off-device
+   failure-injection suites; no live-state component can be made unreadable on the router without
+   disturbing service.
+7. **A failed family transition under injected failure** — covered by the mocked harness; no
+   hardware failure-injection on a v4↔v6 transition has been run.
+8. **The firewall drop direction for IPv6** — the extended `VLANv6_LOCAL` ruleset (deployment-side)
+   was active while the tunnel worked, but an alternate-source IPv6 packet was not produced to
+   demonstrate the drop path, and the repository's IPv6 firewall example is not written yet.
 
 No document in this repository should describe the native integration as fully hardware-validated
 while any of those are outstanding.

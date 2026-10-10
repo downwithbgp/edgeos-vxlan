@@ -1,7 +1,9 @@
 # Issue #3 — Release Candidate 2 (`0.2.2~rc2`)
 
-**Status: built, inspected and upgrade-verified off-device. Nothing has been installed on the router,
-nothing has been pushed and no release has been published.** This record supersedes
+**Status: installed on the supported router and hardware-validated — the minimum-MTU validation, the
+save/reboot restoration and the post-reboot dual-stack dataplane (20/20 packets) are recorded in
+`issue-3-hardware-evidence.md`. Nothing has been merged to `main` and no release has been published.** The
+build and upgrade-verification record below stands as written. This record supersedes
 `issue-3-release-candidate.md` (RC1) for deployment; RC1's record stands as the history of that build.
 
 ---
@@ -102,7 +104,7 @@ processing:` — and do not retry with `--force`.
 
 ```
 [RO] dpkg -l edgeos-vxlan edgeos-vxlan-kmod | tail -3   # both 'ii' at 0.2.2~rc2+edgeos3.0.1.e50
-[RO] dpkg --audit                                        # empty
+[RO] dpkg --audit                                        # empty apart from the known pre-existing squid/ssmtp checksum-metadata warnings
 [RO] sudo dpkg -V edgeos-vxlan edgeos-vxlan-kmod         # silent
 [RO] grep -n 'VAR(@) >=' /opt/vyatta/share/vyatta-cfg/templates/interfaces/vxlan/node.tag/mtu/node.def
                                                          # must read: $VAR(@) >= 68 && $VAR(@) <= 8024
@@ -137,4 +139,7 @@ Same shape, one invocation, kernel package first, with the RC1 files verified ag
 * **The priority-subtree proposal.** Deliberately excluded from RC2 by the maintainer's instruction; it
   remains a documented, unvalidated follow-up in the analysis document, to be investigated separately.
 * **The outstanding hardware work**: re-running Phase 5.4 and the minimum-MTU test on RC2, persistence,
-  upgrade compatibility on the router, and non-canonical IPv4 syntax end to end.
+  upgrade compatibility on the router, and non-canonical IPv4 syntax end to end. **Later update
+  (2026-10-10):** the minimum-MTU test, save/reboot persistence and the RC1 → RC2 upgrade have since
+  passed on the router; the RC2-specific Phase 5.4 re-run, the v0.2.1 → 0.2.2 upgrade with an existing
+  IPv4 tunnel, and the non-canonical IPv4 test remain unexecuted — see `issue-3-hardware-evidence.md`.
