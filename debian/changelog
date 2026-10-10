@@ -1,3 +1,27 @@
+edgeos-vxlan (0.2.2+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * Release 0.2.2: IPv6 VXLAN underlay support on the supported platform.
+  * Accept an IPv4 or IPv6 local-ip/remote-ip pair with the same family, and
+    reject malformed, prefix-carrying, mixed-family and unusable endpoints
+    before anything is changed.
+  * Read the tunnel identity from the kernel's local6/remote6 JSON fields so
+    IPv6 tunnels reconcile correctly, and compare endpoints canonically so
+    equivalent re-spellings stay idempotent.
+  * Family-aware default MTU: 1450 over an IPv4 underlay and 1430 over an
+    IPv6 underlay; an explicit mtu is always honoured and must be at least 68
+    (the kernel's VXLAN minimum) or it is rejected at commit time.
+  * Fail closed when the live state cannot be captured completely, and
+    restore the captured interface state — including bridge membership, path
+    cost and port priority — when a recreation fails.
+  * Guard every leaf handler with an identity check.
+  * Hardware-validated on the supported platform: native configuration,
+    dual-stack dataplane over an IPv6 underlay, recreation, bridging,
+    rollback, and save/reboot restoration. See the release notes.
+  * The kernel module payloads (vxlan.ko, udp_tunnel.ko), their hashes and
+    the CVE-2022-50405 backport are unchanged.
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Sat, 10 Oct 2026 23:40:38 +0000
+
 edgeos-vxlan (0.2.2~rc2+edgeos3.0.1.e50) unstable; urgency=medium
 
   * Release candidate 2 for 0.2.2.

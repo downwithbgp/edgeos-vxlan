@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 set -eu
 
-VERSION="0.2.1"
-PKG_VERSION="0.2.1+edgeos3.0.1.e50"
+VERSION="0.2.2"
+PKG_VERSION="0.2.2+edgeos3.0.1.e50"
 REPO="downwithbgp/edgeos-vxlan"
 
 KMOD="edgeos-vxlan-kmod_${PKG_VERSION}_mipsel.deb"

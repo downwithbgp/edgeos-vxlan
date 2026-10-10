@@ -7,6 +7,10 @@ The current candidate is **RC2**: the minimal RC1 → RC2 upgrade and its post-u
 are in `issue-3-release-candidate-rc2.md`, and its artifacts and hashes are in section A of that
 document. Nothing else here has been run.
 
+**Stable release (v0.2.2).** The stable packages, their hashes and the ordered merge → tag → publish
+procedure are recorded in `docs/issue-3-v0.2.2-release-gate.md`; the user-facing notes are in
+`docs/release-notes-v0.2.2.md`. The candidate records below remain the history of the RC builds.
+
 This is the *sanitised* copy. It contains no live underlay addresses; `<RTR_V6>` is the router's
 address on the underlay interface and `<PEER_V6>` is the peer's. The deployment instance's exact
 values, and the corresponding ready-to-run variant of this runbook, live in the gitignored `local/`
