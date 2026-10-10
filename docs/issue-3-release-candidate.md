@@ -124,9 +124,11 @@ byte-unchanged. The kernel-module package differs from v0.2.1 only in its change
 * The native EdgeOS integration path has since been exercised on hardware for creation, dual-stack
   dataplane, endpoint canonicalisation, family-aware MTU defaulting and restoration, VNI recreation,
   family transitions, deletion, malformed-address and mixed-family rejection, and no-op commits (see
-  `issue-3-hardware-evidence.md`). Rollback under deterministic failure injection, bridging,
-  persistence and upgrade compatibility are still outstanding, so this remains a prerelease rather
-  than a validated release.
+  `issue-3-hardware-evidence.md`). Rollback was then exercised under deterministic failure injection:
+  **the kernel rollback passed, but the failed commit still wrote the changed leaf value into the
+  active configuration — configuration atomicity FAIL** (`issue-3-partial-commit-analysis.md`).
+  Bridging, persistence and upgrade compatibility remain outstanding, so this remains a prerelease
+  rather than a validated release.
 * The package bytes are not reproducible across differently-materialised trees (see above).
 * The candidate is a prerelease: it sorts above 0.2.1 but below the eventual 0.2.2, and it must not
   be published as a release.

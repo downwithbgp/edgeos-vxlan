@@ -84,16 +84,37 @@ Raw command output for these has not been attached to the issue yet, so this sec
 result rather than the captures, and the corresponding acceptance criteria are left unticked pending
 them.
 
+## Phase 5.4 result — kernel rollback PASS, configuration atomicity FAIL (reported 2026-10-10)
+
+The deterministic recreation-failure procedure was executed on the physical ER-X against the
+disposable `vxlan901`. Recorded outcome: **kernel rollback PASS, full configuration atomicity FAIL.**
+
+* **Kernel rollback: PASS.** Changing VNI 901 → 902 together with `mtu 64` produced
+  `RTNETLINK answers: Invalid argument`; the reconciler reported a successful rollback and the
+  interface was restored with VNI 901, UDP port 4791, MTU 1430, the correct IPv6 endpoints and `UP`.
+  Its ifindex changed 27 → 29 — expected, since the index is not promised across recreation.
+  Unrelated `vxlan900` remained at ifindex 20 throughout.
+* **Configuration atomicity: FAIL.** After the failed commit the candidate held the rejected values
+  (VNI 902 / MTU 64), the **active EdgeOS configuration held VNI 901 with MTU 64**, and the kernel
+  held MTU 1430. A value the kernel never accepted therefore reached the active configuration.
+* **Recovery: executed, and successful.** Setting the candidate back to VNI 901 / MTU 1430 and
+  committing made the active configuration and the kernel consistent again, with **no interface
+  recreation**. Operator note: do not `save` while a failed commit's drift is still in the active
+  configuration — that would persist the drifted value into `/config/config.boot`.
+
+The mechanism behind this, and the correction it implies, are analysed in
+`issue-3-partial-commit-analysis.md`.
+
 ## What remains untested
 
-1. Rollback after a deterministic recreation failure — Phase 5.4 of the validation runbook, written
-   out in full for a disposable `vxlan901`.
-2. Bridge membership and bridge port-option restoration on an IPv6 underlay — Phase 6.
-3. Persistence across `save` and reboot, including a dynamically-arriving underlay address — Phase 7.
-4. Package upgrade compatibility on the router itself — Phase 8.
-5. Previously accepted non-canonical IPv4 syntax, end to end.
-6. Leaf-handler ordering effects beyond what the mocked tests pin, and the snapshot fail-closed path
+1. Bridge membership and bridge port-option restoration on an IPv6 underlay — Phase 6.
+2. Persistence across `save` and reboot, including a dynamically-arriving underlay address — Phase 7.
+3. Package upgrade compatibility on the router itself — Phase 8.
+4. Previously accepted non-canonical IPv4 syntax, end to end.
+5. Leaf-handler ordering effects beyond what the mocked tests pin, and the snapshot fail-closed path
    when a live-state component cannot be read — Phase 5.5.
+6. Re-running Phase 5.4 once the recommended MTU-bound correction is applied — the correction is not
+   applied, so it is not validated.
 
 No document in this repository should describe the native integration as fully hardware-validated
 while any of those are outstanding.

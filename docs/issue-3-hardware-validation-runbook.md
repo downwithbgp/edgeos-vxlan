@@ -8,11 +8,15 @@ supported router and passed: native interface creation, dual-stack dataplane ove
 endpoint canonicalisation, family-aware MTU defaulting and explicit-MTU restoration, VNI recreation,
 IPv4↔IPv6 family transitions, interface deletion, malformed-address rejection, mixed-family commit
 rejection, and idempotent (no-op) commits. Phases 0–4 (except 1.7, the non-canonical IPv4 spelling)
-and 5.1–5.3 are therefore covered for `vxlan900`; the raw captures still need attaching to the
-issue. What remains are the two procedures
-that were previously placeholders precisely because they are the hazardous ones — **5.4
-(deterministic recreation failure and rollback)** and **Phase 6 (bridging)**. Both are written out in
-full in this revision, and both run only on disposable objects.
+and 5.1–5.3 are therefore covered for `vxlan900`; the raw captures still need attaching to the issue.
+
+**Phase 5.4 has since been executed, and it failed on its second half: kernel rollback PASS,
+configuration atomicity FAIL.** The reconciler restored the interface correctly, but the failed
+commit still left the changed leaf value (`mtu 64`) in the active configuration while the kernel held
+the pre-commit value. The procedure below now carries the configuration-versus-kernel check (5.4.5b)
+and the recovery that was executed successfully on the hardware; the mechanism and the recommended
+correction are in `issue-3-partial-commit-analysis.md`. **Phase 6 (bridging) is the one remaining
+procedure that has not been run.**
 
 The exact underlay addresses are deployment-specific: the sanitised deployment runbook
 (`issue-3-deployment-runbook.md`) carries placeholders, and the instance with the live values is held
@@ -260,7 +264,15 @@ Rolling back vxlan901 to previous live state...
 Rollback of vxlan901 completed.
 ```
 
-and a non-zero status. Do not `save`. Nothing reaches the saved configuration from a failed commit.
+and a non-zero status.
+
+**Expect a partial commit — that is engine behaviour, not a bug, and it is why this step is followed
+by 5.4.5b.** EdgeOS commits each *priority subtree* of a change independently and writes whatever
+succeeded even when the commit as a whole fails (`COMMIT_STATUS=PARTIAL`). The `mtu` leaf is its own
+subtree, and its handler is a no-op while the identity is changing, so the changed leaf value reaches
+the **active configuration** while the failing identity change does not. Do not `save` while that
+drift is present: it would persist the bad value into `/config/config.boot`. Mechanism and
+recommended correction: `issue-3-partial-commit-analysis.md`.
 
 **5.4.5 — verify the rollback.**
 
@@ -275,6 +287,35 @@ ip -j link show dev vxlan901         # admin state as captured
 
 The interface **index** is not promised across recreation: record it and compare it, but a changed
 index is expected behaviour, not a failure.
+
+**5.4.5b — check the configuration against the kernel, then recover.** This step is what separates a
+*kernel* rollback from a *full* rollback, and it must be run every time.
+
+```
+configure
+compare                                  # candidate still holds the rejected vni 902 / mtu 64
+exit
+show configuration commands | grep vxlan901
+```
+
+Measured on the ER-X: the active configuration showed **VNI 901 with `mtu 64`** while the kernel
+showed MTU 1430 — the failed commit left a value in the active configuration that the kernel never
+accepted (recorded in `issue-3-hardware-evidence.md`).
+
+Recovery, executed successfully on the hardware:
+
+```
+configure
+set interfaces vxlan vxlan901 vni 901
+set interfaces vxlan vxlan901 mtu 1430
+compare
+commit
+exit
+```
+
+Expected: the commit succeeds, the active configuration and the kernel agree again, and **no
+interface recreation occurs** — the desired identity matches the live interface, so the reconciler
+takes its mutable-only path and finds the MTU already correct.
 
 **5.4.6 — clean up.**
 
@@ -300,6 +341,8 @@ Verify: `ip -j link show type vxlan` no longer lists `vxlan901`, and
 | 5.4-e | The same administrative state as captured (up stays up, disabled stays down). |
 | 5.4-f | `vxlan900`'s identity, index, addresses, admin state and traffic are unchanged throughout. |
 | 5.4-g | The interface index is recorded before and after; a change is noted, not treated as a failure. |
+| 5.4-h | The active configuration is compared with the kernel after the failure and the result is recorded. **A partial commit is the expected outcome**: the rejected leaf value may appear in the active configuration while the kernel holds the pre-commit value. Nothing is `save`d in that state. |
+| 5.4-i | Recovery is executed and verified: after re-applying the correct values and committing, the active configuration and the kernel agree and **no interface recreation occurs** (confirmed on the ER-X). |
 
 ### Risks, and why the blast radius is contained
 
@@ -482,7 +525,7 @@ Verify: `ip -j link show dev br901` → does not exist; `ip -j link show type vx
 
 | Procedure | Verdict | Conditions |
 |---|---|---|
-| 5.4 recreation failure and rollback | **Safe to execute as written**, on the production router | Runs only on disposable `vxlan901`; the injection is proven effective on the device first (5.4.3); an independent management path and console access are available; the test is not `save`d, so a reboot discards it; the route to remove a half-restored interface is known and contained. |
+| 5.4 recreation failure and rollback | **Safe to execute as written**, on the production router | Runs only on disposable `vxlan901`; the injection is proven effective on the device first (5.4.3); an independent management path and console access are available; the test is not `save`d, so a reboot discards it; the route to remove a half-restored interface is known and contained. **A failed commit partially applies the configuration** (engine behaviour — see `issue-3-partial-commit-analysis.md`): the drift is confined to the disposable interface's own nodes and is recovered by 5.4.5b. Never `save` before recovering. |
 | Phase 6 isolated bridge test | **Safe with conditions**, and the more intrusive of the two | All of 5.4's conditions, plus: a maintenance window, the bridge is new and empty, nothing but `vxlan901` is ever added to it, no production interface is moved, and cleanup happens in the documented order. |
 
 Neither procedure touches `vxlan900`, any production bridge, any VLAN, DHCP, DNS, firewall or
