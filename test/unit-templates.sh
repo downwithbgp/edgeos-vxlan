@@ -132,6 +132,67 @@ done < <(find "$TPL" -name '*.def' | sort)
 # ------------------------------------------------------------- MTU contract
 ck_file_lacks "mtu declares no static default" "$TPL/node.tag/mtu/node.def" "default:"
 
+# The mtu lower bound must be the kernel's own VXLAN minimum, not a round
+# number: no kernel VXLAN device accepts less than 68 (dev->min_mtu =
+# ETH_MIN_MTU), and a value the kernel refuses *after* the commit has been
+# applied leaves the active configuration disagreeing with the interface --
+# see docs/issue-3-partial-commit-analysis.md.  The engine evaluates the range
+# expression itself (it is not a shell command, so it cannot be run here); the
+# model below reads the bounds the template declares and checks a value table
+# against them, so moving the bound back to 64 fails this test immediately.
+MTU_DEF="$TPL/node.tag/mtu/node.def"
+ck_file_has "mtu lower bound is the kernel VXLAN minimum" "$MTU_DEF" "\$VAR(@) >= 68"
+ck_file_has "mtu help text matches the lower bound" "$MTU_DEF" "u32:68-8024"
+
+MTU_LINE=$(grep -m1 "^syntax:expression: .*\$VAR(@) >=" "$MTU_DEF")
+MTU_EXPR=${MTU_LINE#syntax:expression: }
+MTU_EXPR=${MTU_EXPR%%;*}
+
+# The expression is an inclusive integer range written as two comparisons.
+MTU_LOWER=${MTU_EXPR#*>= }
+MTU_LOWER=${MTU_LOWER%% *}
+MTU_UPPER=${MTU_EXPR##*<= }
+
+case "$MTU_LOWER:$MTU_UPPER" in
+    *[!0-9:]* | :* | *:)
+        FAIL=$((FAIL + 1))
+        echo "FAIL: could not read the mtu range bounds from '$MTU_EXPR'"
+        ;;
+    *)
+        engine_mtu_accepts() { # engine_mtu_accepts <value>
+            [ "$1" -ge "$MTU_LOWER" ] && [ "$1" -le "$MTU_UPPER" ]
+        }
+
+        # The values RC1 accepted and no kernel VXLAN device does.
+        for v in 63 64 65 66 67; do
+            if engine_mtu_accepts "$v"; then
+                FAIL=$((FAIL + 1))
+                echo "FAIL: mtu $v must be rejected by the template range ($MTU_LOWER-$MTU_UPPER)"
+            else
+                PASS=$((PASS + 1))
+            fi
+        done
+
+        # The values that must still work.
+        for v in 68 100 1430 8024; do
+            if engine_mtu_accepts "$v"; then
+                PASS=$((PASS + 1))
+            else
+                FAIL=$((FAIL + 1))
+                echo "FAIL: mtu $v must be accepted by the template range ($MTU_LOWER-$MTU_UPPER)"
+            fi
+        done
+
+        # Above the platform ceiling.
+        if engine_mtu_accepts 8025; then
+            FAIL=$((FAIL + 1))
+            echo "FAIL: mtu 8025 must be rejected by the template range ($MTU_LOWER-$MTU_UPPER)"
+        else
+            PASS=$((PASS + 1))
+        fi
+        ;;
+esac
+
 # ------------------------------------------------------------ packaging entry
 ck_file_has "the helper is packaged" "$ROOT/debian/edgeos-vxlan.install" \
     "src/vyatta-vxlan-addr opt/vyatta/sbin/"

@@ -1,8 +1,11 @@
 # Issue #3 — Deployment Runbook (release candidate)
 
-Copy-paste-ready procedure for installing the release candidate on the supported router, for
-recovery, and for the preflight checks that must precede it. **Nothing in this document has been
-executed**: it is prepared and awaiting explicit authorization.
+Copy-paste-ready procedure for installing a release candidate on the supported router, for recovery,
+and for the preflight checks that must precede it. **The v0.2.1 → RC1 installation described here has
+been executed** (RC1 is what ran the hardware validation recorded in `issue-3-hardware-evidence.md`).
+The current candidate is **RC2**: the minimal RC1 → RC2 upgrade and its post-upgrade validation checks
+are in `issue-3-release-candidate-rc2.md`, and its artifacts and hashes are in section A of that
+document. Nothing else here has been run.
 
 This is the *sanitised* copy. It contains no live underlay addresses; `<RTR_V6>` is the router's
 address on the underlay interface and `<PEER_V6>` is the peer's. The deployment instance's exact

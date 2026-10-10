@@ -1,7 +1,10 @@
 # Issue #3 — IPv6 VXLAN Underlay: Release Candidate Record
 
-**Status: release candidate prepared and validated off-device. Nothing has been installed on the
-router, nothing has been pushed, and no release has been published.**
+**Status: this record documents the RC1 candidate (`0.2.2~rc1`).** RC1 was installed on the router and
+the native-integration runs recorded in `issue-3-hardware-evidence.md` were performed against it.
+Nothing has been pushed and no release has been published. **For deployment, RC2 supersedes this
+candidate** — see `issue-3-release-candidate-rc2.md`; the test counts and the MTU bound quoted below
+are RC1's and are kept as the record of that build.
 
 This document is the reviewable record for the release candidate: the artifacts (A), the manifest
 (B) and the upgrade-safety assessment (C). The operational runbooks are separate documents:

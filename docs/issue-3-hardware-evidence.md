@@ -105,16 +105,38 @@ disposable `vxlan901`. Recorded outcome: **kernel rollback PASS, full configurat
 The mechanism behind this, and the correction it implies, are analysed in
 `issue-3-partial-commit-analysis.md`.
 
+## Phase 6 result — isolated bridge: PASS (reported 2026-10-10)
+
+Executed on the physical ER-X with the disposable `br901` and `vxlan901`, per Phase 6 of the
+validation runbook. Reported as passed:
+
+* **Recreation preserved the bridge state.** A VNI recreation kept `br901` membership, path cost 200,
+  port priority 10, MTU 1430 and the interface MAC.
+* **Failed recreation restored the bridge state.** With the deterministic failure injection, the
+  rollback restored VNI 902, MTU 1430, bridge membership, cost 200, priority 10, the MAC and the `UP`
+  state. `vxlan901`'s ifindex changed 31 → 33 — expected, since the index is not promised across
+  recreation.
+* **The partial-commit limitation reproduced.** As in Phase 5.4, the failed commit left `mtu 64` in
+  the active EdgeOS configuration while the kernel had restored 1430. This is the second independent
+  reproduction of the behaviour analysed in `issue-3-partial-commit-analysis.md`; it is
+  deterministic, not a one-off.
+* **Cleanup verified.** `br901` and the disposable `vxlan901` were removed from the kernel. The
+  production test tunnel `vxlan900` remained `UP` at ifindex 20 and unchanged throughout. **No router
+  configuration was saved.**
+
+Traffic over the bridged tunnel was not part of this run, so the bridged-dataplane acceptance
+criterion stays unticked.
+
 ## What remains untested
 
-1. Bridge membership and bridge port-option restoration on an IPv6 underlay — Phase 6.
-2. Persistence across `save` and reboot, including a dynamically-arriving underlay address — Phase 7.
-3. Package upgrade compatibility on the router itself — Phase 8.
-4. Previously accepted non-canonical IPv4 syntax, end to end.
-5. Leaf-handler ordering effects beyond what the mocked tests pin, and the snapshot fail-closed path
+1. Persistence across `save` and reboot, including a dynamically-arriving underlay address — Phase 7.
+2. Package upgrade compatibility on the router itself — Phase 8.
+3. Previously accepted non-canonical IPv4 syntax, end to end.
+4. Leaf-handler ordering effects beyond what the mocked tests pin, and the snapshot fail-closed path
    when a live-state component cannot be read — Phase 5.5.
-6. Re-running Phase 5.4 once the recommended MTU-bound correction is applied — the correction is not
-   applied, so it is not validated.
+5. Re-running Phase 5.4 on RC2, where the minimum-MTU correction moves the rejection into the
+   validation phase and the rollback injection is a 256-character description instead (the bridge-removal method is kept
+   as an optional drift-observation variant).
 
 No document in this repository should describe the native integration as fully hardware-validated
 while any of those are outstanding.

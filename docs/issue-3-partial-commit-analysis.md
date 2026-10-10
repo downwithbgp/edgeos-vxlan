@@ -30,7 +30,10 @@ On the physical ER-X, the disposable `vxlan901` was changed from VNI 901 to 902 
   expected outcome of the mechanism below, not luck: with the identity back in agreement with the
   live interface the reconciler takes its mutable-only path and finds the MTU already correct.
 
-This is recorded as **kernel rollback PASS / full configuration atomicity FAIL**.
+This is recorded as **kernel rollback PASS / full configuration atomicity FAIL**. The behaviour was
+confirmed a second time during the Phase 6 bridge test: the bridged interface's rollback restored
+membership, cost, priority, MAC and admin state correctly, and the active configuration again took
+`mtu 64` while the kernel restored 1430. It is deterministic, not a one-off.
 
 ## 2. Why it happens — the engine commits per priority subtree, without a transaction
 
@@ -191,6 +194,13 @@ templates/interfaces/vxlan/node.tag/mtu/node.def
 
 Plus the template-contract test from §3.5.1, and the message updated to match.
 
+**Applied in RC2** (see `issue-3-release-candidate-rc2.md`): the bound is now 68 and
+`test/unit-templates.sh` pins it — values 63–67 must be rejected, 68 and above accepted. Because that
+change also removes the MTU injection Phase 5.4 used, the runbook's rollback injection is now a
+256-character description: it fails at the alias step for the same class of reason (a value the
+template accepts and the kernel refuses) and, being a leaf with no priority of its own, it cannot be
+committed independently of the reconciler — so it cannot drift.
+
 **Proposed as a follow-up, needing its own hardware validation — do not bundle.** Consider removing
 `priority: 460` from `mtu`, `address` and `bridge-group`. Without their own priority those nodes join
 the vxlan node's subtree, so a reconciler failure leaves the whole vxlan configuration uncommitted
@@ -211,9 +221,10 @@ again; the recovery below was executed successfully on the hardware.
 * The mechanism is derived from the source plus one observed failure. The `PARTIAL` status itself was
   not captured from the router's own output during the test — the next run of Phase 5.4 should
   capture it.
-* The recommended one-line change is **not applied**: it changes validation behaviour, so it needs a
-  new package version and a hardware re-run of the affected phases. Applying it would also remove the
-  injection Phase 5.4 currently uses, which is why that procedure documents an alternate injection.
+* The recommended one-line change **is applied in RC2**. It is a validation-behaviour change, so it
+  required a new package version and a hardware re-run of the affected phases; that re-run has not
+  happened yet. Applying it also removed the MTU injection Phase 5.4 used, which is why that procedure
+  now uses a 256-character description.
 * The follow-up proposal (commit granularity) is unvalidated and could change behaviour in ways not
   visible from the source alone.
 * Even with both changes, a failed commit can still churn the kernel and can still leave the

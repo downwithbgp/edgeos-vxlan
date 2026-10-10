@@ -7,17 +7,21 @@ configuration path** on the supported router.
 supported router and passed: native interface creation, dual-stack dataplane over the tunnel, IPv6
 endpoint canonicalisation, family-aware MTU defaulting and explicit-MTU restoration, VNI recreation,
 IPv4↔IPv6 family transitions, interface deletion, malformed-address rejection, mixed-family commit
-rejection, and idempotent (no-op) commits. Phases 0–4 (except 1.7, the non-canonical IPv4 spelling)
-and 5.1–5.3 are therefore covered for `vxlan900`; the raw captures still need attaching to the issue.
+rejection, idempotent (no-op) commits, and the isolated bridge test — membership, port cost and
+priority preserved across recreation and restored after a failed one. Phases 0–4 (except 1.7, the
+non-canonical IPv4 spelling), 5.1–5.3 and Phase 6 are therefore covered **(on RC1)**; the raw captures
+still need attaching to the issue.
 
-**Phase 5.4 has since been executed, and it failed on its second half: kernel rollback PASS,
-configuration atomicity FAIL.** The reconciler restored the interface correctly, but the failed
-commit still left the changed leaf value (`mtu 64`) in the active configuration while the kernel held
-the pre-commit value. The procedure below now carries the configuration-versus-kernel check (5.4.5b)
-and the recovery that was executed successfully on the hardware; the mechanism and the recommended
-correction are in `issue-3-partial-commit-analysis.md`. **Of the original hazardous pair, Phase 6
-(bridging) is the one still unrun**; the remaining open items overall are listed in
-`issue-3-hardware-evidence.md`.
+**Phase 5.4 failed on its second half: kernel rollback PASS, configuration atomicity FAIL.** The
+reconciler restored the interface correctly, but the failed commit still left the changed leaf value
+(`mtu 64`) in the active configuration while the kernel held the pre-commit value; it reproduced a
+second time during the bridge test. The mechanism is analysed in
+`issue-3-partial-commit-analysis.md`, and 5.4.5b carries the configuration-versus-kernel check and the
+recovery that was executed successfully on the hardware.
+
+**This runbook describes RC2.** The minimum MTU is now 68, checked by test 1.8, and the rollback
+injection in Phase 5.4 is a 256-character description rather than the MTU value RC1 used — the
+injection section explains why. The remaining open items are listed in `issue-3-hardware-evidence.md`.
 
 The exact underlay addresses are deployment-specific: the sanitised deployment runbook
 (`issue-3-deployment-runbook.md`) carries placeholders, and the instance with the live values is held
@@ -70,6 +74,7 @@ leave the candidate configuration unchanged; a rejected `commit` must leave live
 | 1.5 | Unusable IPv6 remote rejected | `set … remote-ip fe80::1`, then `ff02::1`, `::`, `::1`, `::ffff:192.0.2.2` | Each rejected with its own reason | Any accepted |
 | 1.6 | Rejection is inert | `compare`; `ip -j link show dev vxlan900`; `ip -6 addr show dev switch0.65` | Candidate config as expected; no interface created or destroyed; underlay untouched | Any change to live state |
 | 1.7 | Non-canonical IPv4 spelling | `set … remote-ip 010.1.2.3` | Accepted and bound exactly as the platform parses it (octal), or rejected with a message — never silently reinterpreted | Any silent reinterpretation |
+| 1.8 | Minimum-MTU validation (RC2) | `set interfaces vxlan vxlan901 mtu 64`, then `67`, then `68` — candidate configuration only, no commit | `64` and `67` are rejected **immediately**, with "Must be between 68-8024"; `68` is accepted | Any value below 68 accepted. RC1 accepted 64–67, which the kernel then refused during recreation and which left the active configuration out of step with the interface — see `issue-3-partial-commit-analysis.md` |
 
 **Capture for phase 1:** the full text of each rejection message. These are exactly what the
 acceptance criteria ask to be recorded, and they are not reproducible off-device.
@@ -135,26 +140,36 @@ leaving a half-built interface behind.
 
 ### The injection, and why it is deterministic
 
-**Injection: configure `mtu 64` on the disposable interface in the same commit that changes its
-identity.** The configuration templates accept `mtu >= 64`, but the kernel refuses to put a VXLAN
-device below its minimum MTU, so the commit fails at the MTU step of the recreation — after the old
-state has been captured and after the old interface has been deleted.
+**Injection: configure a 256-character `description` on the disposable interface in the same commit
+that changes its identity.** The description template accepts up to 256 characters, but the kernel's
+alias buffer is `IFALIASZ` bytes *including* the terminating NUL, so the kernel refuses the value —
+and the refusal happens during the recreation, after the old state has been captured and after the
+old interface has been deleted.
 
 Why this is deterministic on the supported platform, in four checkable steps:
 
-1. The target kernel sets the VXLAN minimum to `ETH_MIN_MTU`: in the 4.14.54-UBNT source tree,
-   `drivers/net/vxlan.c:2651` (`vxlan_setup()`) sets `dev->min_mtu = ETH_MIN_MTU;`. `ETH_MIN_MTU`
-   is 68.
-2. The network core rejects anything below it: `net/core/dev.c:6939`
-   (`if (new_mtu < 0 || new_mtu < dev->min_mtu)`) returns `-EINVAL`.
-3. The package's `mtu` template accepts 64
-   (`templates/interfaces/vxlan/node.tag/mtu/node.def`, `$VAR(@) >= 64 && $VAR(@) <= 8024`), so the
-   configuration layer lets the value through.
-4. Measured off-device on a real kernel, VXLAN over IPv6: `ip link set dev <vxlan> mtu 64` →
-   `Error: mtu less than device minimum.` (exit 2), while `mtu 68` succeeds; the device reports
-   `min_mtu: 68, max_mtu: 65535`.
+1. The template accepts 256 characters: `templates/interfaces/vxlan/node.tag/description/node.def` —
+   `pattern $VAR(@) "^.{1,256}$"`.
+2. The target kernel refuses an alias that long: the netlink attribute policy caps the payload at
+   `IFALIASZ - 1` (`net/core/rtnetlink.c`,
+   `[IFLA_IFALIAS] = { .type = NLA_BINARY, .len = IFALIASZ - 1 }`), and `dev_set_alias()`
+   (`net/core/dev.c`) rejects anything from `IFALIASZ` upwards with `-EINVAL`. `IFALIASZ` is 256, so
+   255 characters is the exact accepted maximum.
+3. The reconciler applies the description with
+   `ip link set dev "$INTERFACE" alias "$DESCRIPTION"` (`src/vyatta-vxlan:322-323`); a failure there
+   aborts the apply and triggers the rollback.
+4. Measured off-device on a real kernel: a 255-character alias is accepted (exit 0) and a
+   256-character alias is refused (`Error: … alias too long`, exit 255).
 
-The same measurements **disprove** three injections that look plausible, so do not use them:
+**Why this replaces the MTU injection RC1 used.** RC2 enforces the kernel's own minimum MTU (68), so
+`mtu 64` is now rejected in the configuration engine's *validation* phase, before any action runs, and
+can no longer drive a recreation failure — that is the intended effect of the RC2 change, and test 1.8
+above is what checks it. The description is also the better choice for a clean rollback test: it lives
+inside the vxlan node's own commit subtree, so a failure here cannot leave a partially applied leaf
+value behind. The variant that does exhibit that (the partial-commit limitation) is at the end of this
+section.
+
+The earlier measurements **disprove** three injections that still look plausible, so do not use them:
 
 * a duplicate VNI / UDP-port combination does **not** block creation — two VXLAN devices may share a
   socket;
@@ -165,23 +180,25 @@ The same measurements **disprove** three injections that look plausible, so do n
 ### Why the injection cannot corrupt the snapshot or block the rollback
 
 * The injected value is consumed in exactly one place: `apply_desired_mutable_state()`,
-  `src/vyatta-vxlan:317-318` (`ip link set dev "$INTERFACE" mtu "$MTU"`).
+  `src/vyatta-vxlan:322-323` (`ip link set dev "$INTERFACE" alias "$DESCRIPTION"`).
 * That function is first reached at `src/vyatta-vxlan:635` — **after** `capture_live_snapshot()`
   (called at line 598), after `delete_interface()` (line 616) and after `create_vxlan()` (line 620).
   The snapshot reads live kernel state only — identity, MAC, MTU, description, addresses, bridge
   state, admin state of the interface as it exists — and never reads the desired configuration, so
   the injection cannot influence what is captured.
-* The rollback rebuilds the previous interface from the captured values and sets the **captured**
-  MTU: `sudo ip link set dev "$INTERFACE" mtu "$OLD_MTU"` (`src/vyatta-vxlan:478`). `$OLD_MTU` is the
-  MTU the interface already had (1430 here), which the kernel accepts, so the injected value cannot
-  block the rollback.
+* The rollback rebuilds the previous interface from the captured values and reapplies the **captured**
+  description: `sudo ip link set dev "$INTERFACE" alias "$OLD_DESCRIPTION"` (`src/vyatta-vxlan:479`).
+  That value was already accepted by the kernel, so the injected value cannot block the rollback.
 * Because the identity changes in the same commit, `RECREATE=1` (lines 609/612) and
   `HAVE_OLD_SNAPSHOT=1` (line 602), so the failure takes the rollback branch rather than the
   unprotected mutable-only path at line 659.
-* The project's own suite already exercises this exact sequence: mock scenario 25, "recreation with a
-  failing MTU step rolls back the snapshot" (`test/mock.sh`), forces the same step to fail, asserts
-  the reconciler prints "Rolling back", asserts it recreated the **old** identity, and asserts the
-  MTU was restored. It passes in the committed suite (120/120).
+* The description node declares **no** `priority`, so it is not a commit subtree of its own: its value
+  cannot be marked committed independently of the reconciler, which is why this injection leaves no
+  configuration drift.
+* The project's own suite covers this exact failure: mock scenario 26, "recreation with a failing
+  description step rolls back" (`test/mock.sh`), forces the alias step to fail, asserts the reconciler
+  prints "Rolling back", and asserts the old description was restored. The sibling case — the same
+  failure on the MTU step — is scenario 25. Both pass in the committed suite (132/132).
 
 ### Preconditions
 
@@ -230,29 +247,32 @@ ip -j -d link show dev vxlan901     >  /tmp/rc/pre-5.4-identity.json
 ip -j addr show dev vxlan901        >  /tmp/rc/pre-5.4-addrs.json
 ```
 
-**5.4.3 — prove the injection is effective on *this* device, on a throwaway interface.** Do this
-before relying on it.
+**5.4.3 — prove the injection is effective on *this* device.** Do this before relying on it. The
+check needs no dedicated interface: generate the two candidate values and let the kernel judge them on
+a throwaway device.
 
 ```
+A255=$(head -c 255 /dev/zero | tr '\0' 'x')
+A256=$(head -c 256 /dev/zero | tr '\0' 'x')
 sudo ip link add dev vxlantest type vxlan id 999 local <RTR_V6> remote <PEER_V6> dstport 4799
-sudo ip link set dev vxlantest mtu 64      # MUST fail
-sudo ip link set dev vxlantest mtu 68      # MUST succeed
+sudo ip link set dev vxlantest alias "$A255"   # MUST succeed
+sudo ip link set dev vxlantest alias "$A256"   # MUST fail
 sudo ip link del dev vxlantest
 ```
 
-Expected: the `mtu 64` command exits non-zero (on this platform the text is
-`Error: mtu less than device minimum.`; the non-zero exit is what matters), the `mtu 68` command
-succeeds, and `vxlantest` is gone afterwards.
+Expected: the 255-character alias is accepted, the 256-character alias exits non-zero (the platform
+prints `Error: … alias too long`; the non-zero exit is what matters), and `vxlantest` is gone
+afterwards.
 
-**Stop if `mtu 64` is accepted** — the injection is not available on this platform. Use the alternate
-injection at the end of this section instead.
+**Stop if the 256-character alias is accepted** — the injection is not available on this platform.
+Use the drift-observation variant at the end of this section instead.
 
 **5.4.4 — commit the identity change together with the injection.**
 
 ```
 configure
 set interfaces vxlan vxlan901 vni 902      # identity change -> forces recreation
-set interfaces vxlan vxlan901 mtu 64       # the injection
+set interfaces vxlan vxlan901 description <the 256-character value>   # the injection
 compare
 commit
 ```
@@ -294,14 +314,17 @@ index is expected behaviour, not a failure.
 
 ```
 configure
-compare                                  # candidate still holds the rejected vni 902 / mtu 64
+compare                                  # candidate still holds the rejected vni 902 / description
 exit
 show configuration commands | grep vxlan901
 ```
 
-Measured on the ER-X: the active configuration showed **VNI 901 with `mtu 64`** while the kernel
-showed MTU 1430 — the failed commit left a value in the active configuration that the kernel never
-accepted (recorded in `issue-3-hardware-evidence.md`).
+Recorded on the ER-X with RC1's MTU injection: the active configuration showed **VNI 901 with
+`mtu 64`** while the kernel showed MTU 1430 — the failed commit left a value in the active
+configuration that the kernel never accepted (`issue-3-hardware-evidence.md`). It reproduced a second
+time in the bridge test. **With the RC2 injection above this is not expected**: a description is not a
+commit subtree of its own, so it cannot be marked committed independently of the reconciler. Run the
+comparison anyway — the point of this step is to check, not to assume.
 
 Recovery, executed successfully on the hardware:
 
@@ -359,15 +382,20 @@ Verify: `ip -j link show type vxlan` no longer lists `vxlan901`, and
 * **`commit-confirm` is not an undo for this.** It reverts the candidate configuration only; live
   interface state is restored by the reconciler's rollback, or not at all.
 
-### Alternate injection (lab or maintenance window only)
+### Drift-observation variant (optional; lab or maintenance window)
 
-If 5.4.3 shows that MTU 64 is accepted on some other platform, target the same window with a failure
-the package enforces rather than the kernel. Attach `vxlan901` to a first disposable bridge (`br901`)
-and commit. Then create a second disposable bridge (`br902`), point `bridge-group bridge` at it, and
-remove `br902` out-of-band (`sudo ip link del dev br902`) **before** committing an identity change.
-The commit must change the identity: that keeps the leaf handlers' identity guards inert, so the
-failure lands in the reconciler's apply phase instead of pre-empting it. `reconcile_bridge()`
-(`src/vyatta-vxlan:135-148`) refuses a bridge that does not exist, so the mutable step fails.
+The injection above is deliberately one that **cannot** leave configuration drift. To *observe* the
+partial-commit limitation — the behaviour recorded in the hardware evidence and analysed in
+`issue-3-partial-commit-analysis.md` — use a value that lives in its **own commit subtree**, because
+those are the values the engine can mark committed independently of the reconciler. `bridge-group` is
+one (priority 460). Attach `vxlan901` to a first disposable bridge (`br901`) and commit. Then create a
+second disposable bridge (`br902`), point `bridge-group bridge` at it, and remove `br902` out-of-band
+(`sudo ip link del dev br902`) **before** committing an identity change. The commit must change the
+identity: that keeps the leaf handlers' identity guards inert, so the failure lands in the reconciler's
+apply phase instead of pre-empting it. `reconcile_bridge()` (`src/vyatta-vxlan:135-148`) refuses a
+bridge that does not exist, so the mutable step fails, the reconciler rolls back, and the
+`bridge-group` value is left in the active configuration — the same shape of drift RC1 showed with
+`mtu`.
 
 Two cautions, both real. First, the rollback re-attaches the interface to the bridge that was
 captured *before* the change (`src/vyatta-vxlan:485`), so **the captured bridge must still exist** —
@@ -469,7 +497,7 @@ until the reconciler re-attaches it, so this step is what actually tests the re-
 ```
 configure
 set interfaces vxlan vxlan901 vni 901      # identity change
-set interfaces vxlan vxlan901 mtu 64       # injection (verify it first, per 5.4.3)
+set interfaces vxlan vxlan901 description <the 256-character value>   # injection (verify it first, per 5.4.3)
 commit
 ```
 
@@ -526,7 +554,7 @@ Verify: `ip -j link show dev br901` → does not exist; `ip -j link show type vx
 
 | Procedure | Verdict | Conditions |
 |---|---|---|
-| 5.4 recreation failure and rollback | **Safe to execute as written**, on the production router | Runs only on disposable `vxlan901`; the injection is proven effective on the device first (5.4.3); an independent management path and console access are available; the test is not `save`d, so a reboot discards it; the route to remove a half-restored interface is known and contained. **A failed commit partially applies the configuration** (engine behaviour — see `issue-3-partial-commit-analysis.md`): the drift is confined to the disposable interface's own nodes and is recovered by 5.4.5b. Never `save` before recovering. |
+| 5.4 recreation failure and rollback | **Safe to execute as written**, on the production router | Runs only on disposable `vxlan901`; the injection is proven effective on the device first (5.4.3); an independent management path and console access are available; the test is not `save`d, so a reboot discards it; the route to remove a half-restored interface is known and contained. The RC2 injection (a 256-character description) is deliberately one that **cannot** leave configuration drift, because the description is not a commit subtree of its own. The optional drift-observation variant **can** partially apply the configuration (engine behaviour — see `issue-3-partial-commit-analysis.md`); it is lab-only, and 5.4.5b recovers. Never `save` before recovering. |
 | Phase 6 isolated bridge test | **Safe with conditions**, and the more intrusive of the two | All of 5.4's conditions, plus: a maintenance window, the bridge is new and empty, nothing but `vxlan901` is ever added to it, no production interface is moved, and cleanup happens in the documented order. |
 
 Neither procedure touches `vxlan900`, any production bridge, any VLAN, DHCP, DNS, firewall or

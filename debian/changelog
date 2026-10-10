@@ -1,3 +1,16 @@
+edgeos-vxlan (0.2.2~rc2+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * Release candidate 2 for 0.2.2.
+  * Require at least 68 for the VXLAN MTU — the kernel's own minimum for a
+    VXLAN device. A value the kernel refuses is now rejected during
+    configuration validation instead of after the commit has been applied,
+    where the failed commit could leave the active configuration describing an
+    interface the kernel never configured.
+  * Nothing else changes: the reconciler, the template priorities, the kernel
+    modules and the packaging metadata are all untouched.
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Sat, 10 Oct 2026 21:33:15 +0000
+
 edgeos-vxlan (0.2.2~rc1+edgeos3.0.1.e50) unstable; urgency=medium
 
   * Release candidate 1 for 0.2.2: IPv6 VXLAN underlay support.
