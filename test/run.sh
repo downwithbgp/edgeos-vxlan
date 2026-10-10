@@ -14,6 +14,9 @@ done < <(find "$ROOT/src" "$ROOT/test" \( -name '*.sh' -o -name 'vyatta-vxlan' -
 echo "== unit: helper =="
 bash "$ROOT/test/unit-helper.sh"
 
+echo "== unit: templates =="
+bash "$ROOT/test/unit-templates.sh"
+
 if [ -f "$ROOT/test/mock.sh" ]; then
     echo "== mock: reconciliation =="
     bash "$ROOT/test/mock.sh"

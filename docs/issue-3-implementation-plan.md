@@ -109,7 +109,7 @@ The maintainer review of 2026-10-10 asked for a clear split between what must be
 - `src/vyatta-vxlan-addr` — new helper, installed to `/opt/vyatta/sbin/`; Perl; core modules only (`Socket` for `inet_pton`/`inet_ntop`, `JSON::PP` in Phase 3); shebang `#!/usr/bin/perl`; GPL-2.0-only header consistent with the project.
 - `templates/interfaces/vxlan/node.tag/local-ip/node.def` — `type: ipv4,ipv6`; replace the `/opt/vyatta/sbin/local_ip` warning call with the helper's family-aware check; help text updated.
 - `templates/interfaces/vxlan/node.tag/remote-ip/node.def` — `type: ipv4,ipv6`; help text updated.
-- `templates/interfaces/vxlan/node.def` — one additional `commit:expression: exec` calling `check-endpoints` with `$VAR(./local-ip/)` and `$VAR(./remote-ip/)`.
+- `templates/interfaces/vxlan/node.tag/remote-ip/node.def` — one additional `commit:expression: exec` calling `check-endpoints` with the *value* references `$VAR(../local-ip/@)` and `$VAR(@)`. (A bare `$VAR(<path>)` is a presence test whose value is the node name, not the configured address.)
 - `debian/edgeos-vxlan.install` — add the helper.
 - `test/` — new suite for the helper (validation cases of test plan §A1).
 
