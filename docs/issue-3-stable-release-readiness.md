@@ -15,7 +15,8 @@ assumption rather than an observation says so.
 
 **Verdict: READY WITH DOCUMENTED LIMITATIONS.** No known defect requires a code change. The release
 carries explicitly documented limitations, a short list of release-time tasks (checklist, §11), and
-two additional hardware tests that are recommended as cheap insurance but are not gating (§9). The
+additional hardware tests that are recommended as cheap insurance but are not gating (T1/T2 in §9,
+plus lower-priority optional items). The
 decision and its conditions are stated in §12.
 
 ---
@@ -98,9 +99,10 @@ injection has not been executed (§7, §9).
   path is intact and reachable.
 * **CI state (fact, not assumption):** GitHub has run this workflow 13 times, all on or before
   2026-09-05 (the last runs built and published-validated v0.2.1 successfully — the machinery is
-  known-good). **No CI run has yet executed the new 132-check suite**, because the only qualifying
-  events are pushes to `main`/`ci/**`, tags, and pull requests, and the feature branch has had none
-  since the suite was added. Opening the release PR produces that run;
+  known-good). **No CI run has yet executed the new 132-check suite**, because the qualifying events — pushes
+  to `main`/`ci/**`, tags, pull requests, releases and manual dispatches — have not yet involved a
+  tree carrying the suite (the branch's pushes to `feat/ipv6-underlay` do not trigger the workflow).
+  Opening the release PR produces that run;
   it is a release-checklist item (§11, item 11).
 
 ## 5. Packaging, upgrade, downgrade, removal; kernel identity
