@@ -90,12 +90,31 @@ canon_prefixed() {
     printf '%s/%s\n' "$c" "$prefix"
 }
 
+# Print the bridge this interface is currently a port of (empty output when it
+# is not a bridge port).  The brport directory only exists while the device is
+# enslaved to a bridge, so a missing bridge link inside it means the port state
+# cannot be read: fail instead of silently reporting "not bridged".
 get_live_bridge() {
+    local brport="${VXLAN_SYSFS_ROOT}/class/net/${INTERFACE}/brport"
     local link
-    if [ ! -L "${VXLAN_SYSFS_ROOT}/class/net/${INTERFACE}/brport/bridge" ]; then
+
+    if [ ! -e "$brport" ]; then
         return 0
     fi
-    link=$(readlink "${VXLAN_SYSFS_ROOT}/class/net/${INTERFACE}/brport/bridge") || return 0
+    if [ ! -L "$brport/bridge" ]; then
+        echo "ERROR: cannot determine bridge membership of $INTERFACE." >&2
+        return 1
+    fi
+    if ! link=$(readlink "$brport/bridge"); then
+        echo "ERROR: cannot read bridge membership of $INTERFACE." >&2
+        return 1
+    fi
+    case "$link" in
+        '' | */)
+            echo "ERROR: unexpected bridge link '$link' for $INTERFACE." >&2
+            return 1
+            ;;
+    esac
     basename "$link"
 }
 
@@ -115,7 +134,9 @@ apply_live_bridge_port_options() {
 
 reconcile_bridge() {
     local desired_bridge=$1 current_bridge rc
-    current_bridge=$(get_live_bridge)
+    if ! current_bridge=$(get_live_bridge); then
+        return 1
+    fi
 
     if [ "$current_bridge" = "$desired_bridge" ]; then
         return 0
@@ -406,7 +427,9 @@ capture_live_snapshot() {
         return 1
     fi
 
-    OLD_BRIDGE=$(get_live_bridge)
+    if ! OLD_BRIDGE=$(get_live_bridge); then
+        return 1
+    fi
     OLD_BRIDGE_COST=""
     OLD_BRIDGE_PRIORITY=""
     if [ -n "$OLD_BRIDGE" ]; then

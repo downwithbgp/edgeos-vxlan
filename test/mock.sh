@@ -464,5 +464,22 @@ else
     bad "failed administrative-down must abort the deletion (rc=$rc)"
 fi
 
+# Scenario 18: a bridge-port directory without a readable bridge link makes
+# the snapshot incomplete, so the commit is refused before anything happens.
+reset_sandbox
+set_live v6 2001:db8:1::1 2001:db8:1::2 4789
+mkdir -p "$SYS/class/net/$IF/brport"
+set_conf vni 42
+set_conf remote-ip "2001:db8:1::9"
+set_conf local-ip "2001:db8:1::1"
+if run_reconciler >/dev/null 2>&1; then
+    bad "unreadable bridge state should refuse the commit"
+elif log_lacks "link del" && log_lacks "link add" &&
+    grep -q "cannot determine bridge membership of $IF" "$TMP/err"; then
+    ok
+else
+    bad "unreadable bridge state must refuse without deleting"
+fi
+
 echo "mock: pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]
