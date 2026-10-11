@@ -1,8 +1,7 @@
 # edgeos-vxlan v0.2.2 — Release Notes
 
-**Prepared 2026-10-10 — stable release materials.** Publication is pending the maintainer's
-authorization; `docs/issue-3-v0.2.2-release-gate.md` carries the artifact manifest and the ordered
-release procedure.
+**Released 2026-10-11.** The artifact manifest and release record are in
+`docs/issue-3-v0.2.2-release-gate.md`.
 
 v0.2.2 adds native IPv6 VXLAN underlay support on the supported EdgeRouter platform. It is the
 stable continuation of the 0.2.2 release candidates (`0.2.2~rc1`, `0.2.2~rc2`): the runtime payload
@@ -112,7 +111,7 @@ Sizes and SHA-256 checksums are recorded in `docs/issue-3-v0.2.2-release-gate.md
 
 ## Installation
 
-Quick install (once the v0.2.2 tag and release are published):
+Quick install:
 
 ```bash
 curl -fsSL \
