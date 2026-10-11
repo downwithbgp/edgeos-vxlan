@@ -12,3 +12,7 @@ debian/edgeos-vxlan/
 debian/*.debhelper.log
 debian/*.debhelper
 debian/edgeos-vxlan-kmod/
+
+# Deployment-specific operational files (live addresses, runbooks) that must
+# never be committed to this public repository.
+/local/

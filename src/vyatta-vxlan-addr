@@ -1,0 +1,338 @@
+#!/usr/bin/perl
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# vyatta-vxlan-addr - dual-family address/identity helper for the EdgeOS
+# VXLAN integration.  Installed to /opt/vyatta/sbin/ and used by the
+# configuration templates (validation) and by /opt/vyatta/sbin/vyatta-vxlan
+# (reconciliation).  Core modules only: Socket (inet_pton/ntop), JSON::PP.
+
+use strict;
+use warnings;
+use Socket qw(AF_INET AF_INET6 inet_pton inet_ntop);
+use JSON::PP ();
+
+my $VYATTA_SBINDIR = $ENV{vyatta_sbindir} || "/opt/vyatta/sbin";
+my $API = "$VYATTA_SBINDIR/my_cli_shell_api";
+my $IP_BIN = $ENV{VXLAN_BIN_IP} || "ip";
+my $DEFAULT_PORT = 4789;
+my $DEFAULT_MTU_V4 = 1450;
+my $DEFAULT_MTU_V6 = 1430;
+
+sub err { print STDERR "$_[0]\n"; return 1; }
+
+# ---------------------------------------------------------------- addresses
+
+# Platform-parity IPv4 parser: exactly four decimal digit groups; a group
+# with a leading zero is interpreted as octal (glibc/iproute2 behaviour, so
+# a configured spelling binds the same address the platform would bind).
+sub parse_v4 {
+    my ($s) = @_;
+    return undef unless defined $s;
+    my @groups = ($s =~ /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/) or return undef;
+    my @oct;
+    for my $g (@groups) {
+        my $v;
+        if ($g =~ /^0\d+$/) {
+            return undef if $g =~ /[89]/;    # invalid octal digit
+            $v = oct($g);
+        } else {
+            $v = $g + 0;
+        }
+        return undef if $v > 255;
+        push @oct, $v;
+    }
+    return pack("C4", @oct);
+}
+
+sub parse_v6 {
+    my ($s) = @_;
+    return undef unless defined $s;
+    return undef if $s =~ /%|\[|\]/;          # no zone ids / brackets
+    my $packed = eval { inet_pton(AF_INET6, $s) };
+    return undef unless defined $packed && length($packed) == 16;
+    return $packed;
+}
+
+sub parse_addr {
+    my ($s) = @_;
+    return () unless defined $s && $s ne "";
+    if (my $p = parse_v4($s)) { return ("v4", $p); }
+    if (my $p = parse_v6($s)) { return ("v6", $p); }
+    return ();
+}
+
+sub canon_text {
+    my ($fam, $packed) = @_;
+    return inet_ntop($fam eq "v4" ? AF_INET : AF_INET6, $packed);
+}
+
+sub is_unspecified {
+    my ($fam, $packed) = @_;
+    return $packed eq ($fam eq "v4" ? pack("C4", 0, 0, 0, 0) : ("\0" x 16));
+}
+
+sub v6_classes {
+    my ($packed) = @_;
+    my @b = unpack("C16", $packed);
+    my %c = (unspecified => 1, loopback => 0, linklocal => 0, multicast => 0, mapped => 0);
+    my $all_zero = !grep { $_ != 0 } @b;
+    my $first15_zero = 1;
+    for my $i (0 .. 14) { $first15_zero = 0 if $b[$i] != 0; }
+    $c{loopback} = ($first15_zero && $b[15] == 1) ? 1 : 0;
+    $c{unspecified} = $all_zero ? 1 : 0;
+    $c{multicast} = ($b[0] == 0xff) ? 1 : 0;
+    $c{linklocal} = ($b[0] == 0xfe && ($b[1] & 0xc0) == 0x80) ? 1 : 0;
+    my $prefix_zero = 1;
+    for my $i (0 .. 9) { $prefix_zero = 0 if $b[$i] != 0; }
+    $c{mapped} = ($prefix_zero && $b[10] == 0xff && $b[11] == 0xff) ? 1 : 0;
+    return \%c;
+}
+
+# ------------------------------------------------------------ subcommands
+
+sub cmd_family {
+    my ($s) = @_;
+    my ($fam) = parse_addr($s) or return err("$s is not a valid IPv4 or IPv6 address");
+    print "$fam\n";
+    return 0;
+}
+
+sub cmd_canon {
+    my ($s) = @_;
+    my ($fam, $packed) = parse_addr($s) or return err("$s is not a valid IPv4 or IPv6 address");
+    print canon_text($fam, $packed), "\n";
+    return 0;
+}
+
+sub cmd_canon_v4 {
+    my ($s) = @_;
+    my $packed = parse_v4($s) or return err("$s is not a valid IPv4 address");
+    print canon_text("v4", $packed), "\n";
+    return 0;
+}
+
+sub canon_or_fail {
+    my ($s) = @_;
+    my ($fam, $packed) = parse_addr($s) or return undef;
+    return canon_text($fam, $packed);
+}
+
+sub cmd_equal {
+    my ($a, $b) = @_;
+    my $ca = canon_or_fail($a) or return err("$a is not a valid IPv4 or IPv6 address");
+    my $cb = canon_or_fail($b) or return err("$b is not a valid IPv4 or IPv6 address");
+    return $ca eq $cb ? 0 : 1;
+}
+
+sub check_one {
+    my ($role, $s) = @_;
+    my ($fam, $packed) = parse_addr($s) or return "$s is not a valid IPv4 or IPv6 address";
+    return undef if $fam eq "v4";             # IPv4 acceptance unchanged
+    my $c = v6_classes($packed);
+    return "link-local IPv6 addresses are not supported for the $role endpoint" if $c->{linklocal};
+    return "multicast IPv6 addresses are not supported for the $role endpoint" if $c->{multicast};
+    return "the loopback address is not supported for the $role endpoint" if $c->{loopback};
+    return "IPv4-mapped IPv6 addresses are not supported for the $role endpoint" if $c->{mapped};
+    if ($role eq "remote") {
+        return "an unspecified address cannot be used as the remote endpoint" if $c->{unspecified};
+    }
+    return undef;
+}
+
+sub cmd_check_endpoint {
+    my ($role, $s) = @_;
+    return err("usage: check-endpoint local|remote <addr>") unless defined $role && ($role eq "local" || $role eq "remote");
+    my $bad = check_one($role, $s);
+    return err("ERROR: $bad") if defined $bad;
+    return 0;
+}
+
+sub cmd_check_endpoints {
+    my ($l, $r) = @_;
+    my ($lf) = parse_addr($l) or return err("ERROR: $l is not a valid local address");
+    my ($rf) = parse_addr($r) or return err("ERROR: $r is not a valid remote address");
+    my $lbad = check_one("local", $l);
+    return err("ERROR: $lbad") if defined $lbad;
+    my $rbad = check_one("remote", $r);
+    return err("ERROR: $rbad") if defined $rbad;
+    return err("ERROR: Local and remote address must be from the same family") if $lf ne $rf;
+    return 0;
+}
+
+sub cmd_present {
+    my ($s) = @_;
+    my $want = canon_or_fail($s) or return err("$s is not a valid IPv4 or IPv6 address");
+    open my $fh, "-|", $IP_BIN, "-o", "addr", "show" or return 2;
+    my $found = 0;
+    while (my $line = <$fh>) {
+        my @f = split " ", $line;
+        next unless @f >= 4 && ($f[2] eq "inet" || $f[2] eq "inet6");
+        my ($lit) = split "/", $f[3];
+        my $c = canon_or_fail($lit);
+        $found = 1 if defined $c && $c eq $want;
+    }
+    close $fh;
+    return $? == 0 ? ($found ? 0 : 1) : 2;
+}
+
+sub cmd_default_mtu {
+    my ($fam) = @_;
+    return err("usage: default-mtu v4|v6") unless $fam eq "v4" || $fam eq "v6";
+    print $fam eq "v6" ? "$DEFAULT_MTU_V6\n" : "$DEFAULT_MTU_V4\n";
+    return 0;
+}
+
+# --------------------------------------------------------------- config API
+
+sub api_call {
+    my (@args) = @_;
+    my ($out, $rc);
+    $out = qx{"$API" @args 2>/dev/null};
+    $rc = $? >> 8;
+    return ($out, $rc);
+}
+
+sub api_value {
+    my ($if, $node) = @_;
+    my ($out, $rc) = api_call("returnValue", "interfaces", "vxlan", $if, $node);
+    return undef if $rc != 0;
+    chomp $out;
+    return $out;
+}
+
+sub api_exists {
+    my ($if, $node) = @_;
+    my (undef, $rc) = api_call("exists", "interfaces", "vxlan", $if, $node);
+    return $rc == 0;
+}
+
+sub cmd_default_mtu_if {
+    my ($if) = @_;
+    my $remote = api_value($if, "remote-ip");
+    return err("ERROR: cannot read remote-ip for $if") unless defined $remote && $remote ne "";
+    my ($fam) = parse_addr($remote) or return err("ERROR: $remote is not a valid remote address");
+    print $fam eq "v6" ? "$DEFAULT_MTU_V6\n" : "$DEFAULT_MTU_V4\n";
+    return 0;
+}
+
+# ------------------------------------------------------------- live state
+
+sub parse_link_json {
+    my ($json_text) = @_;
+    my $json = eval { JSON::PP::decode_json($json_text) };
+    return (undef, "cannot parse ip JSON output") unless $json;
+    my $link = ref($json) eq "ARRAY" ? $json->[0] : $json;
+    return (undef, "unexpected ip JSON structure") unless ref($link) eq "HASH";
+    my $linkinfo = $link->{linkinfo} || $link;
+    my $data = $linkinfo->{info_data} || {};
+    my $kind = $linkinfo->{info_kind} // $linkinfo->{kind} // "";
+    return (undef, "device is not a VXLAN interface") unless $kind eq "vxlan";
+
+    my $id = $data->{id};
+    return (undef, "missing VNI in ip JSON output") unless defined $id && "$id" ne "";
+    my $port = $data->{port} // $data->{dstport};
+    return (undef, "missing UDP port in ip JSON output") unless defined $port && "$port" ne "";
+
+    my (@v4, @v6);
+    for my $k (qw(local remote group)) {
+        push @v4, [$k, $data->{$k}] if defined $data->{$k} && "$data->{$k}" ne "";
+    }
+    for my $k (qw(local6 remote6 group6)) {
+        push @v6, [$k, $data->{$k}] if defined $data->{$k} && "$data->{$k}" ne "";
+    }
+    return (undef, "mixed address families in ip JSON output") if @v4 && @v6;
+    return (undef, "missing remote endpoint in ip JSON output")
+        unless grep { $_->[0] eq "remote" || $_->[0] eq "remote6" } (@v4, @v6);
+    return (undef, "multicast group endpoint is not supported") if grep { $_->[0] =~ /group/ } (@v4, @v6);
+
+    my %h;
+    for my $e (@v4, @v6) { $h{ $e->[0] } = $e->[1]; }
+    my $fam = @v6 ? "v6" : "v4";
+    my $local = $h{local} // $h{local6};
+    my $remote = $h{remote} // $h{remote6};
+    my ($lp, $rp);
+    if (defined $local) {
+        my ($lf, $lb) = parse_addr($local) or return (undef, "invalid local address in ip JSON output");
+        return (undef, "local address family mismatch") if $lf ne $fam;
+        $lp = is_unspecified($lf, $lb) ? "-" : canon_text($lf, $lb);
+    } else {
+        $lp = "-";
+    }
+    my ($rf, $rb) = parse_addr($remote) or return (undef, "invalid remote address in ip JSON output");
+    return (undef, "remote address family mismatch") if $rf ne $fam;
+    $rp = canon_text($rf, $rb);
+    return (undef, "port is not numeric") unless "$port" =~ /^\d+$/;
+    return (undef, "VNI is not numeric") unless "$id" =~ /^\d+$/;
+    return (\%h, undef, $kind, "$id", "$port", $fam, $lp, $rp);
+}
+
+sub live_identity {
+    my ($if) = @_;
+    open my $fh, "-|", $IP_BIN, "-j", "-d", "link", "show", "dev", $if or return undef;
+    local $/;
+    my $text = <$fh>;
+    close $fh;
+    return undef if $? != 0;
+    my (undef, $e, $kind, $id, $port, $fam, $lp, $rp) = parse_link_json($text);
+    return undef if defined $e;
+    return { kind => $kind, id => $id, port => $port, family => $fam, local => $lp, remote => $rp };
+}
+
+sub cmd_parse_live {
+    local $/;
+    my $text = <STDIN>;
+    my (undef, $e, $kind, $id, $port, $fam, $lp, $rp) = parse_link_json($text);
+    return err("ERROR: $e") if defined $e;
+    print join("\t", $kind, $id, $port, $fam, $lp, $rp), "\n";
+    return 0;
+}
+
+# ------------------------------------------------------------- leaf guard
+
+sub cmd_identity_matches {
+    my ($if) = @_;
+    return err("usage: identity-matches <vxlanN>") unless defined $if && $if =~ /^vxlan[0-9]+$/;
+    my $vni = api_value($if, "vni");
+    my $local = api_value($if, "local-ip");
+    my $remote = api_value($if, "remote-ip");
+    return 2 unless defined $vni && defined $local && defined $remote
+        && $vni ne "" && $local ne "" && $remote ne "";
+    my $port = api_value($if, "port");
+    $port = $DEFAULT_PORT if !defined $port || $port eq "";
+    return 2 unless $vni =~ /^[0-9]+$/;
+    return 2 unless $port =~ /^[0-9]+$/;
+
+    my ($lf, $lb) = parse_addr($local) or return 2;
+    my ($rf, $rb) = parse_addr($remote) or return 2;
+    return 2 if $lf ne $rf;
+    my $d_local = is_unspecified($lf, $lb) ? "-" : canon_text($lf, $lb);
+    my $d_remote = canon_text($rf, $rb);
+
+    my $live = live_identity($if);
+    return 1 unless defined $live;
+    return 0 if $live->{id} == $vni
+        && $live->{port} == $port
+        && $live->{family} eq $rf
+        && $live->{local} eq $d_local
+        && $live->{remote} eq $d_remote;
+    return 1;
+}
+
+# ------------------------------------------------------------------- main
+
+my $cmd = shift @ARGV // "";
+my %cmds = (
+    "family"            => sub { cmd_family(@ARGV) },
+    "canon"             => sub { cmd_canon(@ARGV) },
+    "canon-v4"          => sub { cmd_canon_v4(@ARGV) },
+    "equal"             => sub { cmd_equal(@ARGV) },
+    "check-endpoint"    => sub { cmd_check_endpoint(@ARGV) },
+    "check-endpoints"   => sub { cmd_check_endpoints(@ARGV) },
+    "present"           => sub { cmd_present(@ARGV) },
+    "default-mtu"       => sub { cmd_default_mtu(@ARGV) },
+    "default-mtu-if"    => sub { cmd_default_mtu_if(@ARGV) },
+    "parse-live"        => sub { cmd_parse_live(@ARGV) },
+    "identity-matches"  => sub { cmd_identity_matches(@ARGV) },
+);
+return err("usage: $0 <family|canon|canon-v4|equal|check-endpoint|check-endpoints|present|default-mtu|default-mtu-if|parse-live|identity-matches> ...") unless exists $cmds{$cmd};
+exit($cmds{$cmd}->());

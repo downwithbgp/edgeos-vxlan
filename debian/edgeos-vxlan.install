@@ -2,3 +2,4 @@ src/vyatta-vxlan opt/vyatta/sbin/
 src/vyatta-vxlan-bridge opt/vyatta/sbin/
 src/Interface.pm opt/vyatta/share/perl5/Vyatta/
 templates/interfaces/vxlan opt/vyatta/share/vyatta-cfg/templates/interfaces/
+src/vyatta-vxlan-addr opt/vyatta/sbin/

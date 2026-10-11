@@ -2,15 +2,15 @@
 # SPDX-License-Identifier: GPL-2.0-only
 set -eu
 
-VERSION="0.2.1"
-PKG_VERSION="0.2.1+edgeos3.0.1.e50"
+VERSION="0.2.2"
+PKG_VERSION="0.2.2+edgeos3.0.1.e50"
 REPO="downwithbgp/edgeos-vxlan"
 
 KMOD="edgeos-vxlan-kmod_${PKG_VERSION}_mipsel.deb"
 INTEGRATION="edgeos-vxlan_${PKG_VERSION}_all.deb"
 
-KMOD_SHA256="d3e2893680d5823276ed6d7bee51a4afa9a53fb93162b76c9b8f87d62bb532c2"
-INTEGRATION_SHA256="066f4e5d746e1ac0ef62f54ed847ec5fffd030fbfb8468eefbada7ae5e0ca231"
+KMOD_SHA256="0cc64788646518903522711398114085495215480168f65a60fa8af2f347cb04"
+INTEGRATION_SHA256="026d4d46dba631bfa2228f8be3af3565d505cd3650c9740b169e8c1b79a11bf9"
 
 BASE_URL="https://github.com/${REPO}/releases/download/v${VERSION}"
 
@@ -145,14 +145,10 @@ printf '%s  %s\n' \
     sha256sum -c -
 
 echo
-echo "Installing kernel module package..."
+echo "Installing the kernel module and EdgeOS integration packages"
+echo "(one dpkg transaction, kernel package first)..."
 
-dpkg -i "$KMOD"
-
-echo
-echo "Installing EdgeOS integration package..."
-
-dpkg -i "$INTEGRATION"
+dpkg -i "$KMOD" "$INTEGRATION"
 
 echo
 echo "Installation complete."
