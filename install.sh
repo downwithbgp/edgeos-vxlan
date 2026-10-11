@@ -145,14 +145,10 @@ printf '%s  %s\n' \
     sha256sum -c -
 
 echo
-echo "Installing kernel module package..."
+echo "Installing the kernel module and EdgeOS integration packages"
+echo "(one dpkg transaction, kernel package first)..."
 
-dpkg -i "$KMOD"
-
-echo
-echo "Installing EdgeOS integration package..."
-
-dpkg -i "$INTEGRATION"
+dpkg -i "$KMOD" "$INTEGRATION"
 
 echo
 echo "Installation complete."
