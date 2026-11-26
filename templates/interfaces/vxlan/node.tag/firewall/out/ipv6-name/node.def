@@ -1,0 +1,10 @@
+type: txt
+help: Outbound IPv6 firewall ruleset name for interface
+allowed: local -a params
+    eval "params=($(cli-shell-api listActiveNodes firewall ipv6-name))"
+    echo -n "${params[@]}"
+
+syntax:expression: pattern $VAR(@) "^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,27}$" \
+    ; "firewall ruleset name must be 1-28 characters, start with a letter, digit or underscore, and contain only letters, digits, '.', '_', ':' or '-'"
+
+commit:expression: exec "/opt/vyatta/sbin/vyatta-vxlan-firewall --validate '$VAR(../../../@)' out ipv6-name '$VAR(@)'"

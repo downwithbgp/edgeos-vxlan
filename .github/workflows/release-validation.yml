@@ -52,7 +52,7 @@ jobs:
       - name: Off-device test suite
         run: |
           bash test/run.sh
-          shellcheck src/vyatta-vxlan src/vyatta-vxlan-bridge test/*.sh
+          shellcheck src/vyatta-vxlan src/vyatta-vxlan-bridge src/vyatta-vxlan-firewall test/*.sh
 
       - name: Build Debian packages
         run: |
@@ -98,6 +98,28 @@ jobs:
         with:
           name: edgeos-vxlan-packages
           path: ci-artifacts/
+  dataplane:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install dataplane test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 iptables iputils-ping python3
+
+      - name: Enable VXLAN modules
+        run: |
+          sudo modprobe vxlan udp_tunnel ip6_udp_tunnel || true
+
+      - name: Linux network-namespace dataplane test
+        env:
+          REQUIRE_NETNS_TEST: "1"
+        run: |
+          sudo -E bash test/integration-netns.sh
+
   published-release:
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest

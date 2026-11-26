@@ -1,0 +1,636 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# vyatta-vxlan-firewall - native EdgeOS firewall attachment lifecycle helper
+# for VXLAN interfaces.
+#
+# The vendor engine owns firewall policy and chain construction.  This helper
+# only manages the per-interface dispatch in the Vyatta hook chains:
+#   - validate an attachment before any mutation,
+#   - apply the configured attachments through /usr/sbin/ubnt-fw,
+#   - verify that the dispatch is effective (not just that a command returned 0),
+#   - capture and restore the pre-commit state for rollback,
+#   - fail closed when a required attachment cannot be established or restored.
+#
+# Paths used by the test-suite are overridable through environment variables.
+
+set -eEu -o pipefail
+
+if [ "$(id -g -n)" != "vyattacfg" ]; then
+    echo "This script must be executed from vyatta configuration system."
+    exit 1
+fi
+
+VYATTA_SBINDIR=${vyatta_sbindir:-/opt/vyatta/sbin}
+VYATTA_API="${VYATTA_SBINDIR}/my_cli_shell_api"
+UBNT_FW=${vxlan_bin_ubnt_fw:-/usr/sbin/ubnt-fw}
+IPTABLES=${vxlan_bin_iptables:-/sbin/iptables}
+IP6TABLES=${vxlan_bin_ip6tables:-/sbin/ip6tables}
+VXLAN_SYSFS_ROOT=${vxlan_sysfs_root:-/sys}
+
+die() {
+    echo "ERROR: $*" >&2
+    return 1
+}
+
+usage() {
+    cat >&2 <<'EOF'
+usage: vyatta-vxlan-firewall --validate <iface> <in|out|local> <name|ipv6-name> <ruleset>
+       vyatta-vxlan-firewall --capture <iface>
+       vyatta-vxlan-firewall --apply <iface>          (pre-change state on stdin; empty = capture)
+       vyatta-vxlan-firewall --restore <iface>        (captured lines on stdin)
+       vyatta-vxlan-firewall --verify-all <iface>
+       vyatta-vxlan-firewall --remove-all <iface>
+       vyatta-vxlan-firewall --status <iface>
+EOF
+}
+
+# ------------------------------------------------------------------ config API
+
+node_exists_working() {
+    "$VYATTA_API" exists interfaces vxlan "$IFACE" "$@"
+}
+
+node_value() {
+    "$VYATTA_API" returnValue interfaces vxlan "$IFACE" "$@"
+}
+
+parent_exists() {
+    "$VYATTA_API" exists interfaces vxlan "$IFACE"
+}
+
+ruleset_exists() {
+    "$VYATTA_API" exists firewall "$FAMILY" "$NAME"
+}
+
+# --------------------------------------------------------------- validation
+
+check_iface() {
+    case "$IFACE" in
+        vxlan[0-9]*) ;;
+        *) die "interface '$IFACE' is not a VXLAN interface name (vxlanN)" ;;
+    esac
+    case "${IFACE#vxlan}" in
+        '' | *[!0-9]*) die "interface '$IFACE' is not a VXLAN interface name (vxlanN)" ;;
+    esac
+}
+
+check_direction() {
+    case "$DIRECTION" in
+        in | out | local) ;;
+        *) die "invalid firewall direction '$DIRECTION' (expected in, out or local)" ;;
+    esac
+}
+
+check_family() {
+    case "$FAMILY" in
+        name | ipv6-name) ;;
+        *) die "invalid firewall family '$FAMILY' (expected name or ipv6-name)" ;;
+    esac
+}
+
+check_name() {
+    case "$NAME" in
+        '' | *[!A-Za-z0-9_.:-]*)
+            die "invalid firewall ruleset name '$NAME'"
+            return 1
+            ;;
+    esac
+    case "$NAME" in
+        [A-Za-z0-9_]*) ;;
+        *) die "invalid firewall ruleset name '$NAME'" ;;
+    esac
+    if [ "${#NAME}" -gt 28 ]; then
+        die "firewall ruleset name '$NAME' is longer than 28 characters"
+        return 1
+    fi
+}
+
+check_native_name() {
+    if [ ! -x "$UBNT_FW" ]; then
+        die "native firewall engine $UBNT_FW is not available"
+        return 1
+    fi
+    if ! "$UBNT_FW" validate-fw-name "$NAME" >/dev/null 2>&1; then
+        die "native firewall engine rejected ruleset name '$NAME'"
+        return 1
+    fi
+}
+
+validate_attachment() {
+    check_iface
+    check_direction
+    check_family
+    check_name
+
+    # When the interface itself is being deleted, the attachment is going away
+    # with it; there is nothing useful to validate.
+    if ! parent_exists; then
+        return 0
+    fi
+
+    if node_exists_working bridge-group bridge; then
+        die "firewall attachments are not supported on VXLAN bridge port $IFACE"
+        return 1
+    fi
+
+    check_native_name
+    if ! ruleset_exists; then
+        die "firewall ruleset '$NAME' is not configured under firewall $FAMILY"
+        return 1
+    fi
+    return 0
+}
+
+# --------------------------------------------------------------- iptables
+
+iptables_cmd() {
+    case "$FAMILY" in
+        name) printf '%s' "$IPTABLES" ;;
+        ipv6-name) printf '%s' "$IP6TABLES" ;;
+    esac
+}
+
+hook_name() {
+    case "$DIRECTION" in
+        in) printf '%s' "VYATTA_FW_IN_HOOK" ;;
+        out) printf '%s' "VYATTA_FW_OUT_HOOK" ;;
+        local) printf '%s' "VYATTA_FW_LOCAL_HOOK" ;;
+    esac
+}
+
+hook_flag() {
+    case "$DIRECTION" in
+        out) printf '%s' "-o" ;;
+        *) printf '%s' "-i" ;;
+    esac
+}
+
+run_iptables() {
+    local cmd
+    cmd=$(iptables_cmd)
+    sudo "$cmd" -t filter "$@"
+}
+
+read_table_rules() {
+    run_iptables -S
+}
+
+# Print the configured jump target(s) for IFACE/DIRECTION/FAMILY from a saved
+# `iptables -S` listing supplied on stdin.  More than one line is an error.
+find_targets_from_rules() {
+    local hook flag
+    hook=$(hook_name)
+    flag=$(hook_flag)
+    awk -v hook="$hook" -v flag="$flag" -v iface="$IFACE" '
+        $1 == "-A" && $2 == hook {
+            has_if = 0
+            target = ""
+            for (i = 3; i <= NF; i++) {
+                if ($i == "!") { i++; continue }
+                if ($i == flag && $(i + 1) == iface) { has_if = 1 }
+                if ($i == "-j" && $(i + 1) != "") { target = $(i + 1) }
+            }
+            if (has_if && target != "") { print target }
+        }
+    '
+}
+
+find_target() {
+    local rules
+    if ! rules=$(read_table_rules 2>/dev/null); then
+        die "cannot read the filter table with $(iptables_cmd)"
+        return 1
+    fi
+    printf '%s\n' "$rules" | find_targets_from_rules
+}
+
+interface_is_up() {
+    local raw digits
+    if ! raw=$(cat "${VXLAN_SYSFS_ROOT}/class/net/${IFACE}/flags" 2>/dev/null); then
+        return 1
+    fi
+    case "$raw" in
+        0[xX]*)
+            digits=${raw#0[xX]}
+            case "$digits" in
+                '' | *[!0-9a-fA-F]*) return 1 ;;
+            esac
+            (( (0x$digits & 0x1) != 0 ))
+            ;;
+        '' | *[!0-9]*) return 1 ;;
+        *) (( (10#$raw & 0x1) != 0 )) ;;
+    esac
+}
+
+fail_closed_new_attachment() {
+    if interface_is_up; then
+        if sudo ip link set dev "$IFACE" down; then
+            echo "ERROR: requested firewall attachment could not be established; $IFACE left administratively down." >&2
+        else
+            echo "ERROR: requested firewall attachment could not be established and $IFACE could not be taken down." >&2
+        fi
+    fi
+}
+
+# After a failed apply, restore the pre-commit state.  If that fails, the live
+# policy is uncertain: take the interface down rather than leave it operational
+# with an unknown firewall state.  If the restore succeeds but the failed change
+# was a new attachment (there was no previous dispatch), the interface would be
+# operational but unfiltered by the requested policy, so take it down too.
+recover_apply_failure() {
+    local old_target=$1 old_state=$2
+    if ! restore_state <<<"$old_state"; then
+        echo "ERROR: could not restore the pre-commit firewall state for $IFACE." >&2
+        if interface_is_up; then
+            sudo ip link set dev "$IFACE" down || true
+            echo "ERROR: $IFACE left administratively down." >&2
+        fi
+        return 0
+    fi
+    if [ "$old_target" = "-" ]; then
+        fail_closed_new_attachment
+    fi
+}
+
+verify_present() {
+    local cmd hook flag
+    cmd=$(iptables_cmd)
+    hook=$(hook_name)
+    flag=$(hook_flag)
+    if ! sudo "$cmd" -t filter -C "$hook" "$flag" "$IFACE" -j "$NAME" >/dev/null 2>&1; then
+        die "firewall attachment is not effective: $IFACE $DIRECTION $FAMILY -> $NAME"
+        return 1
+    fi
+}
+
+target_or_absent() {
+    local hits
+    if ! hits=$(find_target); then
+        return 1
+    fi
+    case "$hits" in
+        '') printf '%s' "-" ;;
+        *$'\n'*)
+            die "ambiguous firewall dispatch for $IFACE in $DIRECTION ($FAMILY)"
+            return 1
+            ;;
+        *) printf '%s' "$hits" ;;
+    esac
+}
+
+# --------------------------------------------------------------- state
+
+capture_state() {
+    local family dir rules hits target
+    for family in name ipv6-name; do
+        FAMILY=$family
+        if ! rules=$(read_table_rules 2>/dev/null); then
+            die "cannot capture firewall state: $(iptables_cmd) -S failed"
+            return 1
+        fi
+        for dir in in out local; do
+            DIRECTION=$dir
+            if ! hits=$(printf '%s\n' "$rules" | find_targets_from_rules); then
+                return 1
+            fi
+            case "$hits" in
+                '') target="-" ;;
+                *$'\n'*)
+                    die "ambiguous firewall dispatch for $IFACE in $DIRECTION ($FAMILY)"
+                    return 1
+                    ;;
+                *) target=$hits ;;
+            esac
+            if [ "$family" = "name" ]; then
+                printf 'v4 %s %s\n' "$dir" "$target"
+            else
+                printf 'v6 %s %s\n' "$dir" "$target"
+            fi
+        done
+    done
+}
+
+desired_target() {
+    local dir=$1 family=$2
+    if node_exists_working firewall "$dir" "$family"; then
+        node_value firewall "$dir" "$family"
+        return 0
+    fi
+    printf '%s' "-"
+}
+
+validate_state() {
+    local family dir target seen_v4_in=0 seen_v4_out=0 seen_v4_local=0
+    local seen_v6_in=0 seen_v6_out=0 seen_v6_local=0
+    while read -r family dir target; do
+        case "$family" in \#* | '') continue ;; esac
+        case "$family $dir" in
+            'v4 in') seen_v4_in=1 ;;
+            'v4 out') seen_v4_out=1 ;;
+            'v4 local') seen_v4_local=1 ;;
+            'v6 in') seen_v6_in=1 ;;
+            'v6 out') seen_v6_out=1 ;;
+            'v6 local') seen_v6_local=1 ;;
+            *)
+                die "malformed firewall state line: $family $dir $target"
+                return 1
+                ;;
+        esac
+        case "$target" in
+            -) ;;
+            [A-Za-z0-9_]*) ;;
+            *) die "malformed firewall state target '$target'" ;;
+        esac
+    done
+    if [ "$seen_v4_in$seen_v4_out$seen_v4_local$seen_v6_in$seen_v6_out$seen_v6_local" != "111111" ]; then
+        die "incomplete firewall state for $IFACE"
+        return 1
+    fi
+    return 0
+}
+
+restore_state() {
+    local family dir target current cmd hook flag hits
+    while read -r family dir target; do
+        case "$family" in \#* | '') continue ;; esac
+        case "$family" in v4) FAMILY=name ;; v6) FAMILY=ipv6-name ;; esac
+        DIRECTION=$dir
+        cmd=$(iptables_cmd)
+        hook=$(hook_name)
+        flag=$(hook_flag)
+
+        if ! current=$(find_target); then
+            return 1
+        fi
+        case "$current" in
+            '') current="-" ;;
+            *$'\n'*)
+                die "ambiguous firewall dispatch while restoring $IFACE $dir ($FAMILY)"
+                return 1
+                ;;
+        esac
+        if [ "$current" = "$target" ]; then
+            continue
+        fi
+
+        if [ "$target" = "-" ]; then
+            if [ "$current" != "-" ]; then
+                if ! "$UBNT_FW" update-interface delete "$IFACE" "$DIRECTION" "$current" "$FAMILY"; then
+                    die "cannot remove firewall dispatch $current while restoring $IFACE $dir ($FAMILY)"
+                    return 1
+                fi
+            fi
+        elif "$UBNT_FW" update-interface update "$IFACE" "$DIRECTION" "$target" "$FAMILY" >/dev/null 2>&1; then
+            :
+        elif sudo "$cmd" -t filter -S "$target" >/dev/null 2>&1; then
+            # The old ruleset is no longer in the configuration but its chain
+            # still exists.  Reinsert the jump directly, as a bounded recovery.
+            if [ "$current" != "-" ]; then
+                sudo "$cmd" -t filter -D "$hook" "$flag" "$IFACE" -j "$current" >/dev/null 2>&1 || {
+                    die "cannot replace firewall dispatch $current while restoring $IFACE $dir ($FAMILY)"
+                    return 1
+                }
+            fi
+            if ! sudo "$cmd" -t filter -I "$hook" 1 "$flag" "$IFACE" -j "$target"; then
+                die "cannot restore firewall dispatch $target for $IFACE $dir ($FAMILY)"
+                return 1
+            fi
+        else
+            die "cannot restore firewall dispatch $target for $IFACE $dir ($FAMILY): ruleset is unavailable"
+            return 1
+        fi
+
+        if ! hits=$(find_target); then
+            return 1
+        fi
+        case "$hits" in '') hits="-" ;; esac
+        if [ "$hits" != "$target" ]; then
+            die "firewall dispatch restoration did not converge for $IFACE $dir ($FAMILY)"
+            return 1
+        fi
+    done
+    return 0
+}
+
+# --------------------------------------------------------------- operations
+
+apply_state() {
+    local old_state desired old_family old_dir old_target hits new_attachment=0
+    old_state=$(cat)
+    if [ -z "$old_state" ]; then
+        old_state=$(capture_state)
+    fi
+    validate_state <<<"$old_state" || return 1
+
+    # Defence in depth: reject a bridged attachment even if the per-leaf
+    # commit validation was bypassed (for example a configuration loaded by an
+    # older package).
+    local any_desired=0 family dir
+    for family in name ipv6-name; do
+        for dir in in out local; do
+            if node_exists_working firewall "$dir" "$family"; then
+                any_desired=1
+            fi
+        done
+    done
+    if [ "$any_desired" -eq 1 ] && node_exists_working bridge-group bridge; then
+        die "firewall attachments are not supported on VXLAN bridge port $IFACE"
+        return 1
+    fi
+
+    while read -r old_family old_dir old_target; do
+        case "$old_family" in \#* | '') continue ;; esac
+        case "$old_family" in v4) FAMILY=name ;; v6) FAMILY=ipv6-name ;; esac
+        DIRECTION=$old_dir
+        desired=$(desired_target "$old_dir" "$FAMILY")
+        if [ "$old_target" = "$desired" ]; then
+            continue
+        fi
+        if [ "$old_target" = "-" ] && [ "$desired" != "-" ]; then
+            new_attachment=1
+        fi
+
+        if [ "$desired" = "-" ]; then
+            if ! "$UBNT_FW" update-interface delete "$IFACE" "$DIRECTION" "$old_target" "$FAMILY"; then
+                die "native firewall engine failed to remove $FAMILY attachment from $IFACE ($old_dir)"
+                recover_apply_failure "$old_target" "$old_state"
+                return 1
+            fi
+            if ! hits=$(find_target); then
+                recover_apply_failure "$old_target" "$old_state"
+                return 1
+            fi
+            case "$hits" in
+                '') ;;
+                *)
+                    die "firewall attachment is still effective after removal: $IFACE $old_dir $FAMILY -> $hits"
+                    recover_apply_failure "$old_target" "$old_state"
+                    return 1
+                    ;;
+            esac
+        else
+            NAME=$desired
+            if ! check_name; then
+                recover_apply_failure "$old_target" "$old_state"
+                return 1
+            fi
+            if ! check_native_name; then
+                recover_apply_failure "$old_target" "$old_state"
+                return 1
+            fi
+            if ! "$UBNT_FW" update-interface update "$IFACE" "$DIRECTION" "$desired" "$FAMILY"; then
+                echo "ERROR: native firewall engine failed to install $FAMILY attachment '$desired' on $IFACE ($old_dir)" >&2
+                recover_apply_failure "$old_target" "$old_state"
+                return 1
+            fi
+            if ! verify_present; then
+                recover_apply_failure "$old_target" "$old_state"
+                return 1
+            fi
+        fi
+    done <<<"$old_state"
+
+    if ! require_all_effective; then
+        if ! restore_state <<<"$old_state"; then
+            echo "ERROR: could not restore the pre-commit firewall state for $IFACE." >&2
+            if interface_is_up; then
+                sudo ip link set dev "$IFACE" down || true
+                echo "ERROR: $IFACE left administratively down." >&2
+            fi
+        elif [ "$new_attachment" -eq 1 ]; then
+            fail_closed_new_attachment
+        fi
+        return 1
+    fi
+    return 0
+}
+
+require_all_effective() {
+    local family dir configured missing=0
+    check_iface
+    for family in name ipv6-name; do
+        FAMILY=$family
+        for dir in in out local; do
+            DIRECTION=$dir
+            if node_exists_working firewall "$dir" "$family"; then
+                configured=$(node_value firewall "$dir" "$family") || {
+                    die "cannot read configured $family attachment for $IFACE ($dir)"
+                    return 1
+                }
+                NAME=$configured
+                if ! check_name; then
+                    return 1
+                fi
+                if ! verify_present; then
+                    missing=1
+                fi
+            fi
+        done
+    done
+    [ "$missing" -eq 0 ] || {
+        die "refusing to make $IFACE operational without its configured firewall attachments"
+        return 1
+    }
+    return 0
+}
+
+remove_all() {
+    local family dir target hits
+    check_iface
+    for family in name ipv6-name; do
+        FAMILY=$family
+        for dir in in out local; do
+            DIRECTION=$dir
+            if ! target=$(target_or_absent); then
+                return 1
+            fi
+            [ "$target" = "-" ] && continue
+            if ! "$UBNT_FW" update-interface delete "$IFACE" "$DIRECTION" "$target" "$FAMILY"; then
+                die "cannot remove firewall dispatch $target from $IFACE ($dir, $family)"
+                return 1
+            fi
+            if ! hits=$(find_target); then
+                return 1
+            fi
+            if [ -n "$hits" ]; then
+                die "firewall dispatch still present after removal: $IFACE $dir $family -> $hits"
+                return 1
+            fi
+        done
+    done
+    return 0
+}
+
+status() {
+    local family dir configured effective
+    check_iface
+    if ! parent_exists; then
+        printf 'interface %s is not configured\n' "$IFACE"
+        return 0
+    fi
+    for family in name ipv6-name; do
+        for dir in in out local; do
+            if node_exists_working firewall "$dir" "$family"; then
+                configured=$(node_value firewall "$dir" "$family")
+            else
+                configured="-"
+            fi
+            FAMILY=$family
+            DIRECTION=$dir
+            effective=$(target_or_absent)
+            printf 'configured %s %s %s\n' "$family" "$dir" "$configured"
+            printf 'effective  %s %s %s\n' "$family" "$dir" "$effective"
+        done
+    done
+    return 0
+}
+
+# ------------------------------------------------------------------- main
+
+mode=${1:-}
+case "$mode" in
+    --validate)
+        shift
+        [ $# -eq 4 ] || { usage; exit 2; }
+        IFACE=$1 DIRECTION=$2 FAMILY=$3 NAME=$4
+        validate_attachment
+        ;;
+    --capture)
+        [ $# -eq 2 ] || { usage; exit 2; }
+        IFACE=$2
+        check_iface
+        capture_state
+        ;;
+    --apply)
+        [ $# -eq 2 ] || { usage; exit 2; }
+        IFACE=$2
+        check_iface
+        apply_state
+        ;;
+    --restore)
+        [ $# -eq 2 ] || { usage; exit 2; }
+        IFACE=$2
+        check_iface
+        restore_state
+        ;;
+    --verify-all)
+        [ $# -eq 2 ] || { usage; exit 2; }
+        IFACE=$2
+        require_all_effective
+        ;;
+    --remove-all)
+        [ $# -eq 2 ] || { usage; exit 2; }
+        IFACE=$2
+        remove_all
+        ;;
+    --status)
+        [ $# -eq 2 ] || { usage; exit 2; }
+        IFACE=$2
+        status
+        ;;
+    *)
+        usage
+        exit 2
+        ;;
+esac

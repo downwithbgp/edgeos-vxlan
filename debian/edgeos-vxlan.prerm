@@ -18,6 +18,21 @@ case "$1" in
             echo "edgeos-vxlan has not been removed."
             exit 1
         fi
+
+        if ip link show type vxlan 2>/dev/null | grep -q .; then
+            echo "ERROR: Live VXLAN interfaces still exist."
+            echo
+            echo "Remove or disable all VXLAN interfaces before uninstalling:"
+            echo
+            echo "  configure"
+            echo "  delete interfaces vxlan"
+            echo "  commit"
+            echo "  save"
+            echo "  exit"
+            echo
+            echo "edgeos-vxlan has not been removed."
+            exit 1
+        fi
         ;;
 esac
 

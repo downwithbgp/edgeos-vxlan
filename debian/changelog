@@ -1,3 +1,34 @@
+edgeos-vxlan (0.3.0~rc1+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * Release candidate 1 for 0.3.0: native firewall integration for routed
+    VXLAN interfaces.
+  * Add the interfaces vxlan firewall in/out/local subtrees for both IPv4
+    (name) and IPv6 (ipv6-name), using the stock ubnt-fw engine and the
+    Vyatta interface hook chains.
+  * Apply the complete desired attachment set from the VXLAN reconciler
+    before any interface mutation, so a failure can be rolled back against
+    the pre-change live firewall state.
+  * Fail closed: verify that every configured attachment is effective before
+    an interface is brought up; take an interface down if a newly requested
+    attachment cannot be established; leave it down if the previous firewall
+    state cannot be restored during rollback.
+  * Remove interface dispatches only after the netdevice has been deleted,
+    so a failed deletion cannot expose an operational unfiltered interface.
+  * Reject firewall attachments on VXLAN bridge ports: a port attachment does
+    not enforce L2-forwarded bridge traffic.  This prevents a misleading
+    configuration without enabling global bridge netfilter.
+  * Validate ruleset references, address family, interface direction, ruleset
+    name syntax and bridge membership at commit time.
+  * Extend the package removal guard to refuse removal while live VXLAN
+    interfaces exist, in addition to the saved-configuration guard.
+  * No kernel module change; the existing vxlan.ko, udp_tunnel.ko and
+    CVE-2022-50405 backport are unchanged.
+  * Documentation adds the native firewall syntax, underlay/overlay security
+    boundaries, routed/bridged semantics, troubleshooting, a generic IPv6
+    tunnelbroker example and a hardware acceptance procedure.
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Wed, 25 Nov 2026 12:00:00 +0000
+
 edgeos-vxlan (0.2.2+edgeos3.0.1.e50) unstable; urgency=medium
 
   * Release 0.2.2: IPv6 VXLAN underlay support on the supported platform.

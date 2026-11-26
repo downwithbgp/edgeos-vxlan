@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2016
 # Structural checks for the Vyatta/EdgeOS configuration templates (U-TPL-*).
 #
 # These checks do not execute the configuration engine.  They pin the template
@@ -193,9 +194,79 @@ case "$MTU_LOWER:$MTU_UPPER" in
         ;;
 esac
 
+# --------------------------------------------------------- firewall subtree
+# shellcheck disable=SC2016
+# Native attachment syntax is only useful if the per-interface-type subtree is
+# present.  The leaves must not install anything themselves: the reconciler
+# applies the whole set while it still holds the pre-change live state, and a
+# priority-less subtree keeps the firewall work in the interface's commit unit.
+FW_TPL="$TPL/node.tag/firewall"
+for fw_dir in in out local; do
+    ck_file_has "firewall $fw_dir direction help" "$FW_TPL/$fw_dir/node.def" "help:"
+    for fw_family in name ipv6-name; do
+        leaf="$FW_TPL/$fw_dir/$fw_family/node.def"
+        if [ ! -f "$leaf" ]; then
+            FAIL=$((FAIL + 1))
+            echo "FAIL: missing firewall leaf $leaf"
+            continue
+        fi
+        ck_file_has "firewall $fw_dir/$fw_family is validated" "$leaf" \
+            "vyatta-vxlan-firewall --validate"
+        ck_file_has "firewall $fw_dir/$fw_family names the interface correctly" "$leaf" \
+            "\$VAR(../../../@)"
+        ck_file_has "firewall $fw_dir/$fw_family uses the right allowed tree" "$leaf" \
+            "listActiveNodes firewall $fw_family"
+        ck_file_has "firewall $fw_dir/$fw_family rejects unsafe names" "$leaf" \
+            "^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,27}\$"
+        ck_file_lacks "firewall $fw_dir/$fw_family must not install directly" "$leaf" "update:"
+        ck_file_lacks "firewall $fw_dir/$fw_family must not delete directly" "$leaf" "delete:"
+        ck_file_lacks "firewall $fw_dir/$fw_family must not split the commit unit" "$leaf" "priority:"
+    done
+done
+if [ -d "$FW_TPL" ] && find "$FW_TPL" -type f -exec grep -l '^priority:' {} + 2>/dev/null | grep -q .; then
+    FAIL=$((FAIL + 1))
+    echo "FAIL: the firewall subtree declares a priority and can split the interface commit unit"
+else
+    PASS=$((PASS + 1))
+fi
+if [ -d "$FW_TPL" ] && find "$FW_TPL" \( -name modify -o -name ipv6-modify \) | grep -q .; then
+    FAIL=$((FAIL + 1))
+    echo "FAIL: modify/ipv6-modify firewall attachments are out of scope for this release"
+else
+    PASS=$((PASS + 1))
+fi
+
+# The reconciler owns the attachment lifecycle: it captures the pre-change
+# state, applies the desired set before interface mutation, gates on the
+# effective attachment, and removes dispatches only after a successful
+# interface deletion.
+ck_file_has "reconciler applies firewall attachments" "$ROOT/src/vyatta-vxlan" \
+    '"$VXLAN_FIREWALL" --apply "$INTERFACE"'
+ck_file_has "reconciler verifies effective attachments" "$ROOT/src/vyatta-vxlan" \
+    '"$VXLAN_FIREWALL" --verify-all "$INTERFACE"'
+ck_file_has "reconciler removes dispatches on delete" "$ROOT/src/vyatta-vxlan" \
+    '"$VXLAN_FIREWALL" --remove-all "$INTERFACE"'
+ck_file_has "reconciler captures live firewall state" "$ROOT/src/vyatta-vxlan" \
+    '"$VXLAN_FIREWALL" --capture "$INTERFACE"'
+ck_file_has "reconciler restores firewall state on rollback" "$ROOT/src/vyatta-vxlan" \
+    '"$VXLAN_FIREWALL" --restore "$INTERFACE"'
+ck_file_has "reconciler reads the working configuration" "$ROOT/src/vyatta-vxlan" \
+    '"$VYATTA_API" exists interfaces vxlan'
+ck_file_lacks "reconciler does not use existsEffective in the interface subtree" \
+    "$ROOT/src/vyatta-vxlan" '"$VYATTA_API" existsEffective'
+ck_file_has "reconciler uses the JSON live-state path" "$ROOT/src/vyatta-vxlan" \
+    "ip -j -d link show"
+ck_file_lacks "reconciler does not parse the broken human ip -d output" \
+    "$ROOT/src/vyatta-vxlan" "ip -d link show"
+
+ck_file_has "bridge validation rejects firewall attachments" \
+    "$ROOT/src/vyatta-vxlan-bridge" "Firewall attachments are not supported on VXLAN bridge port"
+
 # ------------------------------------------------------------ packaging entry
 ck_file_has "the helper is packaged" "$ROOT/debian/edgeos-vxlan.install" \
     "src/vyatta-vxlan-addr opt/vyatta/sbin/"
+ck_file_has "the firewall helper is packaged" "$ROOT/debian/edgeos-vxlan.install" \
+    "src/vyatta-vxlan-firewall opt/vyatta/sbin/"
 
 echo "unit-templates: pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]

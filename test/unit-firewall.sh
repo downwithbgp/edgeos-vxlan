@@ -1,0 +1,376 @@
+#!/bin/bash
+# shellcheck disable=SC2015
+# Unit tests for src/vyatta-vxlan-firewall (no root, no real iptables).
+#
+# The helper's only job is the per-interface dispatch in the Vyatta hook
+# chains.  These tests pin:
+#   - reference/bridge/name validation before any mutation,
+#   - idempotent attach/replace/remove,
+#   - effective-attachment verification (not just command success),
+#   - fail-closed behaviour when a new attachment cannot be established,
+#   - rollback of the pre-commit dispatch,
+#   - isolation between interfaces and unrelated rules.
+set -u
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+H="$ROOT/src/vyatta-vxlan-firewall"
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+PASS=0
+FAIL=0
+
+ok() { PASS=$((PASS + 1)); }
+bad() {
+    FAIL=$((FAIL + 1))
+    echo "FAIL: $1"
+    [ -s "$TMP/out" ] && sed 's/^/    out: /' "$TMP/out" | tail -8
+    [ -s "$TMP/err" ] && sed 's/^/    err: /' "$TMP/err" | tail -8
+}
+
+ck() { # ck <desc> <expected_rc> <cmd...>
+    local desc=$1 want=$2
+    shift 2
+    "$@" >"$TMP/out" 2>"$TMP/err"
+    local rc=$?
+    if [ "$rc" -eq "$want" ]; then ok; else bad "$desc (rc=$rc want=$want)"; fi
+}
+
+# ------------------------------------------------------------- sandbox
+BIN="$TMP/bin"
+SBIN="$TMP/sbin"
+CONF="$TMP/conf"
+STATE="$TMP/state"
+SYS="$TMP/sys"
+mkdir -p "$BIN" "$SBIN" "$CONF" "$STATE" "$SYS/class/net/vxlan42" "$SYS/class/net/vxlan43"
+
+cat >"$BIN/id" <<'EOF'
+#!/bin/sh
+case "$*" in
+    "-g -n") echo vyattacfg ;;
+    *) exec /usr/bin/id "$@" ;;
+esac
+EOF
+
+cat >"$BIN/sudo" <<'EOF'
+#!/bin/sh
+exec "$@"
+EOF
+
+cat >"$BIN/ip" <<'EOF'
+#!/bin/sh
+if [ "$1" = "link" ] && [ "$2" = "set" ] && [ "$3" = "dev" ]; then
+    ifname=$4
+    case "$5" in
+        down) printf '%s\n' "0x1002" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags" ;;
+        up) printf '%s\n' "0x1003" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags" ;;
+    esac
+    exit 0
+fi
+exit 0
+EOF
+
+cat >"$BIN/iptables" <<'EOF'
+#!/bin/bash
+case "$(basename "$0")" in
+    ip6tables) S=${IPTSTATE6:?}; C=${CHAINS6:?} ;;
+    *) S=${IPTSTATE:?}; C=${CHAINS:?} ;;
+esac
+if [ "$1" = "-t" ] && [ "$2" = "filter" ]; then shift 2; fi
+op=$1; shift
+case "$op" in
+    -S)
+        if [ $# -eq 0 ]; then
+            [ -f "$S" ] && cat "$S"
+            exit 0
+        fi
+        grep -qxF -- "$1" "$C" 2>/dev/null || exit 1
+        [ -f "$S" ] && grep -F -- "-A $1 " "$S" || true
+        exit 0
+        ;;
+    -C)
+        hook=$1; flag=$2; iface=$3; j=$4; target=$5
+        grep -qxF -- "-A $hook $flag $iface -j $target" "$S" 2>/dev/null
+        exit $?
+        ;;
+    -I)
+        hook=$1; shift
+        [ "${1:-}" = "1" ] && shift
+        flag=$1; iface=$2; j=$3; target=$4
+        grep -qxF -- "$target" "$C" 2>/dev/null || echo "$target" >>"$C"
+        echo "-A $hook $flag $iface -j $target" >>"$S"
+        exit 0
+        ;;
+    -D)
+        hook=$1; flag=$2; iface=$3; j=$4; target=$5
+        grep -vxF -- "-A $hook $flag $iface -j $target" "$S" >"$S.tmp" || true
+        mv "$S.tmp" "$S"
+        exit 0
+        ;;
+esac
+exit 2
+EOF
+cp "$BIN/iptables" "$BIN/ip6tables"
+
+cat >"$BIN/ubnt-fw" <<'EOF'
+#!/bin/bash
+case "$1" in
+    validate-fw-name) exit 0 ;;
+    update-interface)
+        action=$2; iface=$3; dir=$4; chain=$5; family=$6
+        case "$family" in
+            ipv6-name) S=${IPTSTATE6:?}; C=${CHAINS6:?} ;;
+            *) S=${IPTSTATE:?}; C=${CHAINS:?} ;;
+        esac
+        case "$dir" in
+            in) hook=VYATTA_FW_IN_HOOK; flag=-i ;;
+            out) hook=VYATTA_FW_OUT_HOOK; flag=-o ;;
+            local) hook=VYATTA_FW_LOCAL_HOOK; flag=-i ;;
+        esac
+        if [ "$action" = "update" ] && [ "${FAIL_FW_UPDATE:-0}" = "1" ]; then
+            exit 1
+        fi
+        if [ "$action" = "delete" ] && [ "${FAIL_FW_DELETE:-0}" = "1" ]; then
+            exit 1
+        fi
+        grep -v -- "-A $hook $flag $iface " "$S" >"$S.tmp" 2>/dev/null || true
+        mv "$S.tmp" "$S"
+        if [ "$action" = "update" ]; then
+            grep -qxF -- "$chain" "$C" 2>/dev/null || echo "$chain" >>"$C"
+            echo "-A $hook $flag $iface -j $chain" >>"$S"
+        fi
+        exit 0
+        ;;
+esac
+exit 0
+EOF
+
+cat >"$SBIN/my_cli_shell_api" <<'EOF'
+#!/bin/sh
+op=$1
+shift
+key=$(printf '%s' "$*" | tr ' ' '/')
+path="$CONF/$key"
+case "$op" in
+    exists)
+        [ -e "$path" ] && exit 0 || exit 1
+        ;;
+    returnValue|returnValues)
+        if [ -d "$path" ] && [ -f "$path/node.val" ]; then
+            cat "$path/node.val"
+        elif [ -f "$path" ]; then
+            cat "$path"
+        fi
+        exit 0
+        ;;
+esac
+exit 1
+EOF
+
+chmod +x "$BIN"/* "$SBIN"/*
+
+export PATH="$BIN:$PATH"
+export vyatta_sbindir="$SBIN"
+export vxlan_bin_ubnt_fw="$BIN/ubnt-fw"
+export vxlan_bin_iptables="$BIN/iptables"
+export vxlan_bin_ip6tables="$BIN/ip6tables"
+export vxlan_sysfs_root="$SYS"
+export VXLAN_SYSFS_ROOT="$SYS"
+export CONF IPTSTATE="$STATE/fw4" IPTSTATE6="$STATE/fw6"
+export CHAINS="$STATE/chains4" CHAINS6="$STATE/chains6"
+
+reset_case() {
+    rm -rf "$CONF" "$STATE" "$SYS"
+    mkdir -p "$CONF" "$STATE" "$SYS/class/net/vxlan42" "$SYS/class/net/vxlan43"
+    : >"$IPTSTATE"
+    : >"$IPTSTATE6"
+    : >"$CHAINS"
+    : >"$CHAINS6"
+    printf '%s\n' "0x1003" >"$SYS/class/net/vxlan42/flags"
+    printf '%s\n' "0x1003" >"$SYS/class/net/vxlan43/flags"
+    unset FAIL_FW_UPDATE FAIL_FW_DELETE
+}
+
+set_conf() { # set_conf <path> <value>
+    local path=$1 value=$2 dir
+    dir=$(dirname "$CONF/$path")
+    mkdir -p "$dir"
+    printf '%s' "$value" >"$CONF/$path"
+}
+
+set_iface() { # set_iface <iface>
+    mkdir -p "$CONF/interfaces/vxlan/$1"
+}
+
+set_ruleset() { # set_ruleset <name|ipv6-name> <name>
+    mkdir -p "$CONF/firewall/$1/$2"
+}
+
+set_attachment() { # set_attachment <iface> <in|out|local> <name|ipv6-name> <ruleset>
+    set_conf "interfaces/vxlan/$1/firewall/$2/$3" "$4"
+}
+
+run_helper() {
+    "$H" "$@" >"$TMP/out" 2>"$TMP/err"
+}
+
+run_apply() { # run_apply <old-state> <iface>
+    printf '%s\n' "$1" | "$H" --apply "$2" >"$TMP/out" 2>"$TMP/err"
+}
+
+run_helper_ck() { # run_helper_ck <desc> <want> <args...>
+    local desc=$1 want=$2
+    shift 2
+    run_helper "$@"
+    local rc=$?
+    if [ "$rc" -eq "$want" ]; then ok; else bad "$desc (rc=$rc want=$want)"; fi
+}
+
+state_eq() { # state_eq <desc> <file> <expected>
+    local desc=$1 file=$2 want=$3 got
+    got=$(cat "$file")
+    if [ "$got" = "$want" ]; then ok; else bad "$desc (got '$got' want '$want')"; fi
+}
+
+flags_eq() { # flags_eq <desc> <iface> <expected>
+    local desc=$1 iface=$2 want=$3 got
+    got=$(cat "$SYS/class/net/$iface/flags")
+    if [ "$got" = "$want" ]; then ok; else bad "$desc (got '$got' want '$want')"; fi
+}
+
+# ------------------------------------------------------------- validation
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_ruleset ipv6-name VXLAN6_IN
+
+run_helper_ck "validate v4 attachment" 0 --validate vxlan42 in name VXLAN_IN
+run_helper_ck "validate v6 attachment" 0 --validate vxlan42 local ipv6-name VXLAN6_IN
+run_helper_ck "validate missing ruleset" 1 --validate vxlan42 in name NOPE
+grep -q "is not configured" "$TMP/err" && ok || bad "missing ruleset diagnostic"
+run_helper_ck "validate invalid direction" 1 --validate vxlan42 sideways name VXLAN_IN
+run_helper_ck "validate invalid family" 1 --validate vxlan42 in modify VXLAN_IN
+run_helper_ck "validate unsafe name" 1 --validate vxlan42 in name 'VX;IN'
+run_helper_ck "validate long name" 1 --validate vxlan42 in name AAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+set_conf "interfaces/vxlan/vxlan42/bridge-group/bridge" br0
+run_helper_ck "validate rejects bridge member" 1 --validate vxlan42 in name VXLAN_IN
+grep -q "not supported on VXLAN bridge port" "$TMP/err" && ok || bad "bridge diagnostic"
+set_attachment vxlan42 in name VXLAN_IN
+empty_state=$(printf 'v4 in -\nv4 out -\nv4 local -\nv6 in -\nv6 out -\nv6 local -')
+if printf '%s\n' "$empty_state" | "$H" --apply vxlan42 >"$TMP/out" 2>"$TMP/err"; then
+    bad "apply must reject a bridged attachment even without leaf validation"
+else
+    grep -q "not supported on VXLAN bridge port" "$TMP/err" && ok || bad "apply bridge diagnostic"
+fi
+
+# ------------------------------------------------------------- capture/apply
+reset_case
+set_iface vxlan42
+set_iface vxlan43
+set_ruleset name VXLAN_IN
+set_ruleset name VXLAN_IN2
+set_ruleset ipv6-name VXLAN6_IN
+
+expected_empty=$(printf 'v4 in -\nv4 out -\nv4 local -\nv6 in -\nv6 out -\nv6 local -')
+run_helper_ck "capture empty" 0 --capture vxlan42
+[ "$(cat "$TMP/out")" = "$expected_empty" ] && ok || bad "capture empty output"
+
+set_attachment vxlan42 in name VXLAN_IN
+old=$(cat "$TMP/out")
+if run_apply "$old" vxlan42; then ok; else bad "apply v4 in"; fi
+state_eq "apply v4 in state" "$IPTSTATE" "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN"
+
+# idempotent re-apply: no duplicate rule, no unnecessary engine call
+before=$(cat "$IPTSTATE")
+if run_apply "$old" vxlan42; then ok; else bad "idempotent apply"; fi
+[ "$(cat "$IPTSTATE")" = "$before" ] && ok || bad "idempotent apply duplicated a rule"
+
+# replace the chain atomically (still one interface rule)
+set_attachment vxlan42 in name VXLAN_IN2
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+if run_apply "$old" vxlan42; then ok; else bad "apply replacement"; fi
+state_eq "apply replacement state" "$IPTSTATE" "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN2"
+
+# IPv6 local and IPv4 out use the correct hooks/flags
+set_attachment vxlan42 local ipv6-name VXLAN6_IN
+set_attachment vxlan42 out name VXLAN_IN
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+if run_apply "$old" vxlan42; then ok; else bad "apply v6 local / v4 out"; fi
+grep -qxF -- "-A VYATTA_FW_LOCAL_HOOK -i vxlan42 -j VXLAN6_IN" "$IPTSTATE6" && ok || bad "v6 local hook"
+grep -qxF -- "-A VYATTA_FW_OUT_HOOK -o vxlan42 -j VXLAN_IN" "$IPTSTATE" && ok || bad "v4 out hook"
+
+# verification fails if the rule is removed behind our back
+run_helper_ck "verify-all with attachments" 0 --verify-all vxlan42
+grep -v -- "vxlan42" "$IPTSTATE" >"$STATE/tmp" || true
+mv "$STATE/tmp" "$IPTSTATE"
+run_helper_ck "verify-all missing attachment" 1 --verify-all vxlan42
+grep -q "not effective" "$TMP/err" && ok || bad "verify-all diagnostic"
+# restore the state for the following tests
+set_attachment vxlan42 local ipv6-name VXLAN6_IN
+set_attachment vxlan42 out name VXLAN_IN
+old=$(printf 'v4 in VXLAN_IN2\nv4 out -\nv4 local -\nv6 in -\nv6 out -\nv6 local -')
+run_restore() { printf '%s\n' "$1" | "$H" --restore "$2" >"$TMP/out" 2>"$TMP/err"; }
+if run_restore "$old" vxlan42; then ok; else bad "restore captured state"; fi
+
+# ------------------------------------------------------------- remove / isolation
+reset_case
+set_iface vxlan42
+set_iface vxlan43
+set_ruleset name VXLAN_IN
+printf '%s\n' "-A VYATTA_FW_IN_HOOK -i eth9 -j OTHER" >"$IPTSTATE"
+printf '%s\n' "OTHER" >"$CHAINS"
+set_attachment vxlan42 in name VXLAN_IN
+set_attachment vxlan43 in name VXLAN_IN
+old42=$(run_helper --capture vxlan42; cat "$TMP/out")
+old43=$(run_helper --capture vxlan43; cat "$TMP/out")
+run_apply "$old42" vxlan42
+if run_apply "$old43" vxlan43; then ok; else bad "shared ruleset on two interfaces"; fi
+[ "$(grep -c -- "-i vxlan42 -j VXLAN_IN" "$IPTSTATE")" -eq 1 ] && ok || bad "vxlan42 jump count"
+[ "$(grep -c -- "-i vxlan43 -j VXLAN_IN" "$IPTSTATE")" -eq 1 ] && ok || bad "vxlan43 jump count"
+
+run_helper_ck "remove-all vxlan42" 0 --remove-all vxlan42
+grep -q -- "vxlan42" "$IPTSTATE" && bad "remove-all left the target rule" || ok
+grep -qxF -- "-A VYATTA_FW_IN_HOOK -i vxlan43 -j VXLAN_IN" "$IPTSTATE" && ok || bad "remove-all damaged the other interface"
+grep -qxF -- "-A VYATTA_FW_IN_HOOK -i eth9 -j OTHER" "$IPTSTATE" && ok || bad "remove-all damaged an unrelated rule"
+
+# ambiguous dispatch is refused
+printf '%s\n' "-A VYATTA_FW_IN_HOOK -i vxlan42 -j A" "-A VYATTA_FW_IN_HOOK -i vxlan42 -j B" >"$IPTSTATE"
+run_helper_ck "capture ambiguous dispatch" 1 --capture vxlan42
+grep -q "ambiguous firewall dispatch" "$TMP/err" && ok || bad "ambiguous dispatch diagnostic"
+
+# ------------------------------------------------------------- fail-closed
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_attachment vxlan42 in name VXLAN_IN
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+if FAIL_FW_UPDATE=1 run_apply "$old" vxlan42; then bad "failed new attachment must fail"; else ok; fi
+flags_eq "failed new attachment leaves interface down" vxlan42 "0x1002"
+grep -q "left administratively down" "$TMP/err" && ok || bad "fail-closed diagnostic"
+[ -s "$IPTSTATE" ] && bad "failed new attachment left a rule" || ok
+
+# a failed replacement must keep the old dispatch and leave the interface up
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_ruleset name VXLAN_IN2
+set_attachment vxlan42 in name VXLAN_IN
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+run_apply "$old" vxlan42
+set_attachment vxlan42 in name VXLAN_IN2
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+if FAIL_FW_UPDATE=1 run_apply "$old" vxlan42; then bad "failed replacement must fail"; else ok; fi
+flags_eq "failed replacement keeps interface up" vxlan42 "0x1003"
+grep -qxF -- "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN" "$IPTSTATE" && ok || bad "failed replacement did not restore old dispatch"
+
+# ------------------------------------------------------------- status
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_attachment vxlan42 in name VXLAN_IN
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+run_apply "$old" vxlan42
+run_helper_ck "status" 0 --status vxlan42
+grep -q "configured name in VXLAN_IN" "$TMP/out" && ok || bad "status configured output"
+grep -q "effective  name in VXLAN_IN" "$TMP/out" && ok || bad "status effective output"
+
+echo "unit-firewall: pass=$PASS fail=$FAIL"
+[ "$FAIL" -eq 0 ]

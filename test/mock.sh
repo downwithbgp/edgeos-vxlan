@@ -71,6 +71,83 @@ echo "modprobe $*" >>"$IPLOG"
 exit 0
 EOF
 
+cat >"$BIN/iptables" <<'EOF'
+#!/bin/bash
+case "$(basename "$0")" in
+    ip6tables) S=${IPTSTATE6:?}; C=${CHAINS6:?} ;;
+    *) S=${IPTSTATE:?}; C=${CHAINS:?} ;;
+esac
+echo "iptables $*" >>"$IPLOG"
+if [ "$1" = "-t" ] && [ "$2" = "filter" ]; then shift 2; fi
+op=$1; shift
+case "$op" in
+    -S)
+        if [ $# -eq 0 ]; then
+            [ -f "$S" ] && cat "$S"
+            exit 0
+        fi
+        grep -qxF -- "$1" "$C" 2>/dev/null || exit 1
+        [ -f "$S" ] && grep -F -- "-A $1 " "$S" || true
+        exit 0
+        ;;
+    -C)
+        hook=$1; flag=$2; iface=$3; j=$4; target=$5
+        grep -qxF -- "-A $hook $flag $iface -j $target" "$S" 2>/dev/null
+        exit $?
+        ;;
+    -I)
+        hook=$1; shift
+        [ "${1:-}" = "1" ] && shift
+        flag=$1; iface=$2; j=$3; target=$4
+        grep -qxF -- "$target" "$C" 2>/dev/null || echo "$target" >>"$C"
+        echo "-A $hook $flag $iface -j $target" >>"$S"
+        exit 0
+        ;;
+    -D)
+        hook=$1; flag=$2; iface=$3; j=$4; target=$5
+        grep -vxF -- "-A $hook $flag $iface -j $target" "$S" >"$S.tmp" || true
+        mv "$S.tmp" "$S"
+        exit 0
+        ;;
+esac
+exit 2
+EOF
+cp "$BIN/iptables" "$BIN/ip6tables"
+
+cat >"$BIN/ubnt-fw" <<'EOF'
+#!/bin/bash
+case "$1" in
+    validate-fw-name) exit 0 ;;
+    update-interface)
+        echo "ubnt-fw $*" >>"$IPLOG"
+        action=$2; iface=$3; dir=$4; chain=$5; family=$6
+        case "$family" in
+            ipv6-name) S=${IPTSTATE6:?}; C=${CHAINS6:?} ;;
+            *) S=${IPTSTATE:?}; C=${CHAINS:?} ;;
+        esac
+        case "$dir" in
+            in) hook=VYATTA_FW_IN_HOOK; flag=-i ;;
+            out) hook=VYATTA_FW_OUT_HOOK; flag=-o ;;
+            local) hook=VYATTA_FW_LOCAL_HOOK; flag=-i ;;
+        esac
+        if [ "$action" = "update" ] && [ "${FAIL_FW_UPDATE:-0}" = "1" ]; then
+            exit 1
+        fi
+        if [ "$action" = "delete" ] && [ "${FAIL_FW_DELETE:-0}" = "1" ]; then
+            exit 1
+        fi
+        grep -v -- "-A $hook $flag $iface " "$S" >"$S.tmp" 2>/dev/null || true
+        mv "$S.tmp" "$S"
+        if [ "$action" = "update" ]; then
+            grep -qxF -- "$chain" "$C" 2>/dev/null || echo "$chain" >>"$C"
+            echo "-A $hook $flag $iface -j $chain" >>"$S"
+        fi
+        exit 0
+        ;;
+esac
+exit 0
+EOF
+
 cat >"$BIN/ip" <<'EOF'
 #!/bin/bash
 log() { echo "$*" >>"$IPLOG"; }
@@ -189,11 +266,18 @@ EOF
 cat >"$SBIN/my_cli_shell_api" <<'EOF'
 #!/bin/sh
 mode=$1
-ifname=$4
-shift 4
-node=""
-for a in "$@"; do node="${node:+$node.}$a"; done
-key="$CONF/$ifname.$node"
+shift
+key=""
+if [ "${1:-}" = "interfaces" ] && [ "${2:-}" = "vxlan" ]; then
+    ifname=$3
+    shift 3
+    node=""
+    for a in "$@"; do node="${node:+$node.}$a"; done
+    key="$CONF/$ifname.$node"
+else
+    path=$(printf '%s' "$*" | tr ' ' '/')
+    key="$CONF/$path"
+fi
 case "$mode" in
     exists) [ -e "$key" ] && exit 0 || exit 1 ;;
     returnValue) [ -e "$key" ] && cat "$key" || true; exit 0 ;;
@@ -237,10 +321,13 @@ exit 0
 EOF
 
 cp "$ROOT/src/vyatta-vxlan-addr" "$SBIN/vyatta-vxlan-addr"
+cp "$ROOT/src/vyatta-vxlan-firewall" "$SBIN/vyatta-vxlan-firewall"
 chmod +x "$BIN"/* "$SBIN"/*
 
 export IFNAME="$IF"
 export CONF IPSTATE VXLAN_SYSFS_ROOT="$SYS"
+export IPTSTATE="$STATE/fw4" IPTSTATE6="$STATE/fw6"
+export CHAINS="$STATE/chains4" CHAINS6="$STATE/chains6"
 export IPLOG="$TMP/log"
 
 reset_sandbox() {
@@ -249,10 +336,20 @@ reset_sandbox() {
     : >"$TMP/log"
     printf '%s\n' "aa:bb:cc:dd:ee:ff" >"$SYS/class/net/eth0/address"
     : >"$STATE/addrs"
-    unset FAIL_ADD FAIL_DEL FAIL_ADDR
+    : >"$IPTSTATE"
+    : >"$IPTSTATE6"
+    : >"$CHAINS"
+    : >"$CHAINS6"
+    unset FAIL_ADD FAIL_DEL FAIL_ADDR FAIL_FW_UPDATE FAIL_FW_DELETE
 }
 
 set_conf() { printf '%s' "$2" >"$CONF/$IF.$1"; }
+set_fw_ruleset() { # set_fw_ruleset <name|ipv6-name> <ruleset>
+    mkdir -p "$CONF/firewall/$1"
+    : >"$CONF/firewall/$1/$2"
+}
+fw_state_has() { grep -qxF -- "$1" "$IPTSTATE"; }
+fw_state_lacks() { ! grep -qxF -- "$1" "$IPTSTATE"; }
 
 set_live() { # set_live <family> <local> <remote> <port>
     : >"$STATE/link"
@@ -275,7 +372,12 @@ run_reconciler() { # run_reconciler [SET|DELETE]
         vxlan_sysfs_root="$SYS" \
         vxlan_bin_brctl="$BIN/brctl" \
         vxlan_bin_modprobe="$BIN/modprobe" \
-        IFNAME="$IF" CONF="$CONF" IPSTATE="$STATE" IPLOG="$TMP/log" VXLAN_SYSFS_ROOT="$SYS" \
+        vxlan_bin_ubnt_fw="$BIN/ubnt-fw" \
+        vxlan_bin_iptables="$BIN/iptables" \
+        vxlan_bin_ip6tables="$BIN/ip6tables" \
+        IFNAME="$IF" CONF="$CONF" IPSTATE="$STATE" IPLOG="$TMP/log" \
+        VXLAN_SYSFS_ROOT="$SYS" IPTSTATE="$IPTSTATE" IPTSTATE6="$IPTSTATE6" \
+        CHAINS="$CHAINS" CHAINS6="$CHAINS6" \
         bash "$ROOT/src/vyatta-vxlan" "$action" "$IF" >"$TMP/out" 2>"$TMP/err"
 }
 
@@ -833,6 +935,175 @@ if run_reconciler >/dev/null 2>&1 &&
 else
     bad "prefix-only change must be applied"
 fi
+
+# ---------------------------------------------------------------------------
+# Native firewall attachment lifecycle.
+# ---------------------------------------------------------------------------
+
+# Scenario 37: fresh creation with an attachment installs the dispatch before
+# the interface is brought up.
+reset_sandbox
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_conf firewall.in.name VXLAN_IN
+if run_reconciler >/dev/null 2>&1 &&
+    log_has "ubnt-fw update-interface update $IF in VXLAN_IN name" &&
+    fw_state_has "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN" &&
+    log_has "link set dev $IF up"; then ok; else bad "fresh creation with firewall attachment"; fi
+
+# Scenario 38: a failed new attachment on a fresh interface never creates the
+# interface and installs no dispatch.
+reset_sandbox
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_conf firewall.in.name VXLAN_IN
+if FAIL_FW_UPDATE=1 run_reconciler >/dev/null 2>&1; then
+    bad "failed fresh attachment should fail the commit"
+elif log_lacks "link add dev $IF" &&
+    fw_state_lacks "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN" &&
+    grep -q "Failed to apply firewall attachments" "$TMP/err"; then
+    ok
+else
+    bad "failed fresh attachment must not create an unprotected interface"
+fi
+
+# Scenario 39: adding an attachment to an already-up interface fails closed:
+# the interface is taken down and no dispatch is installed.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_conf firewall.in.name VXLAN_IN
+if FAIL_FW_UPDATE=1 run_reconciler >/dev/null 2>&1; then
+    bad "failed attachment on an up interface should fail"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1002" ] &&
+    log_lacks "link del" && log_lacks "link add" &&
+    fw_state_lacks "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN" &&
+    grep -q "left administratively down" "$TMP/err"; then
+    ok
+else
+    bad "failed attachment on an up interface must take it down"
+fi
+
+# Scenario 40: an attachment-only commit installs the dispatch without any
+# netdevice recreation, and removing it takes only the dispatch away.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_conf firewall.in.name VXLAN_IN
+if run_reconciler >/dev/null 2>&1 &&
+    log_lacks "link del" && log_lacks "link add" &&
+    fw_state_has "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN" &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ]; then
+    ok
+else
+    bad "attachment-only commit must not recreate the interface"
+fi
+rm -f "$CONF/$IF.firewall.in.name"
+if run_reconciler >/dev/null 2>&1 &&
+    log_lacks "link del" && log_lacks "link add" &&
+    fw_state_lacks "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN" &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ]; then
+    ok
+else
+    bad "attachment removal must leave the interface up without the dispatch"
+fi
+
+# Scenario 41: identity recreation keeps the dispatch (iptables matches the
+# name, not an index) and does not call ubnt-fw unnecessarily.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_conf firewall.in.name VXLAN_IN
+run_reconciler >/dev/null 2>&1
+: >"$TMP/log"
+set_conf vni 43
+if run_reconciler >/dev/null 2>&1 &&
+    log_has "link del dev $IF" &&
+    log_has "link add dev $IF type vxlan id 43" &&
+    fw_state_has "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN" &&
+    log_lacks "ubnt-fw update-interface"; then
+    ok
+else
+    bad "identity recreation must preserve and not reinstall the dispatch"
+fi
+
+# Scenario 42: a failed recreation restores the previous firewall dispatch.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_fw_ruleset name VXLAN_IN2
+set_conf firewall.in.name VXLAN_IN
+run_reconciler >/dev/null 2>&1
+set_conf vni 43
+set_conf firewall.in.name VXLAN_IN2
+if FAIL_ADD=1 run_reconciler >/dev/null 2>&1; then
+    bad "failed recreation with a new attachment should fail"
+elif grep -q "Rolling back" "$TMP/err" &&
+    fw_state_has "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN" &&
+    fw_state_lacks "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN2" &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ]; then
+    ok
+else
+    bad "failed recreation must restore the previous firewall dispatch"
+fi
+
+# Scenario 43: DELETE removes the dispatch only after the netdevice is gone.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_conf firewall.in.name VXLAN_IN
+run_reconciler >/dev/null 2>&1
+if run_reconciler DELETE >/dev/null 2>&1 &&
+    log_has "link del dev $IF" &&
+    log_has "ubnt-fw update-interface delete $IF in VXLAN_IN name" &&
+    log_lacks "link add"; then ok; else bad "DELETE must remove the dispatch after the interface"; fi
+
+# Scenario 44: a failed DELETE keeps the interface and its dispatch intact.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_conf firewall.in.name VXLAN_IN
+run_reconciler >/dev/null 2>&1
+if FAIL_DEL=1 run_reconciler DELETE >/dev/null 2>&1; then
+    bad "failed DELETE should fail"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ] &&
+    fw_state_has "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN"; then
+    ok
+else
+    bad "failed DELETE must leave the interface protected"
+fi
+
+# Scenario 45: an interface without attachments does not call ubnt-fw at all.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+if run_reconciler >/dev/null 2>&1 &&
+    log_lacks "ubnt-fw" &&
+    log_lacks "link del" && log_lacks "link add"; then ok; else bad "no-attachment commit must not touch firewall state"; fi
 
 echo "mock: pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]
