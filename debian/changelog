@@ -1,3 +1,42 @@
+edgeos-vxlan (0.3.0~rc3+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * Release candidate 3: the RC2 maintainer review's remaining findings.
+    No new feature scope.
+  * Quiesce a change set that needs more than one sequential vendor
+    dispatch operation; keep a single replacement or insertion
+    nondisruptive. An operational interface no longer carries an
+    intermediate dispatch combination.
+  * Install EXIT traps in the helper and reconciler while a firewall
+    mutation is in flight. A configuration-API diagnostic after the
+    mutation restores the pre-change dispatch and administrative state;
+    a recreation runs the normal rollback; if the firewall cannot be
+    restored, the interface is left down.
+  * Base the capture-failure gate on the previous (effective)
+    configuration as well as the candidate. A candidate that removes the
+    final attachment no longer makes an enforced interface look
+    intentionally unfiltered; an unreadable previous state is
+    fail-closed.
+  * Verify the terminal rule against the vendor fw.cpp default-action
+    format: unconditional vendor comment, accept/drop/reject mapped to
+    RETURN/DROP/REJECT, and (for desired state) agreement with the
+    configured default-action. Rollback checks shape/verdict consistency
+    only. The vendor-owned policy trust boundary is documented.
+  * Hardware runbook: account for all runtime-only state (policy
+    routing/table, delegated-prefix loopback address, interface-specific
+    sysctls), separate native-only structural, router-originated,
+    isolated dataplane and external probe evidence, and replace invalid
+    multi-chain iptables -S invocations.
+  * Add the bounded first-hardware-session sequence
+    (docs/v0.3.0-first-hardware-session.md and
+    scripts/first-hardware-session.sh): inventory, backup, staging,
+    installation and isolated vxlan903 testing only.
+  * Regression: 64 helper + 116 firewall + 93 template + 70 mock = 343
+    off-device checks. Network-namespace integration 26/26; emulated
+    EdgeOS 3.0.1 configuration engine add/replace/remove commits passed
+    (evidence in docs/v0.3.0-rc3-evidence.md).
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Thu, 26 Nov 2026 21:00:00 +0000
+
 edgeos-vxlan (0.3.0~rc2+edgeos3.0.1.e50) unstable; urgency=medium
 
   * Release candidate 2: targeted correctness and security review fixes on
