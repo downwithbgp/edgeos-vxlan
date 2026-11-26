@@ -155,6 +155,9 @@ case "$1" in
         if [ "$action" = "delete" ] && [ "${FAIL_FW_DELETE:-0}" = "1" ]; then
             exit 1
         fi
+        if [ -n "${API_FAIL_MARKER:-}" ]; then
+            : >"$API_FAIL_MARKER"
+        fi
         grep -v -- "-A $hook $flag $iface " "$S" >"$S.tmp" 2>/dev/null || true
         mv "$S.tmp" "$S"
         if [ "$action" = "update" ]; then
@@ -291,6 +294,21 @@ if [ -n "${FAIL_API_PATTERN:-}" ] &&
     echo "configd: session error" >&2
     exit 1
 fi
+if [ -n "${FAIL_API_AFTER_FW:-}" ] && [ -n "${API_FAIL_MARKER:-}" ] &&
+    [ -e "$API_FAIL_MARKER" ] &&
+    printf '%s' "$*" | grep -q -- "$FAIL_API_AFTER_FW"; then
+    match=1
+    if [ -n "${API_FAIL_COUNTER:-}" ]; then
+        seen=0
+        [ -f "$API_FAIL_COUNTER" ] && seen=$(cat "$API_FAIL_COUNTER")
+        match=$((seen + 1))
+        printf '%s' "$match" >"$API_FAIL_COUNTER"
+    fi
+    if [ "$match" -eq "${FAIL_API_AFTER_FW_COUNT:-1}" ]; then
+        echo "configd: session error" >&2
+        exit 1
+    fi
+fi
 key=""
 node=""
 if [ "${1:-}" = "interfaces" ] && [ "${2:-}" = "vxlan" ]; then
@@ -376,6 +394,8 @@ reset_sandbox() {
     : >"$CHAINS6"
     unset FAIL_ADD FAIL_DEL FAIL_ADDR FAIL_FW_UPDATE FAIL_FW_DELETE
     unset FAIL_DOWN FAIL_UP FAIL_API_PATTERN FAIL_IPT_S
+    unset FAIL_API_AFTER_FW FAIL_API_AFTER_FW_COUNT API_FAIL_MARKER API_FAIL_COUNTER
+    rm -f "$TMP/api-fail" "$TMP/api-count"
     unset NO_BASE_HOOKS BASE_SHADOW BASE_SHADOW_OTHER NONTERMINAL_CHAIN
 }
 
@@ -1380,6 +1400,144 @@ elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1002" ] &&
     ok
 else
     bad "shadowed hook must take the interface down"
+fi
+
+# Scenario 57: a multi-attachment change is quiesced around the whole apply; a
+# single replacement remains nondisruptive.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_fw_ruleset name VXLAN_IN2
+set_fw_ruleset ipv6-name VXLAN6_IN
+set_fw_ruleset ipv6-name VXLAN6_IN2
+set_conf firewall.in.name VXLAN_IN
+set_conf firewall.local.ipv6-name VXLAN6_IN
+run_reconciler >/dev/null 2>&1
+: >"$TMP/log"
+set_conf firewall.in.name VXLAN_IN2
+set_conf firewall.local.ipv6-name VXLAN6_IN2
+if run_reconciler >/dev/null 2>&1 &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ] &&
+    fw_state_has "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN2" &&
+    grep -qxF -- "-A VYATTA_FW_LOCAL_HOOK -i $IF -j VXLAN6_IN2" "$IPTSTATE6"; then
+    down_line=$(grep -n "link set dev $IF down" "$TMP/log" | head -1 | cut -d: -f1)
+    first_update=$(grep -n "ubnt-fw update-interface update" "$TMP/log" | head -1 | cut -d: -f1)
+    up_line=$(grep -n "link set dev $IF up" "$TMP/log" | head -1 | cut -d: -f1)
+    if [ -n "$down_line" ] && [ -n "$first_update" ] && [ -n "$up_line" ] &&
+        [ "$down_line" -lt "$first_update" ] && [ "$first_update" -lt "$up_line" ]; then
+        ok
+    else
+        bad "multi-attachment change must quiesce around the whole apply"
+    fi
+else
+    bad "multi-attachment change must succeed and end up"
+fi
+
+# Scenario 58: a single replacement stays nondisruptive (no link down).
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_fw_ruleset name VXLAN_IN2
+set_conf firewall.in.name VXLAN_IN
+run_reconciler >/dev/null 2>&1
+: >"$TMP/log"
+set_conf firewall.in.name VXLAN_IN2
+if run_reconciler >/dev/null 2>&1 &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ] &&
+    fw_state_has "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN2" &&
+    log_lacks "link set dev $IF down"; then
+    ok
+else
+    bad "single replacement must not quiesce"
+fi
+
+# Scenario 59: a configuration-API diagnostic during desired mutable-state
+# application is recovered by the reconciler exit trap: the pre-commit dispatch
+# is restored and the interface returns to its previous administrative state.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_fw_ruleset name VXLAN_IN2
+set_conf firewall.in.name VXLAN_IN
+run_reconciler >/dev/null 2>&1
+set_conf firewall.in.name VXLAN_IN2
+if API_FAIL_MARKER="$TMP/api-fail" \
+    FAIL_API_AFTER_FW='interfaces vxlan vxlan42 disable' \
+    run_reconciler >/dev/null 2>&1; then
+    bad "API diagnostic during mutable state must fail the commit"
+elif grep -q "unexpected exit after the firewall change" "$TMP/err" &&
+    fw_state_has "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN" &&
+    fw_state_lacks "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN2" &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ]; then
+    ok
+else
+    bad "API diagnostic during mutable state must restore the pre-commit state"
+fi
+
+# Scenario 60: a configuration-API diagnostic during the final attachment
+# verification is a fail-closed gate: the pre-commit dispatch is restored and
+# the interface is left down.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_fw_ruleset name VXLAN_IN2
+set_conf firewall.in.name VXLAN_IN
+run_reconciler >/dev/null 2>&1
+set_conf firewall.in.name VXLAN_IN2
+if API_FAIL_MARKER="$TMP/api-fail" API_FAIL_COUNTER="$TMP/api-count" \
+    FAIL_API_AFTER_FW='firewall name VXLAN_IN2' FAIL_API_AFTER_FW_COUNT=2 \
+    run_reconciler >/dev/null 2>&1; then
+    bad "API diagnostic during final verification must fail the commit"
+else
+    rc=$?
+    if [ "$rc" -eq 3 ] &&
+        fw_state_has "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN" &&
+        fw_state_lacks "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN2" &&
+        [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1002" ]; then
+        ok
+    else
+        bad "final verification API diagnostic must fail closed (rc=$rc)"
+    fi
+fi
+
+# Scenario 61: an API diagnostic during a recreation's mutable state runs the
+# rollback path from the exit trap, restoring the previous identity, dispatch
+# and administrative state.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_fw_ruleset name VXLAN_IN2
+set_conf firewall.in.name VXLAN_IN
+run_reconciler >/dev/null 2>&1
+set_conf remote-ip "192.0.2.3"
+set_conf firewall.in.name VXLAN_IN2
+if API_FAIL_MARKER="$TMP/api-fail" \
+    FAIL_API_AFTER_FW='interfaces vxlan vxlan42 disable' \
+    run_reconciler >/dev/null 2>&1; then
+    bad "API diagnostic during recreation must fail the commit"
+elif grep -q "Rolling back" "$TMP/err" &&
+    fw_state_has "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN" &&
+    fw_state_lacks "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN2" &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ] &&
+    log_has "link add dev $IF type vxlan id 42 local 192.0.2.1 remote 192.0.2.2 dstport 4789"; then
+    ok
+else
+    bad "recreation API diagnostic must restore the previous live state"
 fi
 
 echo "mock: pass=$PASS fail=$FAIL"

@@ -157,6 +157,9 @@ case "$1" in
         if [ "$action" = "delete" ] && [ "${FAIL_FW_DELETE:-0}" = "1" ]; then
             exit 1
         fi
+        if [ -n "${API_FAIL_MARKER:-}" ]; then
+            : >"$API_FAIL_MARKER"
+        fi
         grep -v -- "-A $hook $flag $iface " "$S" >"$S.tmp" 2>/dev/null || true
         mv "$S.tmp" "$S"
         if [ "$action" = "update" ]; then
@@ -175,6 +178,12 @@ op=$1
 shift
 if [ -n "${FAIL_API_PATTERN:-}" ] &&
     printf '%s' "$*" | grep -q -- "$FAIL_API_PATTERN"; then
+    echo "configd: session error" >&2
+    exit 1
+fi
+if [ -n "${FAIL_API_AFTER_FW:-}" ] && [ -n "${API_FAIL_MARKER:-}" ] &&
+    [ -e "$API_FAIL_MARKER" ] &&
+    printf '%s' "$*" | grep -q -- "$FAIL_API_AFTER_FW"; then
     echo "configd: session error" >&2
     exit 1
 fi
@@ -217,7 +226,9 @@ reset_case() {
     : >"$CHAINS6"
     printf '%s\n' "0x1003" >"$SYS/class/net/vxlan42/flags"
     printf '%s\n' "0x1003" >"$SYS/class/net/vxlan43/flags"
-    unset FAIL_FW_UPDATE FAIL_FW_DELETE
+    unset FAIL_FW_UPDATE FAIL_FW_DELETE FAIL_API_PATTERN FAIL_API_AFTER_FW
+    unset API_FAIL_MARKER
+    rm -f "$TMP/api-fail"
 }
 
 set_conf() { # set_conf <path> <value>
@@ -555,6 +566,114 @@ grep -q "shadowed" "$TMP/err" && ok || bad "shadowed hook diagnostic"
 BASE_SHADOW_OTHER=1 run_helper_ck "verify-all allows another interface's rule" 0 --verify-all vxlan42
 NONTERMINAL_CHAIN=1 run_helper_ck "verify-all rejects a non-terminal default" 1 --verify-all vxlan42
 grep -q "terminal default" "$TMP/err" && ok || bad "terminal default diagnostic"
+
+# ------------------------------------------------------------- multi-attachment quiesce
+# More than one dispatch change is applied sequentially, so it is quiesced: the
+# interface must not carry an intermediate combination that neither the
+# previous nor the final configuration intended.
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_ruleset name VXLAN_IN2
+set_ruleset ipv6-name VXLAN6_IN
+set_ruleset ipv6-name VXLAN6_IN2
+set_attachment vxlan42 in name VXLAN_IN
+set_attachment vxlan42 local ipv6-name VXLAN6_IN
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+if run_apply "$old" vxlan42; then ok; else bad "multi-attachment add"; fi
+flags_eq "multi-attachment add is quiesced" vxlan42 "0x1002"
+
+# two replacements at once are quiesced as well
+printf '%s\n' "0x1003" >"$SYS/class/net/vxlan42/flags"
+set_attachment vxlan42 in name VXLAN_IN2
+set_attachment vxlan42 local ipv6-name VXLAN6_IN2
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+if run_apply "$old" vxlan42; then ok; else bad "multi-attachment replace"; fi
+flags_eq "multi-attachment replace is quiesced" vxlan42 "0x1002"
+grep -qxF -- "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN2" "$IPTSTATE" && ok || bad "multi replace v4"
+grep -qxF -- "-A VYATTA_FW_LOCAL_HOOK -i vxlan42 -j VXLAN6_IN2" "$IPTSTATE6" && ok || bad "multi replace v6"
+
+# a single replacement is one atomic vendor operation and is not quiesced
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_ruleset name VXLAN_IN2
+set_attachment vxlan42 in name VXLAN_IN
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+run_apply "$old" vxlan42
+set_attachment vxlan42 in name VXLAN_IN2
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+if run_apply "$old" vxlan42; then ok; else bad "single replacement"; fi
+flags_eq "single replacement stays up" vxlan42 "0x1003"
+grep -qxF -- "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN2" "$IPTSTATE" && ok || bad "single replacement target"
+
+# --------------------------------------- exit recovery after mutation
+# api_exists() exits directly on a configuration-API diagnostic.  Once the
+# dispatch has been mutated, the EXIT trap must restore the pre-change
+# dispatch and return the interface to a documented administrative state.
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_ruleset name VXLAN_IN2
+set_attachment vxlan42 in name VXLAN_IN
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+run_apply "$old" vxlan42
+set_attachment vxlan42 in name VXLAN_IN2
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+if API_FAIL_MARKER="$TMP/api-fail" \
+    FAIL_API_AFTER_FW='interfaces vxlan vxlan42 firewall' \
+    run_apply "$old" vxlan42; then
+    bad "API diagnostic after mutation must fail the apply"
+else
+    ok
+fi
+grep -q "unexpected exit after a firewall change" "$TMP/err" && ok || bad "exit-recovery diagnostic"
+grep -qxF -- "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN" "$IPTSTATE" && ok || bad "API diagnostic restores the pre-change dispatch"
+! grep -qxF -- "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN2" "$IPTSTATE" && ok || bad "API diagnostic removes the new dispatch"
+flags_eq "single replacement stays up after exit recovery" vxlan42 "0x1003"
+
+# A quiesced multi-attachment change is restored and the interface resumed.
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_ruleset name VXLAN_IN2
+set_ruleset ipv6-name VXLAN6_IN
+set_ruleset ipv6-name VXLAN6_IN2
+set_attachment vxlan42 in name VXLAN_IN
+set_attachment vxlan42 local ipv6-name VXLAN6_IN
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+run_apply "$old" vxlan42
+printf '%s\n' "0x1003" >"$SYS/class/net/vxlan42/flags"
+set_attachment vxlan42 in name VXLAN_IN2
+set_attachment vxlan42 local ipv6-name VXLAN6_IN2
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+if API_FAIL_MARKER="$TMP/api-fail" \
+    FAIL_API_AFTER_FW='interfaces vxlan vxlan42 firewall' \
+    run_apply "$old" vxlan42; then
+    bad "API diagnostic after a multi-attachment mutation must fail"
+else
+    ok
+fi
+grep -qxF -- "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN" "$IPTSTATE" && ok || bad "quiesced recovery restores v4"
+grep -qxF -- "-A VYATTA_FW_LOCAL_HOOK -i vxlan42 -j VXLAN6_IN" "$IPTSTATE6" && ok || bad "quiesced recovery restores v6"
+flags_eq "quiesced recovery resumes the interface" vxlan42 "0x1003"
+
+# A failed new attachment stays down even after the pre-change dispatch (none)
+# is restored.
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_attachment vxlan42 in name VXLAN_IN
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+if API_FAIL_MARKER="$TMP/api-fail" \
+    FAIL_API_AFTER_FW='interfaces vxlan vxlan42 firewall' \
+    run_apply "$old" vxlan42; then
+    bad "API diagnostic while adding an attachment must fail"
+else
+    ok
+fi
+[ ! -s "$IPTSTATE" ] && ok || bad "failed new attachment leaves no dispatch"
+flags_eq "failed new attachment stays down" vxlan42 "0x1002"
 
 echo "unit-firewall: pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]

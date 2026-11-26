@@ -679,6 +679,45 @@ recover_failed_delete() {
     return 0
 }
 
+# Set while the desired firewall state is applied but the commit has not yet
+# settled.  If the script exits unexpectedly (a configuration-API diagnostic,
+# an unguarded failure under set -e), the trap returns the live interface to a
+# documented safe state instead of leaving the new dispatch live:
+#   - recreation: restore the pre-commit live snapshot (firewall first, then
+#     administrative state), or delete a partially created interface when
+#     there was no previous interface;
+#   - in place: restore the pre-commit dispatch and resume the previous
+#     administrative state.
+# If the firewall cannot be restored, the interface is left down.
+FIREWALL_MUTATED=0
+settle_on_exit() {
+    local rc=$?
+    [ "$FIREWALL_MUTATED" -eq 1 ] || return 0
+    FIREWALL_MUTATED=0
+    echo "ERROR: unexpected exit after the firewall change; restoring the pre-commit state." >&2
+    if [ "${RECREATE:-0}" -eq 1 ]; then
+        if [ "${HAVE_OLD_SNAPSHOT:-0}" -eq 1 ]; then
+            rollback_live_snapshot ||
+                stop_interface "the pre-commit live state could not be restored"
+        elif delete_interface; then
+            if ! remove_firewall_attachments; then
+                echo "WARNING: $INTERFACE was deleted but stale firewall dispatches remain; a later commit will reconcile them." >&2
+            fi
+        else
+            stop_interface "the partially created $INTERFACE could not be deleted"
+        fi
+    elif printf '%s\n' "$FIREWALL_SNAPSHOT" |
+        "$VXLAN_FIREWALL" --restore "$INTERFACE"; then
+        if [ "${OLD_UP:-0}" -eq 1 ]; then
+            resume_interface "the pre-commit firewall attachments were restored" || true
+        fi
+    else
+        stop_interface "the pre-commit firewall state could not be restored"
+    fi
+    return "$rc"
+}
+trap settle_on_exit EXIT
+
 if [ "$ACTION" = "DELETE" ]; then
     if ! delete_interface; then
         echo "ERROR: refusing to remove the firewall dispatches for $INTERFACE: the netdevice could not be deleted." >&2
@@ -822,6 +861,7 @@ if ! printf '%s\n' "$FIREWALL_SNAPSHOT" |
     echo "ERROR: Failed to apply firewall attachments for $INTERFACE." >&2
     exit 1
 fi
+FIREWALL_MUTATED=1
 
 if [ "$RECREATE" -eq 1 ]; then
     if ! delete_interface; then
@@ -830,11 +870,14 @@ if [ "$RECREATE" -eq 1 ]; then
             if ! remove_firewall_attachments; then
                 echo "WARNING: stale firewall dispatches remain for the deleted $INTERFACE." >&2
             fi
+            FIREWALL_MUTATED=0
             exit 1
         fi
         if ! recover_failed_delete; then
+            FIREWALL_MUTATED=0
             exit 2
         fi
+        FIREWALL_MUTATED=0
         exit 1
     fi
 
@@ -867,6 +910,7 @@ if [ "$RECREATE" -eq 1 ]; then
         if [ "$HAVE_OLD_SNAPSHOT" -eq 1 ]; then
             if ! rollback_live_snapshot; then
                 echo "ERROR: Rollback of $INTERFACE also failed." >&2
+                FIREWALL_MUTATED=0
                 exit 2
             fi
         else
@@ -877,9 +921,11 @@ if [ "$RECREATE" -eq 1 ]; then
             fi
         fi
 
+        FIREWALL_MUTATED=0
         exit "$APPLY_RC"
     fi
 
+    FIREWALL_MUTATED=0
     exit 0
 fi
 
@@ -901,5 +947,8 @@ if [ "$APPLY_RC" -ne 0 ]; then
     elif [ "$APPLY_RC" -ne 3 ] && [ "$OLD_UP" -eq 1 ]; then
         resume_interface "the previous firewall attachments were restored"
     fi
+    FIREWALL_MUTATED=0
     exit "$APPLY_RC"
 fi
+
+FIREWALL_MUTATED=0
