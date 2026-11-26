@@ -28,6 +28,22 @@ EXECUTE=0
 TEST_IF=vxlan903
 PROD_IF=vxlan41913
 
+# Exact RC3 artifact identity.  The package payload is unchanged by the
+# qualification-tooling corrections; these values are the recorded RC3
+# artifacts and must not drift without a new artifact record.
+RC3_VERSION="0.3.0~rc3+edgeos3.0.1.e50"
+RC3_KMOD_PACKAGE=edgeos-vxlan-kmod
+RC3_MAIN_PACKAGE=edgeos-vxlan
+RC3_KMOD_ARCH=mipsel
+RC3_MAIN_ARCH=all
+RC3_KMOD_SHA=9d1621392d38ed9201ee21f3aa9f3e04ffbcc0a8d00015200c7f9b9b2fe35e06
+RC3_MAIN_SHA=7d3eb867f91161167f7308731459294cf30aeb57dd1069d496ca03bb262a2ad6
+
+# Evidence is kept under /config so it survives, but the backup archive
+# excludes this tree (and any explicit session outside it) to avoid
+# self-inclusion of the growing archive.
+SESSION_ROOT=/config/rc3-sessions
+
 INTERFACE_TARGET=/opt/vyatta/share/perl5/Vyatta/Interface.pm
 INTERFACE_DIVERT=$INTERFACE_TARGET.edgeos-vxlan-original
 
@@ -49,7 +65,7 @@ phases:
   cleanup-check  verify that vxlan903 and its rules are gone (read-only)
 
 options:
-  --session DIR     session directory (default /config/rc3-session-<UTC>)
+  --session DIR     session directory (default /config/rc3-sessions/<UTC>)
   --artifacts DIR   directory containing the RC3 .deb files (stage/install)
   --test-if IFACE   isolated test interface (default $TEST_IF)
   --execute         required for the install phase
@@ -78,7 +94,7 @@ need_cmd() {
 
 session_init() {
     if [ -z "$SESSION" ]; then
-        SESSION="/config/rc3-session-$(date -u +%Y%m%dT%H%M%SZ)"
+        SESSION="$SESSION_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
     fi
     mkdir -p "$SESSION"/{inventory,backup,stage,install,verify,cleanup}
     chmod 700 "$SESSION"
@@ -100,6 +116,22 @@ show_cfg() {
 vxlan_links() {
     ip -o link show type vxlan 2>/dev/null ||
         ip -o link show 2>/dev/null | grep -E 'vxlan' || true
+}
+
+# Remove the volatile parts of iptables-save output before comparing it:
+# the generated header comment and the per-chain packet/byte counters.
+# Raw captures are kept separately.
+normalize_fw_save() {
+    sed -e '/^#/d' \
+        -e 's/\[[0-9][0-9]*:[0-9][0-9]*\]/[0:0]/g' "$1"
+}
+
+# Exact administrative UP flag, not a substring match: LOWER_UP must not pass.
+iface_admin_up() {
+    ip -o link show dev "$1" 2>/dev/null |
+        awk -F'[<>]' 'NF > 1 { print $2; exit }' |
+        tr ',' '\n' |
+        grep -qx 'UP'
 }
 
 phase_inventory() {
@@ -148,14 +180,18 @@ phase_inventory() {
     grep -E "$PROD_IF|HEv6" "$out/inventory.txt" \
         >"$out/vxlan41913-rules-all.txt" || true
 
-    # A stable-format capture for later comparisons: the full firewall saves
-    # and the production/manual-rule subset without filename prefixes.
-    iptables-save -t filter >"$out/fw4.txt"
-    ip6tables-save -t filter >"$out/fw6.txt"
-    grep -hE "$PROD_IF|HEv6" "$out/fw4.txt" "$out/fw6.txt" \
+    # Raw and normalized firewall captures.  The normalized files are used for
+    # stable comparisons; the raw files remain the evidence.
+    iptables-save -t filter >"$out/fw4.raw"
+    ip6tables-save -t filter >"$out/fw6.raw"
+    normalize_fw_save "$out/fw4.raw" >"$out/fw4.norm"
+    normalize_fw_save "$out/fw6.raw" >"$out/fw6.norm"
+    grep -hE "$PROD_IF|HEv6" "$out/fw4.norm" "$out/fw6.norm" \
         >"$out/vxlan41913-rules.txt" || true
 
     note "inventory: $out/inventory.txt"
+    note "raw firewall captures: $out/fw4.raw $out/fw6.raw"
+    note "normalized captures:   $out/fw4.norm $out/fw6.norm"
     note "manual $PROD_IF/HEv6 lines: $(wc -l <"$out/vxlan41913-rules.txt")"
     note "review $out/vxlan41913-rules.txt before any change"
 }
@@ -165,23 +201,51 @@ phase_backup() {
     session_init
     phase_inventory
     local out="$SESSION/backup"
+    local rel=""
+    local -a tar_excludes=(--exclude='./rc3-sessions')
     [ -f /config/config.boot ] || die "/config/config.boot not found"
 
     cp -a /config/config.boot "$out/config.boot"
     cp -a "$SESSION/inventory/inventory.txt" "$out/inventory.txt"
-    cp -a "$SESSION/inventory/fw4.txt" "$out/fw4.txt"
-    cp -a "$SESSION/inventory/fw6.txt" "$out/fw6.txt"
+    cp -a "$SESSION/inventory/fw4.raw" "$out/fw4.raw"
+    cp -a "$SESSION/inventory/fw6.raw" "$out/fw6.raw"
+    cp -a "$SESSION/inventory/fw4.norm" "$out/fw4.norm"
+    cp -a "$SESSION/inventory/fw6.norm" "$out/fw6.norm"
     cp -a "$SESSION/inventory/vxlan41913-rules.txt" \
         "$out/vxlan41913-rules.txt"
-    tar -C /config -czf "$out/config-dir.tar.gz" . ||
+
+    case "$SESSION" in
+        /config/*) rel="./${SESSION#/config/}" ;;
+    esac
+    if [ -n "$rel" ]; then
+        tar_excludes+=(--exclude="$rel")
+    fi
+    tar -C /config "${tar_excludes[@]}" -czf "$out/config-dir.tar.gz" . ||
         die "could not archive /config; the backup is incomplete"
+
+    # The archive must contain the complete configuration and must restore.
+    # The evidence tree (including the growing archive) is excluded above.
+    tar -tzf "$out/config-dir.tar.gz" >"$out/config-dir.list"
+    grep -q '^\./config\.boot$' "$out/config-dir.list" ||
+        die "the /config archive does not contain config.boot"
+    if grep -qF -- 'rc3-sessions' "$out/config-dir.list"; then
+        die "the /config archive includes the session evidence tree"
+    fi
+    mkdir -p "$out/restore-check"
+    tar -C "$out/restore-check" -xzf "$out/config-dir.tar.gz" ./config.boot ||
+        die "the /config archive could not restore config.boot"
+    cmp -s "$out/restore-check/config.boot" "$out/config.boot" ||
+        die "the restored config.boot differs from the live copy"
+    rm -rf "$out/restore-check"
+
     (
         cd "$out"
-        sha256sum config.boot config-dir.tar.gz inventory.txt fw4.txt \
-            fw6.txt vxlan41913-rules.txt >SHA256SUMS
+        sha256sum config.boot config-dir.tar.gz config-dir.list \
+            inventory.txt fw4.raw fw6.raw fw4.norm fw6.norm \
+            vxlan41913-rules.txt >SHA256SUMS
     )
 
-    note "backup: $out"
+    note "backup: $out (config archive excludes rc3-sessions; config.boot restore verified)"
     note "copy it off-router now, for example:"
     note "  scp -r root@<router>:$out <workstation>/rc3-backup"
 }
@@ -190,16 +254,27 @@ resolve_artifacts() {
     [ -n "$ARTIFACTS" ] || die "--artifacts DIR is required"
     [ -d "$ARTIFACTS" ] || die "artifact directory not found: $ARTIFACTS"
 
-    KMOD_DEB=$(find "$ARTIFACTS" -maxdepth 1 -type f \
-        -name 'edgeos-vxlan-kmod_*_mipsel.deb' -print -quit)
-    MAIN_DEB=$(find "$ARTIFACTS" -maxdepth 1 -type f \
-        -name 'edgeos-vxlan_*_all.deb' -print -quit)
+    ARTIFACTS=$(cd "$ARTIFACTS" && pwd)
+    KMOD_DEB="$ARTIFACTS/${RC3_KMOD_PACKAGE}_${RC3_VERSION}_${RC3_KMOD_ARCH}.deb"
+    MAIN_DEB="$ARTIFACTS/${RC3_MAIN_PACKAGE}_${RC3_VERSION}_${RC3_MAIN_ARCH}.deb"
 
-    [ -n "$KMOD_DEB" ] || die "kmod .deb not found in $ARTIFACTS"
-    [ -n "$MAIN_DEB" ] || die "integration .deb not found in $ARTIFACTS"
+    [ -f "$KMOD_DEB" ] || die "expected RC3 kmod artifact not found: $KMOD_DEB"
+    [ -f "$MAIN_DEB" ] || die "expected RC3 integration artifact not found: $MAIN_DEB"
+}
 
-    KMOD_DEB=$(cd "$(dirname "$KMOD_DEB")" && pwd)/$(basename "$KMOD_DEB")
-    MAIN_DEB=$(cd "$(dirname "$MAIN_DEB")" && pwd)/$(basename "$MAIN_DEB")
+check_artifact() { # check_artifact <file> <package> <version> <arch> <sha256>
+    local file=$1 pkg=$2 version=$3 arch=$4 sha=$5 got
+
+    [ -f "$file" ] || die "artifact missing: $file"
+    [ "$(dpkg-deb -f "$file" Package)" = "$pkg" ] ||
+        die "$file is not package $pkg"
+    [ "$(dpkg-deb -f "$file" Version)" = "$version" ] ||
+        die "$file has the wrong version (expected $version)"
+    [ "$(dpkg-deb -f "$file" Architecture)" = "$arch" ] ||
+        die "$file has the wrong architecture (expected $arch)"
+    got=$(sha256sum "$file" | awk '{print $1}')
+    [ "$got" = "$sha" ] ||
+        die "$file has the wrong SHA-256 (expected $sha, got $got)"
 }
 
 phase_stage() {
@@ -209,9 +284,17 @@ phase_stage() {
     need_cmd dpkg-deb
     local out="$SESSION/stage"
 
+    check_artifact "$KMOD_DEB" "$RC3_KMOD_PACKAGE" "$RC3_VERSION" \
+        "$RC3_KMOD_ARCH" "$RC3_KMOD_SHA"
+    check_artifact "$MAIN_DEB" "$RC3_MAIN_PACKAGE" "$RC3_VERSION" \
+        "$RC3_MAIN_ARCH" "$RC3_MAIN_SHA"
+
     {
         echo "# artifacts"
         printf '%s\n' "$KMOD_DEB" "$MAIN_DEB"
+        echo "# expected identity"
+        echo "$RC3_KMOD_PACKAGE $RC3_VERSION $RC3_KMOD_ARCH $RC3_KMOD_SHA"
+        echo "$RC3_MAIN_PACKAGE $RC3_VERSION $RC3_MAIN_ARCH $RC3_MAIN_SHA"
         echo "# sha256"
         sha256sum "$KMOD_DEB" "$MAIN_DEB"
         echo "# metadata"
@@ -225,11 +308,11 @@ phase_stage() {
         (cd "$ARTIFACTS" && sha256sum -c SHA256SUMS) |
             tee -a "$out/stage.txt"
     else
-        note "WARNING: $ARTIFACTS/SHA256SUMS is absent; compare the computed hashes with the RC3 artifact record"
+        note "WARNING: $ARTIFACTS/SHA256SUMS is absent; the exact RC3 hashes were still verified against the pinned record"
     fi
 
     note "stage report: $out/stage.txt"
-    note "cross-check the hashes against docs/v0.3.0-rc3-artifacts.md before install"
+    note "verified exact RC3 package, version, architecture and recorded SHA-256"
 }
 
 phase_install() {
@@ -246,12 +329,14 @@ phase_install() {
     local fail=0
 
     vxlan_links >"$pre_vxlan"
-    iptables-save -t filter >"$out/pre-fw4"
-    ip6tables-save -t filter >"$out/pre-fw6"
+    iptables-save -t filter >"$out/pre-fw4.raw"
+    ip6tables-save -t filter >"$out/pre-fw6.raw"
+    normalize_fw_save "$out/pre-fw4.raw" >"$out/pre-fw4.norm"
+    normalize_fw_save "$out/pre-fw6.raw" >"$out/pre-fw6.norm"
     dpkg -l >"$out/pre-dpkg.txt"
     sha256sum "$INTERFACE_TARGET" "$INTERFACE_DIVERT" \
         >"$out/pre-interface.sha256" 2>/dev/null || true
-    grep -hE "$PROD_IF|HEv6" "$out/pre-fw4" "$out/pre-fw6" \
+    grep -hE "$PROD_IF|HEv6" "$out/pre-fw4.norm" "$out/pre-fw6.norm" \
         >"$out/pre-manual-rules.txt" || true
 
     note "installing $(basename "$KMOD_DEB") then $(basename "$MAIN_DEB")"
@@ -266,9 +351,11 @@ phase_install() {
     sha256sum "$INTERFACE_TARGET" "$INTERFACE_DIVERT" \
         >"$out/post-interface.sha256" 2>/dev/null || true
     vxlan_links >"$out/post-vxlan.txt"
-    iptables-save -t filter >"$out/post-fw4"
-    ip6tables-save -t filter >"$out/post-fw6"
-    grep -hE "$PROD_IF|HEv6" "$out/post-fw4" "$out/post-fw6" \
+    iptables-save -t filter >"$out/post-fw4.raw"
+    ip6tables-save -t filter >"$out/post-fw6.raw"
+    normalize_fw_save "$out/post-fw4.raw" >"$out/post-fw4.norm"
+    normalize_fw_save "$out/post-fw6.raw" >"$out/post-fw6.norm"
+    grep -hE "$PROD_IF|HEv6" "$out/post-fw4.norm" "$out/post-fw6.norm" \
         >"$out/post-manual-rules.txt" || true
 
     if ! dpkg-query -W -f='${Status}\n' edgeos-vxlan-kmod 2>/dev/null |
@@ -289,12 +376,14 @@ phase_install() {
         note "FAIL: existing VXLAN interfaces changed during install"
         fail=1
     fi
-    if ! diff -u "$out/pre-fw4" "$out/post-fw4" >"$out/fw4.diff"; then
-        note "FAIL: the IPv4 filter table changed during install"
+    if ! diff -u "$out/pre-fw4.norm" "$out/post-fw4.norm" \
+        >"$out/fw4.diff"; then
+        note "FAIL: the IPv4 filter table changed during install (normalized compare; raw captures retained)"
         fail=1
     fi
-    if ! diff -u "$out/pre-fw6" "$out/post-fw6" >"$out/fw6.diff"; then
-        note "FAIL: the IPv6 filter table changed during install"
+    if ! diff -u "$out/pre-fw6.norm" "$out/post-fw6.norm" \
+        >"$out/fw6.diff"; then
+        note "FAIL: the IPv6 filter table changed during install (normalized compare; raw captures retained)"
         fail=1
     fi
     if ! diff -u "$out/pre-manual-rules.txt" "$out/post-manual-rules.txt" \
@@ -348,8 +437,8 @@ phase_verify() {
     if ! ip -o link show dev "$TEST_IF" >"$out/link.txt" 2>/dev/null; then
         note "FAIL: $TEST_IF does not exist"
         fail=1
-    elif ! grep -q 'UP' "$out/link.txt"; then
-        note "FAIL: $TEST_IF is not administratively up"
+    elif ! iface_admin_up "$TEST_IF"; then
+        note "FAIL: $TEST_IF is not administratively up (exact UP flag)"
         fail=1
     fi
 
@@ -359,15 +448,18 @@ phase_verify() {
         "set interfaces vxlan $TEST_IF firewall in ipv6-name VXLAN903_IN6" \
         "set interfaces vxlan $TEST_IF firewall local name VXLAN903_LOCAL_IN" \
         "set interfaces vxlan $TEST_IF firewall local ipv6-name VXLAN903_LOCAL_IN6" \
-        "set interfaces vxlan $TEST_IF firewall out name VXLAN903_OUT"; do
+        "set interfaces vxlan $TEST_IF firewall out name VXLAN903_OUT" \
+        "set interfaces vxlan $TEST_IF firewall out ipv6-name VXLAN903_OUT6"; do
         if ! grep -qF -- "$needle" "$out/configuration.txt"; then
             note "FAIL: missing configuration: $needle"
             fail=1
         fi
     done
 
-    iptables-save -t filter >"$out/fw4.txt"
-    ip6tables-save -t filter >"$out/fw6.txt"
+    iptables-save -t filter >"$out/fw4.raw"
+    ip6tables-save -t filter >"$out/fw6.raw"
+    normalize_fw_save "$out/fw4.raw" >"$out/fw4.norm"
+    normalize_fw_save "$out/fw6.raw" >"$out/fw6.norm"
 
     check_dispatch iptables VYATTA_FW_IN_HOOK -i "$TEST_IF" VXLAN903_IN ||
         { note "FAIL: v4 in dispatch"; fail=1; }
@@ -377,6 +469,8 @@ phase_verify() {
         { note "FAIL: v4 local dispatch"; fail=1; }
     check_dispatch ip6tables VYATTA_FW_IN_HOOK -i "$TEST_IF" VXLAN903_IN6 ||
         { note "FAIL: v6 in dispatch"; fail=1; }
+    check_dispatch ip6tables VYATTA_FW_OUT_HOOK -o "$TEST_IF" VXLAN903_OUT6 ||
+        { note "FAIL: v6 out dispatch"; fail=1; }
     check_dispatch ip6tables VYATTA_FW_LOCAL_HOOK -i "$TEST_IF" VXLAN903_LOCAL_IN6 ||
         { note "FAIL: v6 local dispatch"; fail=1; }
 
@@ -390,6 +484,8 @@ phase_verify() {
         { note "FAIL: IPv6 INPUT does not reach VYATTA_FW_LOCAL_HOOK"; fail=1; }
     check_hook ip6tables FORWARD VYATTA_FW_IN_HOOK ||
         { note "FAIL: IPv6 FORWARD does not reach VYATTA_FW_IN_HOOK"; fail=1; }
+    check_hook ip6tables FORWARD VYATTA_FW_OUT_HOOK ||
+        { note "FAIL: IPv6 FORWARD does not reach VYATTA_FW_OUT_HOOK"; fail=1; }
 
     check_terminal iptables VXLAN903_IN drop DROP ||
         { note "FAIL: VXLAN903_IN terminal default"; fail=1; }
@@ -399,20 +495,22 @@ phase_verify() {
         { note "FAIL: VXLAN903_OUT terminal default"; fail=1; }
     check_terminal ip6tables VXLAN903_IN6 drop DROP ||
         { note "FAIL: VXLAN903_IN6 terminal default"; fail=1; }
+    check_terminal ip6tables VXLAN903_OUT6 drop DROP ||
+        { note "FAIL: VXLAN903_OUT6 terminal default"; fail=1; }
     check_terminal ip6tables VXLAN903_LOCAL_IN6 drop DROP ||
         { note "FAIL: VXLAN903_LOCAL_IN6 terminal default"; fail=1; }
 
-    if grep -Eq -- "-A (INPUT|FORWARD|OUTPUT).*$TEST_IF" "$out/fw4.txt"; then
+    if grep -Eq -- "-A (INPUT|FORWARD|OUTPUT).*$TEST_IF" "$out/fw4.norm"; then
         note "FAIL: a manual IPv4 rule for $TEST_IF exists in a base chain"
         fail=1
     fi
-    if grep -Eq -- "-A (INPUT|FORWARD|OUTPUT).*$TEST_IF" "$out/fw6.txt"; then
+    if grep -Eq -- "-A (INPUT|FORWARD|OUTPUT).*$TEST_IF" "$out/fw6.norm"; then
         note "FAIL: a manual IPv6 rule for $TEST_IF exists in a base chain"
         fail=1
     fi
 
     if [ -f "$SESSION/inventory/vxlan41913-rules.txt" ]; then
-        grep -hE "$PROD_IF|HEv6" "$out/fw4.txt" "$out/fw6.txt" \
+        grep -hE "$PROD_IF|HEv6" "$out/fw4.norm" "$out/fw6.norm" \
             >"$out/prod-rules.txt" || true
         if ! diff -u "$SESSION/inventory/vxlan41913-rules.txt" \
             "$out/prod-rules.txt" >"$out/prod-rules.diff"; then
@@ -450,6 +548,7 @@ delete firewall name VXLAN903_LOCAL_IN
 delete firewall name VXLAN903_OUT
 delete firewall ipv6-name VXLAN903_IN6
 delete firewall ipv6-name VXLAN903_LOCAL_IN6
+delete firewall ipv6-name VXLAN903_OUT6
 commit
 exit
 EOF
