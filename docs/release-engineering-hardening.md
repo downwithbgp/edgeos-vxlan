@@ -23,7 +23,7 @@ The only branch pushed is `ci/release-engineering-hardening`.
 
 * `scripts/validate-release.sh` already checked package names, versions,
   architectures, the two kernel-module payload hashes, tag/version agreement,
-  and the `install.sh` version/pin relationship for stable releases.
+  and the `install.sh` version relationship for stable releases.
 * `scripts/validate-published-release.sh` already checked published asset
   names, package versions/architectures, `install.sh` pins, and exact equality
   of the published `SHA256SUMS` with the tagged repository.
@@ -79,11 +79,14 @@ release. This is what allows historical releases to be validated with current
 trusted logic. The module payload hashes and MIPS ABI anchors remain explicit
 reviewed constants for the supported `v0.1.1`–`v0.2.x` payloads.
 
-`scripts/validate-release.sh` handles prerelease (`~`) builds separately: it
-skips only the published-pin cross-check and continues to enforce prerelease
-version shape, content, module and tag restrictions. The previous validator
-would have failed an rc branch because `install.sh` intentionally keeps the
-last published version until the release commit.
+`scripts/validate-release.sh` preserves the existing prerelease (`~`)
+behavior: it skips only the published-pin cross-check and continues to enforce
+prerelease version shape, content, module and tag restrictions. This was a
+regression caught during review: the first shared-validator version
+cross-checked `install.sh` unconditionally and would have failed every rc
+branch, where `install.sh` intentionally keeps the last published version
+until the release commit. The regression is now covered by a prerelease
+simulation in the negative suite.
 
 `scripts/validate-published-release.sh` requires an explicit tagged source
 tree. It treats that tree as read-only data: no tagged build or maintainer
@@ -174,6 +177,9 @@ and reported no findings.
   * Build and validate packages: success.
   * Verify published release: success; `v0.2.2` validation PASS
     (`Kmod SHA256 0cc647…`, `Integration SHA256 026d4d46…`).
+* Documentation-commit run: <https://github.com/downwithbgp/edgeos-vxlan/actions/runs/45903324988>
+  * Static analysis: success.
+  * Build and validate packages: success.
 
 The CI-built packages downloaded from run 45902676688 are byte-identical to
 the published v0.2.2 assets and to both local clean builds.
@@ -328,7 +334,7 @@ This remains a proposal; no hardware was accessed or modified.
 
 ```sh
 bash test/run.sh
-./scripts/validate-release.sh
+./scripts/validate-release.sh <clean-artifact-dir>
 bash test/validate-release-negative.sh ..
 RELEASE_TAG=v0.2.2 ./scripts/validate-published-release.sh published tagged-source
 shellcheck install.sh scripts/*.sh test/*.sh \
@@ -340,3 +346,7 @@ lintian --suppress-tags-from-file .github/lintian-suppressions.txt \
   --fail-on error --tag-display-limit 0 <packages>
 dpkg-buildpackage -us -uc -b -a mipsel
 ```
+
+`validate-release.sh` requires an artifact directory containing exactly the
+two packages built from this tree. The default is the repository's parent;
+use an explicit clean directory when the parent contains older builds.
