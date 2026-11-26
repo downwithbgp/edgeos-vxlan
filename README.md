@@ -90,7 +90,7 @@ The installer is pinned to release `v0.2.2`; it does not execute the moving `mai
 
 ## Supported platform
 
-Version `0.2.2` is deliberately restricted to the platform on which it has been built and tested.
+The project is deliberately restricted to the platform on which it has been built and tested.
 
 ```text
 Device:       Ubiquiti EdgeRouter X / ER-e50
