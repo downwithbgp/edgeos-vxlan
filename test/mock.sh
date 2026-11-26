@@ -21,9 +21,10 @@ bad() {
 BIN="$TMP/bin"
 SBIN="$TMP/sbin"
 CONF="$TMP/conf"
+EFFECTIVE="$TMP/effective"
 STATE="$TMP/state"
 SYS="$TMP/sys"
-mkdir -p "$BIN" "$SBIN" "$CONF" "$STATE" "$SYS/class/net"
+mkdir -p "$BIN" "$SBIN" "$CONF" "$EFFECTIVE" "$STATE" "$SYS/class/net"
 
 cat >"$BIN/id" <<'EOF'
 #!/bin/sh
@@ -289,6 +290,12 @@ cat >"$SBIN/my_cli_shell_api" <<'EOF'
 #!/bin/sh
 mode=$1
 shift
+if [ "$mode" = "existsEffective" ] &&
+    [ -n "${FAIL_API_EFFECTIVE_PATTERN:-}" ] &&
+    printf '%s' "$*" | grep -q -- "$FAIL_API_EFFECTIVE_PATTERN"; then
+    echo "configd: session error" >&2
+    exit 1
+fi
 if [ -n "${FAIL_API_PATTERN:-}" ] &&
     printf '%s' "$*" | grep -q -- "$FAIL_API_PATTERN"; then
     echo "configd: session error" >&2
@@ -309,23 +316,25 @@ if [ -n "${FAIL_API_AFTER_FW:-}" ] && [ -n "${API_FAIL_MARKER:-}" ] &&
         exit 1
     fi
 fi
+TREE="$CONF"
+[ "$mode" = "existsEffective" ] && TREE="$CONF_EFFECTIVE"
 key=""
 node=""
 if [ "${1:-}" = "interfaces" ] && [ "${2:-}" = "vxlan" ]; then
     ifname=$3
     shift 3
     for a in "$@"; do node="${node:+$node.}$a"; done
-    key="$CONF/$ifname.$node"
+    key="$TREE/$ifname.$node"
 else
     ifname=""
     path=$(printf '%s' "$*" | tr ' ' '/')
-    key="$CONF/$path"
+    key="$TREE/$path"
 fi
 case "$mode" in
-    exists)
+    exists|existsEffective)
         if [ -n "$ifname" ] && [ -z "$node" ]; then
             # The interface container exists when any of its leaves does.
-            for f in "$CONF/$ifname".*; do
+            for f in "$TREE/$ifname".*; do
                 [ -e "$f" ] && exit 0
             done
             exit 1
@@ -383,8 +392,8 @@ export CHAINS="$STATE/chains4" CHAINS6="$STATE/chains6"
 export IPLOG="$TMP/log"
 
 reset_sandbox() {
-    rm -rf "$CONF" "$STATE" "$SYS"
-    mkdir -p "$CONF" "$STATE" "$SYS/class/net/eth0"
+    rm -rf "$CONF" "$EFFECTIVE" "$STATE" "$SYS"
+    mkdir -p "$CONF" "$EFFECTIVE" "$STATE" "$SYS/class/net/eth0"
     : >"$TMP/log"
     printf '%s\n' "aa:bb:cc:dd:ee:ff" >"$SYS/class/net/eth0/address"
     : >"$STATE/addrs"
@@ -395,6 +404,7 @@ reset_sandbox() {
     unset FAIL_ADD FAIL_DEL FAIL_ADDR FAIL_FW_UPDATE FAIL_FW_DELETE
     unset FAIL_DOWN FAIL_UP FAIL_API_PATTERN FAIL_IPT_S
     unset FAIL_API_AFTER_FW FAIL_API_AFTER_FW_COUNT API_FAIL_MARKER API_FAIL_COUNTER
+    unset FAIL_API_EFFECTIVE_PATTERN
     rm -f "$TMP/api-fail" "$TMP/api-count"
     unset NO_BASE_HOOKS BASE_SHADOW BASE_SHADOW_OTHER NONTERMINAL_CHAIN
 }
@@ -422,7 +432,7 @@ set_live() { # set_live <family> <local> <remote> <port>
 }
 
 run_reconciler() { # run_reconciler [SET|DELETE]
-    local action=${1:-SET}
+    local action=${1:-SET} rc=0
     env PATH="$BIN:/usr/bin:/bin" \
         vyatta_sbindir="$SBIN" \
         vxlan_sysfs_root="$SYS" \
@@ -431,10 +441,19 @@ run_reconciler() { # run_reconciler [SET|DELETE]
         vxlan_bin_ubnt_fw="$BIN/ubnt-fw" \
         vxlan_bin_iptables="$BIN/iptables" \
         vxlan_bin_ip6tables="$BIN/ip6tables" \
-        IFNAME="$IF" CONF="$CONF" IPSTATE="$STATE" IPLOG="$TMP/log" \
+        IFNAME="$IF" CONF="$CONF" CONF_EFFECTIVE="$EFFECTIVE" \
+        IPSTATE="$STATE" IPLOG="$TMP/log" \
         VXLAN_SYSFS_ROOT="$SYS" IPTSTATE="$IPTSTATE" IPTSTATE6="$IPTSTATE6" \
         CHAINS="$CHAINS" CHAINS6="$CHAINS6" \
-        bash "$ROOT/src/vyatta-vxlan" "$action" "$IF" >"$TMP/out" 2>"$TMP/err"
+        bash "$ROOT/src/vyatta-vxlan" "$action" "$IF" >"$TMP/out" 2>"$TMP/err" ||
+        rc=$?
+    # A successful commit makes the working configuration effective; a failed
+    # commit leaves the previously effective configuration in place.
+    if [ "$rc" -eq 0 ]; then
+        rm -rf "$EFFECTIVE"
+        cp -a "$CONF" "$EFFECTIVE"
+    fi
+    return "$rc"
 }
 
 log_has() { grep -qF -- "$1" "$TMP/log"; }
@@ -1216,14 +1235,14 @@ printf '%s\n' "-A VYATTA_FW_IN_HOOK -i $IF -j A" "-A VYATTA_FW_IN_HOOK -i $IF -j
 if run_reconciler >/dev/null 2>&1; then
     bad "ambiguous dispatch without an attachment must fail the commit"
 elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ] &&
-    grep -q "no attachment is configured" "$TMP/err"; then
+    grep -q "neither the candidate nor the previous configuration" "$TMP/err"; then
     ok
 else
     bad "ambiguous dispatch without an attachment must not disrupt the interface"
 fi
 
-# Scenario 49: an unreadable filter table is fail-closed only when enforcement
-# is configured.
+# Scenario 49: an unreadable filter table is fail-closed when the candidate or
+# the previous configuration requires enforcement.
 reset_sandbox
 set_live v4 192.0.2.1 192.0.2.2 4789
 set_conf vni 42
@@ -1250,6 +1269,64 @@ elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ]; then
     ok
 else
     bad "unreadable table without an attachment must not disrupt the interface"
+fi
+
+# Scenario 49a: a candidate that removes the final attachment does not make
+# the interface intentionally unfiltered.  The previous (effective)
+# configuration still requires enforcement, so a failed capture is fail-closed.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_conf firewall.in.name VXLAN_IN
+run_reconciler >/dev/null 2>&1
+rm -f "$CONF/$IF.firewall.in.name"
+if FAIL_IPT_S=1 run_reconciler >/dev/null 2>&1; then
+    bad "capture failure with a previous attachment must fail"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1002" ] &&
+    fw_state_has "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN" &&
+    grep -q "previous configuration requires an attachment" "$TMP/err"; then
+    ok
+else
+    bad "capture failure must honour the previous enforcement"
+fi
+
+# Scenario 49b: with no candidate or previous attachment, a capture failure
+# leaves an intentionally unfiltered interface unchanged.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+run_reconciler >/dev/null 2>&1
+if FAIL_IPT_S=1 run_reconciler >/dev/null 2>&1; then
+    bad "capture failure without any attachment must fail"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ] &&
+    grep -q "neither the candidate nor the previous configuration" "$TMP/err"; then
+    ok
+else
+    bad "capture failure without enforcement must leave the interface unchanged"
+fi
+
+# Scenario 49c: an unreadable previous configuration is not treated as "no
+# enforcement": a capture failure is fail-closed.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+run_reconciler >/dev/null 2>&1
+if FAIL_IPT_S=1 \
+    FAIL_API_EFFECTIVE_PATTERN='interfaces vxlan vxlan42 firewall' \
+    run_reconciler >/dev/null 2>&1; then
+    bad "capture failure with an unreadable previous configuration must fail"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1002" ] &&
+    grep -q "previous configuration could not be read" "$TMP/err"; then
+    ok
+else
+    bad "an unreadable previous configuration must be fail-closed"
 fi
 
 # Scenario 50: a failure to capture unrelated mutable interface state aborts

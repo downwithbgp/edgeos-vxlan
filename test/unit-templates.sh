@@ -257,8 +257,27 @@ ck_file_has "reconciler restores firewall state on rollback" "$ROOT/src/vyatta-v
     '"$VXLAN_FIREWALL" --restore "$INTERFACE"'
 ck_file_has "reconciler reads the working configuration" "$ROOT/src/vyatta-vxlan" \
     'api_exists interfaces vxlan "$INTERFACE"'
-ck_file_lacks "reconciler does not use existsEffective in the interface subtree" \
+ck_file_has "reconciler reads the previous configuration for capture failure" \
     "$ROOT/src/vyatta-vxlan" '"$VYATTA_API" existsEffective'
+ck_file_lacks "firewall helper plans desired state from the working configuration" \
+    "$ROOT/src/vyatta-vxlan-firewall" 'existsEffective'
+# The desired-state gate must use the working configuration (exists, not
+# existsEffective): during the current subtree's end action the latter reports
+# newly added nodes as absent.
+if awk '/^firewall_configured\(\)/,/^}/' "$ROOT/src/vyatta-vxlan" |
+    grep -qF 'node_exists_working'; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: desired-state firewall gate must use the working configuration"
+fi
+if awk '/^firewall_configured\(\)/,/^}/' "$ROOT/src/vyatta-vxlan" |
+    grep -qF 'node_exists_effective'; then
+    FAIL=$((FAIL + 1))
+    echo "FAIL: desired-state firewall gate must not use existsEffective"
+else
+    PASS=$((PASS + 1))
+fi
 ck_file_has "reconciler uses the JSON live-state path" "$ROOT/src/vyatta-vxlan" \
     "ip -j -d link show"
 ck_file_lacks "reconciler does not parse the broken human ip -d output" \

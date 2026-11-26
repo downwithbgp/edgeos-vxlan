@@ -83,6 +83,28 @@ node_exists_working() {
     api_exists interfaces vxlan "$INTERFACE" "$@"
 }
 
+# existsEffective() reads the last committed (active) configuration.  It is the
+# correct source for the state that was active before this commit, and it is
+# used only by the capture-failure decision below.  A diagnostic is returned as
+# status 2 instead of being folded into "absent": an unreadable previous
+# configuration must not be mistaken for "no enforcement was configured".
+api_exists_effective() {
+    local err rc=0
+    err=$("$VYATTA_API" existsEffective "$@" 2>&1 >/dev/null) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        return 0
+    fi
+    if [ -n "$err" ]; then
+        echo "ERROR: configuration API failure: $err" >&2
+        return 2
+    fi
+    return 1
+}
+
+node_exists_effective() {
+    api_exists_effective interfaces vxlan "$INTERFACE" "$@"
+}
+
 firewall_configured() {
     local direction family
     for family in name ipv6-name; do
@@ -90,6 +112,24 @@ firewall_configured() {
             if node_exists_working firewall "$direction" "$family"; then
                 return 0
             fi
+        done
+    done
+    return 1
+}
+
+# 0 = the previous configuration required enforcement, 1 = it did not,
+# 2 = it could not be established.
+firewall_configured_effective() {
+    local direction family rc
+    for family in name ipv6-name; do
+        for direction in in out local; do
+            rc=0
+            node_exists_effective firewall "$direction" "$family" || rc=$?
+            case "$rc" in
+                0) return 0 ;;
+                1) ;;
+                *) return "$rc" ;;
+            esac
         done
     done
     return 1
@@ -839,16 +879,30 @@ else
 fi
 
 # The firewall state is captured before any mutation.  An untrustworthy live
-# firewall state is a fail-closed condition only when the configuration
-# requires enforcement: an intentionally unfiltered interface is left
-# unchanged rather than disrupted.  A failure to capture unrelated mutable
-# interface state (above) aborts the commit without touching the interface.
+# firewall state is a fail-closed condition when either the candidate or the
+# previous (active) configuration requires enforcement: an intentionally
+# unfiltered interface is left unchanged rather than disrupted, but a candidate
+# that removes the final attachment must not hide enforcement that was active
+# before this commit.  A failure to capture unrelated mutable interface state
+# (above) aborts the commit without touching the interface.
 if ! capture_firewall_state; then
     if firewall_configured; then
-        stop_interface "cannot establish a trustworthy live firewall state for $INTERFACE"
+        stop_interface "cannot establish a trustworthy live firewall state for $INTERFACE: the candidate configuration requires an attachment"
         exit 1
     fi
-    echo "ERROR: cannot capture the live firewall state for $INTERFACE; no attachment is configured, so the interface is left unchanged." >&2
+    FW_PREVIOUS_RC=0
+    firewall_configured_effective || FW_PREVIOUS_RC=$?
+    case "$FW_PREVIOUS_RC" in
+        0)
+            stop_interface "cannot establish a trustworthy live firewall state for $INTERFACE: the previous configuration requires an attachment"
+            ;;
+        1)
+            echo "ERROR: cannot capture the live firewall state for $INTERFACE; neither the candidate nor the previous configuration requires an attachment, so the interface is left unchanged." >&2
+            ;;
+        *)
+            stop_interface "cannot establish a trustworthy live firewall state for $INTERFACE, and the previous configuration could not be read"
+            ;;
+    esac
     exit 1
 fi
 
