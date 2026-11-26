@@ -184,7 +184,7 @@ run_published()
 
 run_skip_pins()
 {
-    GITHUB_REF_TYPE='' GITHUB_REF_NAME='' \
+    env GITHUB_REF_TYPE='' GITHUB_REF_NAME='' \
         "$ROOT/scripts/validate-artifacts.sh" --build --skip-install-pins \
         "$1" "$2"
 }
@@ -253,6 +253,11 @@ if [ "$PRERELEASE" = "no" ]; then
     expect_fail "skip-pins flag rejects a stable version" \
         "not a recognised prerelease" \
         run_skip_pins "$clean_build" "$ROOT"
+
+    multiline_tag=$(printf 'v%s\nv9.9.9' "$INSTALL_VERSION")
+    expect_fail "multiline release tag is rejected" "single line" \
+        "$ROOT/scripts/validate-artifacts.sh" --build --tag "$multiline_tag" \
+        "$clean_build" "$ROOT"
 else
     echo "NOTE: prerelease tree; skipping published-mode positive cases." >&2
     expect_pass "skip-pins accepts a prerelease version" \
