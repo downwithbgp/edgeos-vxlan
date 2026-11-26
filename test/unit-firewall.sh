@@ -109,7 +109,26 @@ case "$op" in
             printf '%s\n' "-A $1 -j LOG"
             exit 0
         fi
-        printf '%s\n' "-A $1 -m comment --comment synthetic-default -j RETURN"
+        policy=drop
+        for fam in name ipv6-name; do
+            f="$CONF/firewall/$fam/$1/default-action"
+            [ -f "$f" ] && policy=$(cat "$f")
+        done
+        case "$policy" in
+            accept) target=RETURN ;;
+            drop) target=DROP ;;
+            reject) target=REJECT ;;
+            *) target=DROP ;;
+        esac
+        if [ "${NONUNCONDITIONAL_CHAIN:-0}" = "1" ]; then
+            printf '%s\n' "-A $1 -s 10.0.0.0/8 -m comment --comment \"$1-10 default-action $policy\" -j $target"
+        elif [ "${MISMATCHED_DEFAULT:-0}" = "1" ]; then
+            printf '%s\n' "-A $1 -m comment --comment \"$1-10 default-action drop\" -j DROP"
+        elif [ "${TARGET_INCONSISTENT:-0}" = "1" ]; then
+            printf '%s\n' "-A $1 -m comment --comment \"$1-10 default-action drop\" -j RETURN"
+        else
+            printf '%s\n' "-A $1 -m comment --comment \"$1-10 default-action $policy\" -j $target"
+        fi
         exit 0
         ;;
     -C)
@@ -228,6 +247,8 @@ reset_case() {
     printf '%s\n' "0x1003" >"$SYS/class/net/vxlan43/flags"
     unset FAIL_FW_UPDATE FAIL_FW_DELETE FAIL_API_PATTERN FAIL_API_AFTER_FW
     unset API_FAIL_MARKER
+    unset EMPTY_CHAIN NONTERMINAL_CHAIN NONUNCONDITIONAL_CHAIN
+    unset MISMATCHED_DEFAULT TARGET_INCONSISTENT
     rm -f "$TMP/api-fail"
 }
 
@@ -244,6 +265,11 @@ set_iface() { # set_iface <iface>
 
 set_ruleset() { # set_ruleset <name|ipv6-name> <name>
     mkdir -p "$CONF/firewall/$1/$2"
+    printf '%s' drop >"$CONF/firewall/$1/$2/default-action"
+}
+
+set_ruleset_policy() { # set_ruleset_policy <name|ipv6-name> <name> <policy>
+    printf '%s' "$3" >"$CONF/firewall/$1/$2/default-action"
 }
 
 set_attachment() { # set_attachment <iface> <in|out|local> <name|ipv6-name> <ruleset>
@@ -566,6 +592,19 @@ grep -q "shadowed" "$TMP/err" && ok || bad "shadowed hook diagnostic"
 BASE_SHADOW_OTHER=1 run_helper_ck "verify-all allows another interface's rule" 0 --verify-all vxlan42
 NONTERMINAL_CHAIN=1 run_helper_ck "verify-all rejects a non-terminal default" 1 --verify-all vxlan42
 grep -q "terminal default" "$TMP/err" && ok || bad "terminal default diagnostic"
+
+# The terminal rule must be the vendor's unconditional default-action rule and
+# its verdict must match the configured default action.
+set_ruleset_policy name VXLAN_IN accept
+run_helper_ck "verify-all accepts a matching accept default" 0 --verify-all vxlan42
+set_ruleset_policy name VXLAN_IN reject
+run_helper_ck "verify-all accepts a matching reject default" 0 --verify-all vxlan42
+MISMATCHED_DEFAULT=1 run_helper_ck "verify-all rejects a default-action mismatch" 1 --verify-all vxlan42
+grep -q "configured" "$TMP/err" && ok || bad "configured default diagnostic"
+NONUNCONDITIONAL_CHAIN=1 run_helper_ck "verify-all rejects a conditional terminal rule" 1 --verify-all vxlan42
+grep -q "unconditional" "$TMP/err" && ok || bad "unconditional default diagnostic"
+TARGET_INCONSISTENT=1 run_helper_ck "verify-all rejects a verdict inconsistent with the default-action" 1 --verify-all vxlan42
+grep -q "does not correspond" "$TMP/err" && ok || bad "verdict consistency diagnostic"
 
 # ------------------------------------------------------------- multi-attachment quiesce
 # More than one dispatch change is applied sequentially, so it is quiesced: the

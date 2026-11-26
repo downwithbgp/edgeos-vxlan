@@ -103,6 +103,43 @@ ruleset_exists() {
     api_exists firewall "$FAMILY" "$NAME"
 }
 
+firewall_value() {
+    local value err
+    err=${TMPDIR:-/tmp}/vxlan-fw-api.$$
+    if value=$("$VYATTA_API" returnValue firewall "$FAMILY" "$NAME" "$@" 2>"$err"); then
+        rm -f "$err"
+        printf '%s' "$value"
+        return 0
+    fi
+    if [ -s "$err" ]; then
+        echo "ERROR: configuration API failure: $(cat "$err")" >&2
+    fi
+    rm -f "$err"
+    return 1
+}
+
+# The configured default action for the current FAMILY/NAME.  The vendor
+# engine treats an unset default-action as drop (fw.cpp set_default_policy),
+# so absence means drop here too.
+configured_default_action() {
+    local value
+    if ! api_exists firewall "$FAMILY" "$NAME" default-action; then
+        printf '%s' drop
+        return 0
+    fi
+    if ! value=$(firewall_value default-action); then
+        die "cannot read the configured default action for firewall $FAMILY $NAME"
+        return 1
+    fi
+    case "$value" in
+        accept | drop | reject) printf '%s' "$value" ;;
+        *)
+            die "invalid configured default action '$value' for firewall $FAMILY $NAME"
+            return 1
+            ;;
+    esac
+}
+
 # --------------------------------------------------------------- validation
 
 check_iface() {
@@ -383,37 +420,102 @@ chain_is_nonempty() {
 }
 
 # The vendor appends the configured default-action rule as the last rule of the
-# ruleset chain.  A chain that does not end in a verdict falls through to the
-# hook and then to the base chain, so the configured default action would not
-# be effective.
+# ruleset chain, in the exact form:
+#   -A <chain> -m comment --comment "<chain>-<n> default-action <policy>" -j <target>
+# where accept/drop/reject map to RETURN/DROP/REJECT (fw.cpp
+# fw_get_policy_target), and an unset default-action is drop.  The comment is
+# the rule's only match condition, so the rule is unconditional.
+#
+# This is a bounded check of that format, not an analysis of the operator's
+# rules; the vendor owns policy construction.  Sets CHAIN_DEFAULT_POLICY.
+# Rollback verification (`restore_state`) uses the shape check only: the
+# restored chain belongs to the pre-commit policy, whose configured default
+# action may differ from the candidate's.
 chain_has_terminal_default() {
-    local cmd rules target
+    local cmd rules parsed rc
     cmd=$(iptables_cmd)
     if ! rules=$(sudo "$cmd" -t filter -S "$NAME" 2>/dev/null); then
         die "firewall ruleset chain '$NAME' is missing"
         return 1
     fi
-    target=$(printf '%s\n' "$rules" | awk '
+    rc=0
+    parsed=$(printf '%s\n' "$rules" | awk -v chain="$NAME" '
         $1 == "-A" {
-            target = ""
-            for (i = 1; i <= NF; i++) {
-                if ($i == "-j" && $(i + 1) != "") { target = $(i + 1) }
-            }
             seen = 1
+            ok = 0
+            err = ""
+            if (NF < 8 || $2 != chain || $3 != "-m" || $4 != "comment" ||
+                $5 != "--comment") {
+                err = "is not an unconditional vendor default-action rule"
+                next
+            }
+            comment = ""
+            e = 0
+            for (i = 6; i <= NF; i++) {
+                comment = comment (comment == "" ? "" : " ") $i
+                if (substr($i, length($i), 1) == "\"") { e = i; break }
+            }
+            if (e == 0) {
+                err = "has an unterminated default-action comment"
+                next
+            }
+            if (e + 2 != NF || $(e + 1) != "-j") {
+                err = "has match conditions outside the vendor comment"
+                next
+            }
+            target = $(e + 2)
+            if (substr(comment, 1, 1) != "\"" ||
+                substr(comment, length(comment), 1) != "\"") {
+                err = "has a malformed default-action comment"
+                next
+            }
+            comment = substr(comment, 2, length(comment) - 2)
+            prefix = chain "-"
+            if (substr(comment, 1, length(prefix)) != prefix) {
+                err = "has a default-action comment for a different chain"
+                next
+            }
+            rest = substr(comment, length(prefix) + 1)
+            if (rest !~ /^[0-9]+ default-action (accept|drop|reject)$/) {
+                err = "does not carry a vendor default-action comment"
+                next
+            }
+            policy = rest
+            sub(/^[0-9]+ default-action /, "", policy)
+            expected = (policy == "accept" ? "RETURN" :
+                        (policy == "drop" ? "DROP" : "REJECT"))
+            if (target != expected) {
+                err = "has a verdict that does not correspond to default-action " policy
+                next
+            }
+            ok = 1
         }
         END {
-            if (!seen) { exit 1 }
-            print target
+            if (!seen) {
+                print "is empty" > "/dev/stderr"
+                exit 1
+            }
+            if (!ok) {
+                if (err == "") { err = "does not end in a vendor default-action rule" }
+                print err > "/dev/stderr"
+                exit 2
+            }
+            print policy " " target
         }
-    ') || {
-        die "firewall ruleset chain '$NAME' is empty"
-        return 1
-    }
-    case "$target" in
-        ACCEPT | DROP | REJECT | RETURN) return 0 ;;
+    ') || rc=$?
+    case "$rc" in
+        0) ;;
+        1)
+            die "firewall ruleset chain '$NAME' is empty"
+            return 1
+            ;;
+        *)
+            die "firewall ruleset chain '$NAME' does not end in an unconditional terminal default-action rule"
+            return 1
+            ;;
     esac
-    die "firewall ruleset chain '$NAME' does not end in a terminal default action"
-    return 1
+    CHAIN_DEFAULT_POLICY=${parsed%% *}
+    return 0
 }
 
 base_chain() {
@@ -901,7 +1003,7 @@ apply_state() {
 }
 
 require_all_effective() {
-    local family dir configured missing=0
+    local family dir configured configured_default missing=0
     check_iface
     for family in name ipv6-name; do
         FAMILY=$family
@@ -924,6 +1026,13 @@ require_all_effective() {
                     return 1
                 fi
                 if ! chain_has_terminal_default; then
+                    return 1
+                fi
+                if ! configured_default=$(configured_default_action); then
+                    return 1
+                fi
+                if [ "$CHAIN_DEFAULT_POLICY" != "$configured_default" ]; then
+                    die "firewall ruleset chain '$NAME' ends in default-action '$CHAIN_DEFAULT_POLICY', not the configured '$configured_default'"
                     return 1
                 fi
                 if ! verify_dispatch_exact; then

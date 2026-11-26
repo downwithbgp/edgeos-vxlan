@@ -107,7 +107,26 @@ case "$op" in
             printf '%s\n' "-A $1 -j LOG"
             exit 0
         fi
-        printf '%s\n' "-A $1 -m comment --comment synthetic-default -j RETURN"
+        policy=drop
+        for fam in name ipv6-name; do
+            f="$CONF/firewall/$fam/$1/default-action"
+            [ -f "$f" ] && policy=$(cat "$f")
+        done
+        case "$policy" in
+            accept) target=RETURN ;;
+            drop) target=DROP ;;
+            reject) target=REJECT ;;
+            *) target=DROP ;;
+        esac
+        if [ "${NONUNCONDITIONAL_CHAIN:-0}" = "1" ]; then
+            printf '%s\n' "-A $1 -s 10.0.0.0/8 -m comment --comment \"$1-10 default-action $policy\" -j $target"
+        elif [ "${MISMATCHED_DEFAULT:-0}" = "1" ]; then
+            printf '%s\n' "-A $1 -m comment --comment \"$1-10 default-action drop\" -j DROP"
+        elif [ "${TARGET_INCONSISTENT:-0}" = "1" ]; then
+            printf '%s\n' "-A $1 -m comment --comment \"$1-10 default-action drop\" -j RETURN"
+        else
+            printf '%s\n' "-A $1 -m comment --comment \"$1-10 default-action $policy\" -j $target"
+        fi
         exit 0
         ;;
     -C)
@@ -405,14 +424,20 @@ reset_sandbox() {
     unset FAIL_DOWN FAIL_UP FAIL_API_PATTERN FAIL_IPT_S
     unset FAIL_API_AFTER_FW FAIL_API_AFTER_FW_COUNT API_FAIL_MARKER API_FAIL_COUNTER
     unset FAIL_API_EFFECTIVE_PATTERN
+    unset EMPTY_CHAIN NONTERMINAL_CHAIN NONUNCONDITIONAL_CHAIN
+    unset MISMATCHED_DEFAULT TARGET_INCONSISTENT
     rm -f "$TMP/api-fail" "$TMP/api-count"
     unset NO_BASE_HOOKS BASE_SHADOW BASE_SHADOW_OTHER NONTERMINAL_CHAIN
 }
 
 set_conf() { printf '%s' "$2" >"$CONF/$IF.$1"; }
 set_fw_ruleset() { # set_fw_ruleset <name|ipv6-name> <ruleset>
-    mkdir -p "$CONF/firewall/$1"
-    : >"$CONF/firewall/$1/$2"
+    mkdir -p "$CONF/firewall/$1/$2"
+    printf '%s' drop >"$CONF/firewall/$1/$2/default-action"
+}
+
+set_fw_default_action() { # set_fw_default_action <name|ipv6-name> <ruleset> <policy>
+    printf '%s' "$3" >"$CONF/firewall/$1/$2/default-action"
 }
 fw_state_has() { grep -qxF -- "$1" "$IPTSTATE"; }
 fw_state_lacks() { ! grep -qxF -- "$1" "$IPTSTATE"; }
@@ -1479,6 +1504,79 @@ else
     bad "shadowed hook must take the interface down"
 fi
 
+# Scenario 56a: the gate accepts the vendor's unconditional default-action
+# rule when its verdict matches the configured action.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_fw_default_action name VXLAN_IN accept
+set_conf firewall.in.name VXLAN_IN
+if run_reconciler >/dev/null 2>&1 &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ] &&
+    fw_state_has "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN"; then
+    ok
+else
+    bad "matching accept default must pass the gate"
+fi
+
+# Scenario 56b: a terminal verdict that does not match the configured action
+# fails the gate and leaves the interface down.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_fw_default_action name VXLAN_IN accept
+set_conf firewall.in.name VXLAN_IN
+if MISMATCHED_DEFAULT=1 run_reconciler >/dev/null 2>&1; then
+    bad "default-action mismatch must fail the commit"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1002" ] &&
+    grep -q "configured" "$TMP/err"; then
+    ok
+else
+    bad "default-action mismatch must fail closed"
+fi
+
+# Scenario 56c: the terminal rule must be unconditional (the comment is its
+# only match), not merely carry a terminal verdict.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_conf firewall.in.name VXLAN_IN
+if NONUNCONDITIONAL_CHAIN=1 run_reconciler >/dev/null 2>&1; then
+    bad "conditional terminal rule must fail the commit"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1002" ] &&
+    grep -q "unconditional" "$TMP/err"; then
+    ok
+else
+    bad "conditional terminal rule must fail closed"
+fi
+
+# Scenario 56d: the verdict must correspond to the rule's own default-action
+# comment.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_conf firewall.in.name VXLAN_IN
+if TARGET_INCONSISTENT=1 run_reconciler >/dev/null 2>&1; then
+    bad "inconsistent terminal verdict must fail the commit"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1002" ] &&
+    grep -q "does not correspond" "$TMP/err"; then
+    ok
+else
+    bad "inconsistent terminal verdict must fail closed"
+fi
+
 # Scenario 57: a multi-attachment change is quiesced around the whole apply; a
 # single replacement remains nondisruptive.
 reset_sandbox
@@ -1574,7 +1672,7 @@ set_conf firewall.in.name VXLAN_IN
 run_reconciler >/dev/null 2>&1
 set_conf firewall.in.name VXLAN_IN2
 if API_FAIL_MARKER="$TMP/api-fail" API_FAIL_COUNTER="$TMP/api-count" \
-    FAIL_API_AFTER_FW='firewall name VXLAN_IN2' FAIL_API_AFTER_FW_COUNT=2 \
+    FAIL_API_AFTER_FW='firewall name VXLAN_IN2$' FAIL_API_AFTER_FW_COUNT=2 \
     run_reconciler >/dev/null 2>&1; then
     bad "API diagnostic during final verification must fail the commit"
 else
