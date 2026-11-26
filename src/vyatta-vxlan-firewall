@@ -264,6 +264,63 @@ verify_present() {
     fi
 }
 
+# A configured ruleset must have a non-empty chain.  An empty user chain
+# returns to the hook chain without a verdict, which is not the enforcement
+# the operator configured.
+chain_is_nonempty() {
+    local cmd rules
+    cmd=$(iptables_cmd)
+    if ! rules=$(sudo "$cmd" -t filter -S "$NAME" 2>/dev/null); then
+        die "firewall ruleset chain '$NAME' is missing"
+        return 1
+    fi
+    if ! printf '%s\n' "$rules" | grep -q '^-A '; then
+        die "firewall ruleset chain '$NAME' is empty"
+        return 1
+    fi
+    return 0
+}
+
+# Verify the *whole* dispatch, not just that one matching rule exists:
+#   - exactly one exact rule for this interface/direction/target;
+#   - no malformed or stale rule for the same interface;
+#   - no non-interface rule before the dispatch that could shadow it.
+# The native ubnt-fw rule is exactly `-A <hook> <flag> <iface> -j <target>`.
+verify_dispatch_exact() {
+    local rules hook flag
+    hook=$(hook_name)
+    flag=$(hook_flag)
+    if ! rules=$(read_table_rules 2>/dev/null); then
+        die "cannot read the filter table with $(iptables_cmd)"
+        return 1
+    fi
+    if ! printf '%s\n' "$rules" | awk -v hook="$hook" -v flag="$flag" -v iface="$IFACE" -v target="$NAME" '
+        {
+            if ($1 != "-A" || $2 != hook) { next }
+            exact = (NF == 6 && $3 == flag && $4 == iface && $5 == "-j" && $6 == target)
+            simple = (NF == 6 && ($3 == "-i" || $3 == "-o") && $5 == "-j" && $4 !~ /[+*!]/)
+            matches_if = 0
+            for (i = 3; i <= NF; i++) {
+                if ($i == flag && $(i + 1) == iface) { matches_if = 1 }
+            }
+            if (exact) { found++; next }
+            if (matches_if) { malformed = 1 }
+            if (!found && !simple) { shadowed = 1 }
+        }
+        END {
+            if (found == 0) { print "missing" > "/dev/stderr"; exit 1 }
+            if (found > 1) { print "duplicate" > "/dev/stderr"; exit 2 }
+            if (malformed) { print "malformed or stale" > "/dev/stderr"; exit 3 }
+            if (shadowed) { print "shadowed by a preceding rule" > "/dev/stderr"; exit 4 }
+            exit 0
+        }
+    '; then
+        die "firewall dispatch verification failed for $IFACE $DIRECTION $FAMILY -> $NAME"
+        return 1
+    fi
+    return 0
+}
+
 target_or_absent() {
     local hits
     if ! hits=$(find_target); then
@@ -312,9 +369,13 @@ capture_state() {
 }
 
 desired_target() {
-    local dir=$1 family=$2
+    local dir=$1 family=$2 value
     if node_exists_working firewall "$dir" "$family"; then
-        node_value firewall "$dir" "$family"
+        if ! value=$(node_value firewall "$dir" "$family"); then
+            die "cannot read configured $family attachment for $IFACE ($dir)"
+            return 1
+        fi
+        printf '%s' "$value"
         return 0
     fi
     printf '%s' "-"
@@ -383,7 +444,19 @@ restore_state() {
                 return 1
                 ;;
         esac
+        if [ "$target" != "-" ]; then
+            NAME=$target
+            if ! chain_is_nonempty; then
+                return 1
+            fi
+        fi
         if [ "$current" = "$target" ]; then
+            if [ "$target" != "-" ]; then
+                NAME=$target
+                if ! verify_dispatch_exact; then
+                    return 1
+                fi
+            fi
             continue
         fi
 
@@ -399,15 +472,17 @@ restore_state() {
         elif sudo "$cmd" -t filter -S "$target" >/dev/null 2>&1; then
             # The old ruleset is no longer in the configuration but its chain
             # still exists.  Reinsert the jump directly, as a bounded recovery.
-            if [ "$current" != "-" ]; then
-                sudo "$cmd" -t filter -D "$hook" "$flag" "$IFACE" -j "$current" >/dev/null 2>&1 || {
-                    die "cannot replace firewall dispatch $current while restoring $IFACE $dir ($FAMILY)"
-                    return 1
-                }
-            fi
+            # Insert the restored jump first, then remove the superseded rule:
+            # the interface always has a policy during the swap.
             if ! sudo "$cmd" -t filter -I "$hook" 1 "$flag" "$IFACE" -j "$target"; then
                 die "cannot restore firewall dispatch $target for $IFACE $dir ($FAMILY)"
                 return 1
+            fi
+            if [ "$current" != "-" ]; then
+                if ! sudo "$cmd" -t filter -D "$hook" "$flag" "$IFACE" -j "$current" >/dev/null 2>&1; then
+                    die "cannot remove the superseded firewall dispatch $current after restoring $target for $IFACE $dir ($FAMILY)"
+                    return 1
+                fi
             fi
         else
             die "cannot restore firewall dispatch $target for $IFACE $dir ($FAMILY): ruleset is unavailable"
@@ -421,6 +496,12 @@ restore_state() {
         if [ "$hits" != "$target" ]; then
             die "firewall dispatch restoration did not converge for $IFACE $dir ($FAMILY)"
             return 1
+        fi
+        if [ "$target" != "-" ]; then
+            NAME=$target
+            if ! verify_dispatch_exact; then
+                return 1
+            fi
         fi
     done <<<"$state"
     return 0
@@ -456,7 +537,10 @@ apply_state() {
         case "$old_family" in \#* | '') continue ;; esac
         case "$old_family" in v4) FAMILY=name ;; v6) FAMILY=ipv6-name ;; esac
         DIRECTION=$old_dir
-        desired=$(desired_target "$old_dir" "$FAMILY")
+        if ! desired=$(desired_target "$old_dir" "$FAMILY"); then
+            recover_apply_failure "$old_target" "$old_state"
+            return 1
+        fi
         if [ "$old_target" = "$desired" ]; then
             continue
         fi
@@ -535,7 +619,14 @@ require_all_effective() {
                 if ! check_name; then
                     return 1
                 fi
-                if ! verify_present; then
+                if ! ruleset_exists; then
+                    die "firewall ruleset '$NAME' is not configured under firewall $FAMILY"
+                    return 1
+                fi
+                if ! chain_is_nonempty; then
+                    return 1
+                fi
+                if ! verify_dispatch_exact; then
                     missing=1
                 fi
             fi

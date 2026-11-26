@@ -732,7 +732,9 @@ if [ "$RECREATE" -eq 1 ]; then
             fi
         else
             if delete_interface; then
-                remove_firewall_attachments || true
+                if ! remove_firewall_attachments; then
+                    echo "WARNING: $INTERFACE was deleted but stale firewall dispatches remain; a later commit will reconcile them." >&2
+                fi
             fi
         fi
 

@@ -83,7 +83,8 @@ case "$op" in
             exit 0
         fi
         grep -qxF -- "$1" "$C" 2>/dev/null || exit 1
-        [ -f "$S" ] && grep -F -- "-A $1 " "$S" || true
+        if [ "${EMPTY_CHAIN:-0}" = "1" ]; then exit 0; fi
+        printf '%s\n' "-A $1 -m comment --comment synthetic-default -j RETURN"
         exit 0
         ;;
     -C)
@@ -297,15 +298,54 @@ if run_apply "$old" vxlan42; then ok; else bad "apply v6 local / v4 out"; fi
 grep -qxF -- "-A VYATTA_FW_LOCAL_HOOK -i vxlan42 -j VXLAN6_IN" "$IPTSTATE6" && ok || bad "v6 local hook"
 grep -qxF -- "-A VYATTA_FW_OUT_HOOK -o vxlan42 -j VXLAN_IN" "$IPTSTATE" && ok || bad "v4 out hook"
 
-# verification fails if the rule is removed behind our back
-run_helper_ck "verify-all with attachments" 0 --verify-all vxlan42
-grep -v -- "vxlan42" "$IPTSTATE" >"$STATE/tmp" || true
-mv "$STATE/tmp" "$IPTSTATE"
-run_helper_ck "verify-all missing attachment" 1 --verify-all vxlan42
-grep -q "not effective" "$TMP/err" && ok || bad "verify-all diagnostic"
-# restore the state for the following tests
-set_attachment vxlan42 local ipv6-name VXLAN6_IN
-set_attachment vxlan42 out name VXLAN_IN
+# Effective-state verification must inspect the whole dispatch, not merely
+# confirm that one matching jump exists.
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_attachment vxlan42 in name VXLAN_IN
+printf '%s\n' "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN" >"$IPTSTATE"
+printf '%s\n' "VXLAN_IN" >"$CHAINS"
+run_helper_ck "verify-all exact dispatch" 0 --verify-all vxlan42
+
+EMPTY_CHAIN=1 run_helper_ck "verify-all rejects an empty ruleset chain" 1 --verify-all vxlan42
+grep -q "is empty" "$TMP/err" && ok || bad "empty chain diagnostic"
+
+printf '%s\n' \
+    "-A VYATTA_FW_IN_HOOK -j DROP" \
+    "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN" >"$IPTSTATE"
+run_helper_ck "verify-all rejects a shadowed dispatch" 1 --verify-all vxlan42
+grep -q "shadowed" "$TMP/err" && ok || bad "shadowed dispatch diagnostic"
+
+printf '%s\n' \
+    "-A VYATTA_FW_IN_HOOK -i vxlan42 -j OTHER" \
+    "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN" >"$IPTSTATE"
+run_helper_ck "verify-all rejects a stale same-interface rule" 1 --verify-all vxlan42
+grep -q "malformed or stale" "$TMP/err" && ok || bad "stale dispatch diagnostic"
+
+printf '%s\n' \
+    "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN" \
+    "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN" >"$IPTSTATE"
+run_helper_ck "verify-all rejects a duplicate dispatch" 1 --verify-all vxlan42
+grep -q "duplicate" "$TMP/err" && ok || bad "duplicate dispatch diagnostic"
+
+printf '%s\n' \
+    "-A VYATTA_FW_IN_HOOK -i vxlan43 -j OTHER" \
+    "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN" >"$IPTSTATE"
+run_helper_ck "verify-all accepts another interface's dispatch first" 0 --verify-all vxlan42
+
+# Restore a captured state and assert the resulting table.
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_ruleset name VXLAN_IN2
+set_ruleset ipv6-name VXLAN6_IN
+printf '%s\n' \
+    "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN" \
+    "-A VYATTA_FW_OUT_HOOK -o vxlan42 -j VXLAN_IN" >"$IPTSTATE"
+printf '%s\n' "-A VYATTA_FW_LOCAL_HOOK -i vxlan42 -j VXLAN6_IN" >"$IPTSTATE6"
+printf '%s\n' "VXLAN_IN" "VXLAN_IN2" "VXLAN6_IN" >"$CHAINS"
+printf '%s\n' "VXLAN6_IN" >"$CHAINS6"
 old=$(printf 'v4 in VXLAN_IN2\nv4 out -\nv4 local -\nv6 in -\nv6 out -\nv6 local -')
 run_restore() { printf '%s\n' "$1" | "$H" --restore "$2" >"$TMP/out" 2>"$TMP/err"; }
 if run_restore "$old" vxlan42; then ok; else bad "restore captured state"; fi
@@ -319,7 +359,7 @@ if run_restore "v4 in VXLAN_IN2" vxlan42; then bad "partial restore must fail"; 
 
 # Direct-chain recovery: the old ruleset is gone from the configuration, but
 # its iptables chain still exists.  ubnt-fw update fails, so the helper must
-# replace the jump directly and verify the result.
+# insert the restored jump first, then remove the superseded one.
 reset_case
 set_iface vxlan42
 printf '%s\n' "-A VYATTA_FW_IN_HOOK -i vxlan42 -j NEW" >"$IPTSTATE"

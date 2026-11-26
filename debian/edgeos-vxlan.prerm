@@ -19,7 +19,18 @@ case "$1" in
             exit 1
         fi
 
-        if ip link show type vxlan 2>/dev/null | grep -q .; then
+        if ! vxlan_links=$(ip link show type vxlan 2>&1); then
+            echo "ERROR: Cannot determine whether live VXLAN interfaces exist."
+            echo
+            echo "Refusing to remove the integration without a verified check."
+            echo "Run 'ip link show type vxlan' manually and remove any VXLAN"
+            echo "interfaces before uninstalling."
+            echo
+            echo "edgeos-vxlan has not been removed."
+            exit 1
+        fi
+
+        if [ -n "$vxlan_links" ]; then
             echo "ERROR: Live VXLAN interfaces still exist."
             echo
             echo "Remove or disable all VXLAN interfaces before uninstalling:"

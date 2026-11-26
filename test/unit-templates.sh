@@ -130,6 +130,11 @@ while IFS= read -r file; do
     done <"$file"
 done < <(find "$TPL" -name '*.def' | sort)
 
+# The disable leaf must not bring the interface up itself: the parent
+# reconciler does that only after the firewall gate.
+ck_file_lacks "disable removal is deferred to the parent gate" \
+    "$TPL/node.tag/disable/node.def" "delete:"
+
 # ------------------------------------------------------------- MTU contract
 ck_file_lacks "mtu declares no static default" "$TPL/node.tag/mtu/node.def" "default:"
 

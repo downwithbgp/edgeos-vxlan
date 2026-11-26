@@ -87,7 +87,8 @@ case "$op" in
             exit 0
         fi
         grep -qxF -- "$1" "$C" 2>/dev/null || exit 1
-        [ -f "$S" ] && grep -F -- "-A $1 " "$S" || true
+        if [ "${EMPTY_CHAIN:-0}" = "1" ]; then exit 0; fi
+        printf '%s\n' "-A $1 -m comment --comment synthetic-default -j RETURN"
         exit 0
         ;;
     -C)
@@ -1104,6 +1105,25 @@ set_conf local-ip "192.0.2.1"
 if run_reconciler >/dev/null 2>&1 &&
     log_lacks "ubnt-fw" &&
     log_lacks "link del" && log_lacks "link add"; then ok; else bad "no-attachment commit must not touch firewall state"; fi
+
+
+# Scenario 46: removing `disable` is handled by the parent reconciler after
+# the firewall gate; there is no child delete action that could bring the
+# interface up early.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_conf disable 1
+run_reconciler >/dev/null 2>&1
+rm -f "$CONF/$IF.disable"
+if run_reconciler >/dev/null 2>&1 &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ]; then
+    ok
+else
+    bad "removing disable must bring the interface up through the parent reconciler"
+fi
 
 echo "mock: pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]
