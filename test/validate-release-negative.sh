@@ -182,10 +182,16 @@ run_published()
         "$ROOT/scripts/validate-published-release.sh" "$1" "$ROOT"
 }
 
+run_skip_pins()
+{
+    GITHUB_REF_TYPE='' GITHUB_REF_NAME='' \
+        "$ROOT/scripts/validate-artifacts.sh" --build --skip-install-pins \
+        "$1" "$2"
+}
+
 run_rc_build()
 {
-    "$ROOT/scripts/validate-artifacts.sh" --build --skip-install-pins \
-        "$1" "$rc_source"
+    run_skip_pins "$1" "$rc_source"
 }
 
 expect_pass()
@@ -246,13 +252,11 @@ if [ "$PRERELEASE" = "no" ]; then
 
     expect_fail "skip-pins flag rejects a stable version" \
         "not a recognised prerelease" \
-        "$ROOT/scripts/validate-artifacts.sh" --build --skip-install-pins \
-        "$clean_build" "$ROOT"
+        run_skip_pins "$clean_build" "$ROOT"
 else
     echo "NOTE: prerelease tree; skipping published-mode positive cases." >&2
     expect_pass "skip-pins accepts a prerelease version" \
-        "$ROOT/scripts/validate-artifacts.sh" --build --skip-install-pins \
-        "$clean_build" "$ROOT"
+        run_skip_pins "$clean_build" "$ROOT"
 fi
 
 rc_source=$(new_dir rc-source)
