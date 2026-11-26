@@ -85,7 +85,7 @@ note()
 }
 
 for cmd in dpkg-deb dpkg-parsechangelog readelf modinfo sha256sum md5sum cmp \
-           gzip find sort awk sed grep stat diff; do
+           gzip find sort awk sed grep stat diff wc; do
     command -v "$cmd" >/dev/null 2>&1 ||
         fail "required command not found: $cmd"
 done
@@ -164,6 +164,10 @@ if [ "$SKIP_PINS" = "yes" ] && [ -n "$TAG" ]; then
 fi
 
 if [ -n "$TAG" ]; then
+    lines=$(printf '%s\n' "$TAG" | wc -l)
+    [ "$lines" -eq 1 ] ||
+        fail "release tag must be a single line"
+
     printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' ||
         fail "release tag does not match vMAJOR.MINOR.PATCH: $TAG"
     [ "$TAG" = "v$VERSION" ] ||
@@ -206,7 +210,7 @@ check_artifact_set()
             grep -Fvx -e "$INTEGRATION_DEB" -e "$KMOD_DEB" || true)
 
         [ -z "$unexpected" ] ||
-            fail "unexpected package(s) in artifact directory: $unexpected"
+            fail "unexpected package(s) in artifact directory (use a clean build output directory): $unexpected"
     fi
 }
 

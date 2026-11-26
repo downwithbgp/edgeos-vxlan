@@ -196,6 +196,12 @@ jobs:
             TAG="$INPUT_TAG"
           fi
 
+          lines=$(printf '%s\n' "$TAG" | wc -l)
+          if [ "$lines" -ne 1 ]; then
+            echo "ERROR: release tag must be a single line" >&2
+            exit 1
+          fi
+
           if ! printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "ERROR: release tag must match vMAJOR.MINOR.PATCH: '$TAG'" >&2
             exit 1
