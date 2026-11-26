@@ -958,8 +958,12 @@ show configuration commands | grep vxlan5002
 show interfaces
 show firewall ipv6-name VXLAN6_IN
 show firewall name VXLAN4_IN
-sudo iptables -S VYATTA_FW_IN_HOOK VYATTA_FW_OUT_HOOK VYATTA_FW_LOCAL_HOOK
-sudo ip6tables -S VYATTA_FW_IN_HOOK VYATTA_FW_OUT_HOOK VYATTA_FW_LOCAL_HOOK
+for chain in VYATTA_FW_IN_HOOK VYATTA_FW_OUT_HOOK VYATTA_FW_LOCAL_HOOK; do
+    sudo iptables -S "$chain"
+done
+for chain in VYATTA_FW_IN_HOOK VYATTA_FW_OUT_HOOK VYATTA_FW_LOCAL_HOOK; do
+    sudo ip6tables -S "$chain"
+done
 ip -j -d link show dev vxlan5002
 ip -6 neigh show dev vxlan5002
 ip -6 route show 2001:db8:5002:100::/56
@@ -984,8 +988,8 @@ The authoritative state is the live netfilter dispatch, not just the configurati
 show configuration commands | grep -A6 'vxlan vxlan42'
 show firewall name VXLAN_IN
 show firewall ipv6-name VXLANv6_IN
-sudo iptables -S VYATTA_FW_IN_HOOK VYATTA_FW_OUT_HOOK VYATTA_FW_LOCAL_HOOK | grep vxlan42
-sudo ip6tables -S VYATTA_FW_IN_HOOK VYATTA_FW_OUT_HOOK VYATTA_FW_LOCAL_HOOK | grep vxlan42
+sudo iptables-save -t filter | grep vxlan42
+sudo ip6tables-save -t filter | grep vxlan42
 ip -j -d link show dev vxlan42
 ```
 
