@@ -80,6 +80,11 @@ case "$(basename "$0")" in
     ip6tables) S=${IPTSTATE6:?}; C=${CHAINS6:?} ;;
     *) S=${IPTSTATE:?}; C=${CHAINS:?} ;;
 esac
+if [ "${REQUIRE_W:-0}" = "1" ] && [ "${1:-}" != "-w" ]; then
+    echo "missing -w" >&2
+    exit 2
+fi
+if [ "$1" = "-w" ]; then shift; fi
 if [ "$1" = "-t" ] && [ "$2" = "filter" ]; then shift 2; fi
 op=$1; shift
 case "$op" in
@@ -645,6 +650,7 @@ DEGRADED_CHAIN=1 run_helper_ck "verify-all rejects a chain reduced to its defaul
 grep -q "missing configured rule 20" "$TMP/err" && ok || bad "degraded chain diagnostic"
 FAIL_API_PATTERN='firewall name VXLAN_IN rule' run_helper_ck "verify-all rejects an unreadable rule list" 1 --verify-all vxlan42
 grep -q "configuration API failure" "$TMP/err" && ok || bad "rule-list API diagnostic"
+REQUIRE_W=1 run_helper_ck "verify-all waits for the xtables lock" 0 --verify-all vxlan42
 
 # ------------------------------------------------------------- multi-attachment quiesce
 # More than one dispatch change is applied sequentially, so it is quiesced: the

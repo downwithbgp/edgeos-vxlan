@@ -79,6 +79,7 @@ case "$(basename "$0")" in
     *) S=${IPTSTATE:?}; C=${CHAINS:?} ;;
 esac
 echo "iptables $*" >>"$IPLOG"
+if [ "$1" = "-w" ]; then shift; fi
 if [ "$1" = "-t" ] && [ "$2" = "filter" ]; then shift 2; fi
 op=$1; shift
 case "$op" in

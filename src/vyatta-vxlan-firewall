@@ -268,7 +268,7 @@ hook_flag() {
 run_iptables() {
     local cmd
     cmd=$(iptables_cmd)
-    sudo "$cmd" -t filter "$@"
+    sudo "$cmd" -w -t filter "$@"
 }
 
 read_table_rules() {
@@ -418,7 +418,7 @@ verify_present() {
     cmd=$(iptables_cmd)
     hook=$(hook_name)
     flag=$(hook_flag)
-    if ! sudo "$cmd" -t filter -C "$hook" "$flag" "$IFACE" -j "$NAME" >/dev/null 2>&1; then
+    if ! sudo "$cmd" -w -t filter -C "$hook" "$flag" "$IFACE" -j "$NAME" >/dev/null 2>&1; then
         die "firewall attachment is not effective: $IFACE $DIRECTION $FAMILY -> $NAME"
         return 1
     fi
@@ -430,7 +430,7 @@ verify_present() {
 chain_is_nonempty() {
     local cmd rules
     cmd=$(iptables_cmd)
-    if ! rules=$(sudo "$cmd" -t filter -S "$NAME" 2>/dev/null); then
+    if ! rules=$(sudo "$cmd" -w -t filter -S "$NAME" 2>/dev/null); then
         die "firewall ruleset chain '$NAME' is missing"
         return 1
     fi
@@ -456,7 +456,7 @@ chain_is_nonempty() {
 chain_has_terminal_default() {
     local cmd rules parsed rc
     cmd=$(iptables_cmd)
-    if ! rules=$(sudo "$cmd" -t filter -S "$NAME" 2>/dev/null); then
+    if ! rules=$(sudo "$cmd" -w -t filter -S "$NAME" 2>/dev/null); then
         die "firewall ruleset chain '$NAME' is missing"
         return 1
     fi
@@ -550,7 +550,7 @@ chain_has_terminal_default() {
 chain_matches_configured_rules() {
     local cmd rules nums n
     cmd=$(iptables_cmd)
-    if ! rules=$(sudo "$cmd" -t filter -S "$NAME" 2>/dev/null); then
+    if ! rules=$(sudo "$cmd" -w -t filter -S "$NAME" 2>/dev/null); then
         die "firewall ruleset chain '$NAME' is missing"
         return 1
     fi
@@ -828,17 +828,17 @@ restore_state() {
             fi
         elif "$UBNT_FW" update-interface update "$IFACE" "$DIRECTION" "$target" "$FAMILY" >/dev/null 2>&1; then
             :
-        elif sudo "$cmd" -t filter -S "$target" >/dev/null 2>&1; then
+        elif sudo "$cmd" -w -t filter -S "$target" >/dev/null 2>&1; then
             # The old ruleset is no longer in the configuration but its chain
             # still exists.  Reinsert the jump directly, as a bounded recovery.
             # Insert the restored jump first, then remove the superseded rule:
             # the interface always has a policy during the swap.
-            if ! sudo "$cmd" -t filter -I "$hook" 1 "$flag" "$IFACE" -j "$target"; then
+            if ! sudo "$cmd" -w -t filter -I "$hook" 1 "$flag" "$IFACE" -j "$target"; then
                 die "cannot restore firewall dispatch $target for $IFACE $dir ($FAMILY)"
                 return 1
             fi
             if [ "$current" != "-" ]; then
-                if ! sudo "$cmd" -t filter -D "$hook" "$flag" "$IFACE" -j "$current" >/dev/null 2>&1; then
+                if ! sudo "$cmd" -w -t filter -D "$hook" "$flag" "$IFACE" -j "$current" >/dev/null 2>&1; then
                     die "cannot remove the superseded firewall dispatch $current after restoring $target for $IFACE $dir ($FAMILY)"
                     return 1
                 fi
