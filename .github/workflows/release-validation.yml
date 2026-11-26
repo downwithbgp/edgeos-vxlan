@@ -1,3 +1,15 @@
+# Source validation, package construction, and published-release verification.
+#
+# Trust boundaries:
+#   * Pull requests, pushes and tags build and validate source; they never
+#     publish and never receive write credentials.
+#   * The published-release job downloads assets from a GitHub Release and
+#     inspects them as data.  It does not execute tagged source or downloaded
+#     packages.  Its validation logic comes from the current trusted branch.
+#   * A release published with GITHUB_TOKEN does not start another workflow
+#     run (GitHub suppresses recursive token-triggered runs), so the release
+#     event and the manual workflow_dispatch path are both supported.
+
 name: Release validation
 
 on:
@@ -14,99 +26,164 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Release tag to validate
+        description: Published release tag to verify (for example v0.2.2)
         required: false
-        default: v0.2.2
+        default: ''
         type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  package:
-    runs-on: ubuntu-latest
+  lint:
+    name: Static analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
 
-      - name: Install build dependencies
+      - name: Install pinned analysis tools
+        run: ./scripts/install-ci-tools.sh "$RUNNER_TEMP/ci-tools"
+
+      - name: Add analysis tools to PATH
+        run: printf '%s\n' "$RUNNER_TEMP/ci-tools" >> "$GITHUB_PATH"
+
+      - name: Validate workflow definitions
+        run: actionlint -color
+
+      - name: Audit workflow security
+        run: zizmor --offline --collect all --format plain .github
+
+      - name: Check shell scripts
+        run: |
+          shellcheck --version
+          shellcheck install.sh scripts/*.sh test/*.sh \
+            debian/*.preinst debian/*.postinst debian/*.prerm debian/*.postrm \
+            src/vyatta-vxlan src/vyatta-vxlan-bridge
+
+      - name: Check Perl syntax
+        run: perl -c src/vyatta-vxlan-addr >/dev/null
+
+  package:
+    name: Build and validate packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Check changed lines for whitespace errors
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: ./scripts/check-whitespace.sh
+
+      - name: Install build and validation dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             build-essential \
-            crossbuild-essential-mipsel \
             debhelper \
-            devscripts \
+            dpkg-dev \
             fakeroot \
-            shellcheck
+            kmod \
+            lintian
 
-      - name: Source sanity
-        run: |
-          sh -n install.sh
-          sh -n scripts/validate-release.sh
-          sh -n scripts/validate-published-release.sh
-          shellcheck install.sh scripts/*.sh
-          git diff --check
+      - name: Run off-device test suite
+        run: bash test/run.sh
 
-      - name: Off-device test suite
+      - name: Pin the reproducible-build timestamp
         run: |
-          bash test/run.sh
-          shellcheck src/vyatta-vxlan src/vyatta-vxlan-bridge test/*.sh
+          epoch=$(dpkg-parsechangelog -S Timestamp)
+
+          case "$epoch" in
+            ''|*[!0-9]*)
+              echo "ERROR: invalid changelog timestamp: $epoch" >&2
+              exit 1
+              ;;
+          esac
+
+          printf 'SOURCE_DATE_EPOCH=%s\n' "$epoch" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$epoch"
 
       - name: Build Debian packages
-        run: |
-          dpkg-buildpackage -us -uc -b -a mipsel
+        run: dpkg-buildpackage -us -uc -b -a mipsel
 
-      - name: Validate release artifacts
-        run: |
-          ./scripts/validate-release.sh
+      - name: Capture build environment
+        run: ./scripts/capture-build-environment.sh ci-artifacts/provenance/build-environment.txt
 
-      - name: Show package contents
+      - name: Validate build artifacts
+        run: ./scripts/validate-release.sh
+
+      - name: Run negative artifact-validation tests
+        run: bash test/validate-release-negative.sh ..
+
+      - name: Run lintian
         run: |
           VERSION=$(dpkg-parsechangelog -S Version)
 
-          dpkg-deb -c \
+          lintian \
+            --suppress-tags-from-file .github/lintian-suppressions.txt \
+            --fail-on error \
+            --tag-display-limit 0 \
             "../edgeos-vxlan-kmod_${VERSION}_mipsel.deb" \
-            | grep -E 'vxlan\.ko|udp_tunnel\.ko'
-
-          dpkg-deb -f \
-            "../edgeos-vxlan_${VERSION}_all.deb" \
-            Version Architecture Depends
-
-          dpkg-deb -f \
-            "../edgeos-vxlan-kmod_${VERSION}_mipsel.deb" \
-            Version Architecture
+            "../edgeos-vxlan_${VERSION}_all.deb"
 
       - name: Stage CI artifacts
         run: |
           VERSION=$(dpkg-parsechangelog -S Version)
 
-          mkdir -p ci-artifacts
+          mkdir -p ci-artifacts/provenance
           cp \
             "../edgeos-vxlan-kmod_${VERSION}_mipsel.deb" \
             "../edgeos-vxlan_${VERSION}_all.deb" \
             ci-artifacts/
-
+          cp \
+            "../edgeos-vxlan_${VERSION}_mipsel.buildinfo" \
+            "../edgeos-vxlan_${VERSION}_mipsel.changes" \
+            ci-artifacts/provenance/
           (
             cd ci-artifacts
-            sha256sum *.deb > SHA256SUMS
+            sha256sum -- *.deb > SHA256SUMS
           )
 
-      - name: Upload packages
-        uses: actions/upload-artifact@v7
+      - name: Upload packages and provenance
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: edgeos-vxlan-packages
           path: ci-artifacts/
+          if-no-files-found: error
+          compression-level: 0
+
   published-release:
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    name: Verify published release
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: publish-verification-${{ github.event.release.tag_name || inputs.release_tag }}
+      cancel-in-progress: false
 
     steps:
-      - name: Check out CI source
-        uses: actions/checkout@v6
-
-      - name: Resolve release tag
+      - name: Resolve and validate release tag
         id: release
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -119,26 +196,76 @@ jobs:
             TAG="$INPUT_TAG"
           fi
 
-          test -n "$TAG"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if ! printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: release tag must match vMAJOR.MINOR.PATCH: '$TAG'" >&2
+            exit 1
+          fi
+
+          printf 'tag=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check out trusted validation logic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Release events use the default branch.  Manual dispatch may use a
+          # selected branch (dispatching requires write access), but never a
+          # tag: a tag must not certify its own assets with older logic.
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref_type == 'branch' && github.ref || github.event.repository.default_branch }}
+          persist-credentials: false
+          fetch-depth: 1
 
       - name: Check out tagged release source
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.release.outputs.tag }}
           path: tagged-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify release metadata and tag ancestry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          metadata=$(gh release view "$TAG" --repo "$REPO" \
+            --json tagName,isDraft,isPrerelease,targetCommitish \
+            --jq '[.tagName, (.isDraft|tostring), (.isPrerelease|tostring), (.targetCommitish // "")] | @tsv')
+
+          tag_name=$(printf '%s\n' "$metadata" | cut -f1)
+          is_draft=$(printf '%s\n' "$metadata" | cut -f2)
+          is_prerelease=$(printf '%s\n' "$metadata" | cut -f3)
+          target=$(printf '%s\n' "$metadata" | cut -f4)
+
+          [ "$tag_name" = "$TAG" ] ||
+            { echo "ERROR: release metadata returned tag '$tag_name', expected '$TAG'" >&2; exit 1; }
+          [ "$is_draft" = "false" ] ||
+            { echo "ERROR: release $TAG is still a draft" >&2; exit 1; }
+          [ "$is_prerelease" = "false" ] ||
+            { echo "ERROR: release $TAG is marked as a prerelease" >&2; exit 1; }
+
+          status=$(gh api "repos/$REPO/compare/$TAG...$DEFAULT_BRANCH" --jq '.status')
+          case "$status" in
+            ahead|identical)
+              ;;
+            *)
+              echo "ERROR: release tag $TAG is not contained in $DEFAULT_BRANCH (compare status: $status)" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "Release $TAG is published and contained in $DEFAULT_BRANCH (status: $status; target: $target)."
 
       - name: Download published release assets
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
-          mkdir published
-          gh release download \
-            "${{ steps.release.outputs.tag }}" \
-            --dir published
+          mkdir -p published
+          gh release download "$TAG" --repo "$REPO" --dir published
 
       - name: Validate published release
-        run: |
-          ./scripts/validate-published-release.sh \
-            published \
-            tagged-source
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: ./scripts/validate-published-release.sh published tagged-source
