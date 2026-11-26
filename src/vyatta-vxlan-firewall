@@ -339,7 +339,18 @@ validate_state() {
         esac
         case "$target" in
             -) ;;
-            [A-Za-z0-9_]*) ;;
+            [A-Za-z0-9_]*)
+                case "$target" in
+                    *[!A-Za-z0-9_.:-]*)
+                        die "malformed firewall state target '$target'"
+                        return 1
+                        ;;
+                esac
+                if [ "${#target}" -gt 28 ]; then
+                    die "malformed firewall state target '$target'"
+                    return 1
+                fi
+                ;;
             *) die "malformed firewall state target '$target'" ;;
         esac
     done
@@ -351,7 +362,9 @@ validate_state() {
 }
 
 restore_state() {
-    local family dir target current cmd hook flag hits
+    local family dir target current cmd hook flag hits state
+    state=$(cat)
+    validate_state <<<"$state" || return 1
     while read -r family dir target; do
         case "$family" in \#* | '') continue ;; esac
         case "$family" in v4) FAMILY=name ;; v6) FAMILY=ipv6-name ;; esac
@@ -409,7 +422,7 @@ restore_state() {
             die "firewall dispatch restoration did not converge for $IFACE $dir ($FAMILY)"
             return 1
         fi
-    done
+    done <<<"$state"
     return 0
 }
 
@@ -566,8 +579,8 @@ status() {
     local family dir configured effective
     check_iface
     if ! parent_exists; then
-        printf 'interface %s is not configured\n' "$IFACE"
-        return 0
+        printf 'interface %s is not configured, or the configuration API is unavailable outside a configuration session\n' "$IFACE" >&2
+        return 1
     fi
     for family in name ipv6-name; do
         for dir in in out local; do

@@ -309,6 +309,24 @@ set_attachment vxlan42 out name VXLAN_IN
 old=$(printf 'v4 in VXLAN_IN2\nv4 out -\nv4 local -\nv6 in -\nv6 out -\nv6 local -')
 run_restore() { printf '%s\n' "$1" | "$H" --restore "$2" >"$TMP/out" 2>"$TMP/err"; }
 if run_restore "$old" vxlan42; then ok; else bad "restore captured state"; fi
+state_eq "restore v4 state" "$IPTSTATE" "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN2"
+state_eq "restore v6 state" "$IPTSTATE6" ""
+
+# A truncated or empty snapshot must be refused, never treated as "restore
+# nothing and succeed".
+if run_restore "" vxlan42; then bad "empty restore must fail"; else grep -q "incomplete firewall state" "$TMP/err" && ok || bad "empty restore diagnostic"; fi
+if run_restore "v4 in VXLAN_IN2" vxlan42; then bad "partial restore must fail"; else grep -q "incomplete firewall state" "$TMP/err" && ok || bad "partial restore diagnostic"; fi
+
+# Direct-chain recovery: the old ruleset is gone from the configuration, but
+# its iptables chain still exists.  ubnt-fw update fails, so the helper must
+# replace the jump directly and verify the result.
+reset_case
+set_iface vxlan42
+printf '%s\n' "-A VYATTA_FW_IN_HOOK -i vxlan42 -j NEW" >"$IPTSTATE"
+printf '%s\n' "NEW" "OLD" >"$CHAINS"
+fallback_state=$(printf 'v4 in OLD\nv4 out -\nv4 local -\nv6 in -\nv6 out -\nv6 local -')
+if FAIL_FW_UPDATE=1 run_restore "$fallback_state" vxlan42; then ok; else bad "direct-chain restore fallback"; fi
+state_eq "direct-chain restore state" "$IPTSTATE" "-A VYATTA_FW_IN_HOOK -i vxlan42 -j OLD"
 
 # ------------------------------------------------------------- remove / isolation
 reset_case
