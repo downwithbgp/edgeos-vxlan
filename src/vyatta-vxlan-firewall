@@ -12,6 +12,18 @@
 #   - capture and restore the pre-commit state for rollback,
 #   - fail closed when a required attachment cannot be established or restored.
 #
+# Enforcement-reducing transitions are quiesced: when a change removes an
+# existing dispatch from an interface that is administratively up, the helper
+# takes the interface down before the mutation and leaves it down.  The caller
+# activates the interface only after its own gate passes.  A single
+# replacement or insertion is a single atomic `iptables --replace/--insert`
+# inside the vendor engine (verified against the installed binary) and is not
+# quiesced.
+#
+# `--capture` exits 3 when the live dispatch is ambiguous (two or more jumps
+# for the interface) and 4 when the filter table cannot be read, so the caller
+# can distinguish an untrustworthy firewall state from a generic failure.
+#
 # Paths used by the test-suite are overridable through environment variables.
 
 set -eEu -o pipefail
@@ -47,20 +59,48 @@ EOF
 
 # ------------------------------------------------------------------ config API
 
+# The vendor API exits 1 both for "node absent" and for an internal failure; a
+# failure writes a diagnostic to stderr while a negative lookup is silent.
+# Reading an API failure as "absent" would turn a broken configuration read
+# into a removed firewall dispatch, so a diagnostic aborts the operation.
+api_exists() {
+    local err rc=0
+    err=$("$VYATTA_API" exists "$@" 2>&1 >/dev/null) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        return 0
+    fi
+    if [ -n "$err" ]; then
+        echo "ERROR: configuration API failure: $err" >&2
+        exit 1
+    fi
+    return 1
+}
+
 node_exists_working() {
-    "$VYATTA_API" exists interfaces vxlan "$IFACE" "$@"
+    api_exists interfaces vxlan "$IFACE" "$@"
 }
 
 node_value() {
-    "$VYATTA_API" returnValue interfaces vxlan "$IFACE" "$@"
+    local value err
+    err=${TMPDIR:-/tmp}/vxlan-fw-api.$$
+    if value=$("$VYATTA_API" returnValue interfaces vxlan "$IFACE" "$@" 2>"$err"); then
+        rm -f "$err"
+        printf '%s' "$value"
+        return 0
+    fi
+    if [ -s "$err" ]; then
+        echo "ERROR: configuration API failure: $(cat "$err")" >&2
+    fi
+    rm -f "$err"
+    return 1
 }
 
 parent_exists() {
-    "$VYATTA_API" exists interfaces vxlan "$IFACE"
+    api_exists interfaces vxlan "$IFACE"
 }
 
 ruleset_exists() {
-    "$VYATTA_API" exists firewall "$FAMILY" "$NAME"
+    api_exists firewall "$FAMILY" "$NAME"
 }
 
 # --------------------------------------------------------------- validation
@@ -205,51 +245,111 @@ find_target() {
     printf '%s\n' "$rules" | find_targets_from_rules
 }
 
-interface_is_up() {
+# ------------------------------------------------------------- admin state
+
+# Sets IFACE_ADMIN to up, down, absent or unknown.  A netdevice that does not
+# exist is distinct from one whose flags cannot be read: only the former is a
+# safe "cannot carry traffic" answer.
+read_admin_state() {
     local raw digits
+    if [ ! -e "${VXLAN_SYSFS_ROOT}/class/net/${IFACE}" ]; then
+        IFACE_ADMIN=absent
+        return 0
+    fi
     if ! raw=$(cat "${VXLAN_SYSFS_ROOT}/class/net/${IFACE}/flags" 2>/dev/null); then
-        return 1
+        IFACE_ADMIN=unknown
+        return 0
     fi
     case "$raw" in
         0[xX]*)
             digits=${raw#0[xX]}
             case "$digits" in
-                '' | *[!0-9a-fA-F]*) return 1 ;;
+                '' | *[!0-9a-fA-F]*)
+                    IFACE_ADMIN=unknown
+                    return 0
+                    ;;
             esac
-            (( (0x$digits & 0x1) != 0 ))
+            if (((0x$digits & 0x1) != 0)); then
+                IFACE_ADMIN=up
+            else
+                IFACE_ADMIN=down
+            fi
             ;;
-        '' | *[!0-9]*) return 1 ;;
-        *) (( (10#$raw & 0x1) != 0 )) ;;
+        '' | *[!0-9]*) IFACE_ADMIN=unknown ;;
+        *)
+            if (((10#$raw & 0x1) != 0)); then
+                IFACE_ADMIN=up
+            else
+                IFACE_ADMIN=down
+            fi
+            ;;
     esac
 }
 
-fail_closed_new_attachment() {
-    if interface_is_up; then
-        if sudo ip link set dev "$IFACE" down; then
-            echo "ERROR: requested firewall attachment could not be established; $IFACE left administratively down." >&2
-        else
-            echo "ERROR: requested firewall attachment could not be established and $IFACE could not be taken down." >&2
-        fi
+# Stop the interface from carrying traffic and report exactly what was
+# verified.  An unknown administrative state is treated as "may be up" and a
+# down is attempted; a down is never claimed when it was not confirmed.
+stop_interface() {
+    local reason=$1
+    read_admin_state
+    case "$IFACE_ADMIN" in
+        absent)
+            echo "ERROR: $reason; $IFACE does not exist." >&2
+            return 0
+            ;;
+        down)
+            echo "ERROR: $reason; $IFACE is administratively down." >&2
+            return 0
+            ;;
+    esac
+    if ! sudo ip link set dev "$IFACE" down; then
+        echo "ERROR: $reason; $IFACE could not be taken down and may still carry traffic." >&2
+        return 0
     fi
+    read_admin_state
+    case "$IFACE_ADMIN" in
+        down) echo "ERROR: $reason; $IFACE left administratively down." >&2 ;;
+        *) echo "ERROR: $reason; $IFACE was taken down but its administrative state could not be confirmed." >&2 ;;
+    esac
+    return 0
+}
+
+# Bring the interface back up and report the outcome.
+resume_interface() {
+    local reason=$1
+    if ! sudo ip link set dev "$IFACE" up; then
+        echo "ERROR: $reason; $IFACE could not be brought back up." >&2
+        return 1
+    fi
+    read_admin_state
+    case "$IFACE_ADMIN" in
+        up) echo "INFO: $reason; $IFACE restored to the up state." >&2 ;;
+        *) echo "WARNING: $reason; $IFACE was brought up but its administrative state could not be confirmed." >&2 ;;
+    esac
+    return 0
+}
+
+fail_closed_new_attachment() {
+    stop_interface "requested firewall attachment could not be established"
 }
 
 # After a failed apply, restore the pre-commit state.  If that fails, the live
 # policy is uncertain: take the interface down rather than leave it operational
-# with an unknown firewall state.  If the restore succeeds but the failed change
-# was a new attachment (there was no previous dispatch), the interface would be
-# operational but unfiltered by the requested policy, so take it down too.
+# with an unknown firewall state.  A failed request for a *new* attachment
+# leaves the interface down even after a successful restore; otherwise the
+# previous, verified policy is restored before the interface is brought back up
+# (the migration handover relies on the same ordering).
 recover_apply_failure() {
-    local old_target=$1 old_state=$2
+    local new_attachment=$1 old_state=$2
     if ! restore_state <<<"$old_state"; then
         echo "ERROR: could not restore the pre-commit firewall state for $IFACE." >&2
-        if interface_is_up; then
-            sudo ip link set dev "$IFACE" down || true
-            echo "ERROR: $IFACE left administratively down." >&2
-        fi
+        stop_interface "could not restore the pre-commit firewall state"
         return 0
     fi
-    if [ "$old_target" = "-" ]; then
+    if [ "$new_attachment" -eq 1 ]; then
         fail_closed_new_attachment
+    elif [ "${QUIESCED:-0}" -eq 1 ]; then
+        resume_interface "the pre-commit firewall state was restored"
     fi
 }
 
@@ -276,6 +376,103 @@ chain_is_nonempty() {
     fi
     if ! printf '%s\n' "$rules" | grep -q '^-A '; then
         die "firewall ruleset chain '$NAME' is empty"
+        return 1
+    fi
+    return 0
+}
+
+# The vendor appends the configured default-action rule as the last rule of the
+# ruleset chain.  A chain that does not end in a verdict falls through to the
+# hook and then to the base chain, so the configured default action would not
+# be effective.
+chain_has_terminal_default() {
+    local cmd rules target
+    cmd=$(iptables_cmd)
+    if ! rules=$(sudo "$cmd" -t filter -S "$NAME" 2>/dev/null); then
+        die "firewall ruleset chain '$NAME' is missing"
+        return 1
+    fi
+    target=$(printf '%s\n' "$rules" | awk '
+        $1 == "-A" {
+            target = ""
+            for (i = 1; i <= NF; i++) {
+                if ($i == "-j" && $(i + 1) != "") { target = $(i + 1) }
+            }
+            seen = 1
+        }
+        END {
+            if (!seen) { exit 1 }
+            print target
+        }
+    ') || {
+        die "firewall ruleset chain '$NAME' is empty"
+        return 1
+    }
+    case "$target" in
+        ACCEPT | DROP | REJECT | RETURN) return 0 ;;
+    esac
+    die "firewall ruleset chain '$NAME' does not end in a terminal default action"
+    return 1
+}
+
+base_chain() {
+    case "$DIRECTION" in
+        local) printf '%s' "INPUT" ;;
+        *) printf '%s' "FORWARD" ;;
+    esac
+}
+
+# The hook chain must actually be reached from the base chain.  A missing jump,
+# or an earlier rule that matches this interface (or everything) and carries a
+# terminal verdict, makes the per-interface dispatch inert.  This is a bounded
+# reachability check; it does not evaluate nested user chains.
+verify_hook_reachable() {
+    local rules base hook flag
+    base=$(base_chain)
+    hook=$(hook_name)
+    flag=$(hook_flag)
+    if ! rules=$(read_table_rules 2>/dev/null); then
+        die "cannot read the filter table with $(iptables_cmd)"
+        return 1
+    fi
+    if ! printf '%s\n' "$rules" | awk -v base="$base" -v hook="$hook" \
+        -v flag="$flag" -v iface="$IFACE" '
+        $1 == "-A" && $2 == base {
+            if (found) { next }
+            exact = (NF == 4 && $3 == "-j" && $4 == hook)
+            has_if = 0
+            wildcard = 0
+            terminal = 0
+            target = ""
+            for (i = 3; i <= NF; i++) {
+                if ($i == "!") { i++; continue }
+                if ($i == flag) {
+                    v = $(i + 1)
+                    if (v == iface) { has_if = 1 }
+                    if (v ~ /\+$/) {
+                        p = substr(v, 1, length(v) - 1)
+                        if (substr(iface, 1, length(p)) == p) { wildcard = 1 }
+                    }
+                }
+                if ($i == "-j" && $(i + 1) != "") { target = $(i + 1) }
+            }
+            if (target ~ /^(ACCEPT|DROP|REJECT|RETURN)$/) { terminal = 1 }
+            if (exact) { found = 1; next }
+            if (terminal && (has_if || wildcard || NF == 4)) { shadowed = 1 }
+        }
+        END {
+            if (!found) {
+                print "hook " hook " is not reached from " base > "/dev/stderr"
+                exit 1
+            }
+            if (shadowed) {
+                print "hook " hook " is shadowed by a preceding rule in " base > "/dev/stderr"
+                exit 2
+            }
+            exit 0
+        }
+    '; then
+        die "firewall hook reachability verification failed for $IFACE $DIRECTION ($base)"
         return 1
     fi
     return 0
@@ -343,8 +540,8 @@ capture_state() {
     for family in name ipv6-name; do
         FAMILY=$family
         if ! rules=$(read_table_rules 2>/dev/null); then
-            die "cannot capture firewall state: $(iptables_cmd) -S failed"
-            return 1
+            echo "ERROR: cannot capture firewall state: $(iptables_cmd) -S failed" >&2
+            return 4
         fi
         for dir in in out local; do
             DIRECTION=$dir
@@ -354,8 +551,8 @@ capture_state() {
             case "$hits" in
                 '') target="-" ;;
                 *$'\n'*)
-                    die "ambiguous firewall dispatch for $IFACE in $DIRECTION ($FAMILY)"
-                    return 1
+                    echo "ERROR: ambiguous firewall dispatch for $IFACE in $DIRECTION ($FAMILY)" >&2
+                    return 3
                     ;;
                 *) target=$hits ;;
             esac
@@ -449,11 +646,17 @@ restore_state() {
             if ! chain_is_nonempty; then
                 return 1
             fi
+            if ! chain_has_terminal_default; then
+                return 1
+            fi
         fi
         if [ "$current" = "$target" ]; then
             if [ "$target" != "-" ]; then
                 NAME=$target
                 if ! verify_dispatch_exact; then
+                    return 1
+                fi
+                if ! verify_hook_reachable; then
                     return 1
                 fi
             fi
@@ -502,6 +705,9 @@ restore_state() {
             if ! verify_dispatch_exact; then
                 return 1
             fi
+            if ! verify_hook_reachable; then
+                return 1
+            fi
         fi
     done <<<"$state"
     return 0
@@ -509,18 +715,54 @@ restore_state() {
 
 # --------------------------------------------------------------- operations
 
+# Plan the desired attachment set from the working configuration.  The output
+# has the same canonical six-line shape as a captured state, so the two can be
+# compared and validated with the same code.
+desired_state() {
+    local family dir value
+    for family in name ipv6-name; do
+        for dir in in out local; do
+            if node_exists_working firewall "$dir" "$family"; then
+                if ! value=$(node_value firewall "$dir" "$family"); then
+                    die "cannot read configured $family attachment for $IFACE ($dir)"
+                    return 1
+                fi
+            else
+                value="-"
+            fi
+            case "$family" in
+                name) printf 'v4 %s %s\n' "$dir" "$value" ;;
+                *) printf 'v6 %s %s\n' "$dir" "$value" ;;
+            esac
+        done
+    done
+}
+
 apply_state() {
-    local old_state desired old_family old_dir old_target hits new_attachment=0
+    local old_state desired old_family old_dir old_target hits line
+    local family dir new_target changes=0 new_attachment=0 removal=0 i
+    local old_lines=() desired_lines=()
+
     old_state=$(cat)
     if [ -z "$old_state" ]; then
-        old_state=$(capture_state)
+        if ! old_state=$(capture_state); then
+            die "cannot capture the pre-change firewall state for $IFACE"
+            return 1
+        fi
     fi
     validate_state <<<"$old_state" || return 1
+
+    # The configuration API must be available: reading a failure as "no
+    # attachment configured" would remove enforcement.
+    if ! parent_exists; then
+        die "cannot read the configuration for $IFACE; refusing to change its firewall attachments"
+        return 1
+    fi
 
     # Defence in depth: reject a bridged attachment even if the per-leaf
     # commit validation was bypassed (for example a configuration loaded by an
     # older package).
-    local any_desired=0 family dir
+    local any_desired=0
     for family in name ipv6-name; do
         for dir in in out local; do
             if node_exists_working firewall "$dir" "$family"; then
@@ -533,71 +775,115 @@ apply_state() {
         return 1
     fi
 
-    while read -r old_family old_dir old_target; do
-        case "$old_family" in \#* | '') continue ;; esac
-        case "$old_family" in v4) FAMILY=name ;; v6) FAMILY=ipv6-name ;; esac
-        DIRECTION=$old_dir
-        if ! desired=$(desired_target "$old_dir" "$FAMILY"); then
-            recover_apply_failure "$old_target" "$old_state"
-            return 1
-        fi
-        if [ "$old_target" = "$desired" ]; then
+    if ! desired=$(desired_state); then
+        return 1
+    fi
+    validate_state <<<"$desired" || return 1
+
+    while IFS= read -r line; do old_lines+=("$line"); done <<<"$old_state"
+    while IFS= read -r line; do desired_lines+=("$line"); done <<<"$desired"
+
+    for i in "${!old_lines[@]}"; do
+        read -r old_family old_dir old_target <<<"${old_lines[$i]}"
+        read -r _ _ new_target <<<"${desired_lines[$i]}"
+        if [ "$old_target" = "$new_target" ]; then
             continue
         fi
-        if [ "$old_target" = "-" ] && [ "$desired" != "-" ]; then
+        changes=$((changes + 1))
+        if [ "$old_target" = "-" ] && [ "$new_target" != "-" ]; then
             new_attachment=1
         fi
+        if [ "$old_target" != "-" ] && [ "$new_target" = "-" ]; then
+            removal=1
+        fi
+    done
 
-        if [ "$desired" = "-" ]; then
+    if [ "$changes" -eq 0 ]; then
+        return 0
+    fi
+
+    # A removal is the one transition that reduces enforcement while the
+    # interface is operational.  Quiesce it first: no packet can then traverse
+    # the interface while the dispatch set is being changed, and the caller
+    # activates it only after its own gate passes.
+    QUIESCED=0
+    if [ "$removal" -eq 1 ]; then
+        read_admin_state
+        case "$IFACE_ADMIN" in
+            up | unknown)
+                if ! sudo ip link set dev "$IFACE" down; then
+                    die "cannot quiesce $IFACE before removing its firewall dispatch"
+                    return 1
+                fi
+                read_admin_state
+                if [ "$IFACE_ADMIN" != "down" ]; then
+                    die "cannot confirm that $IFACE is down; refusing to change its firewall dispatch"
+                    return 1
+                fi
+                QUIESCED=1
+                ;;
+        esac
+    fi
+
+    for i in "${!old_lines[@]}"; do
+        read -r old_family old_dir old_target <<<"${old_lines[$i]}"
+        read -r _ _ new_target <<<"${desired_lines[$i]}"
+        if [ "$old_target" = "$new_target" ]; then
+            continue
+        fi
+        case "$old_family" in v4) FAMILY=name ;; v6) FAMILY=ipv6-name ;; esac
+        DIRECTION=$old_dir
+        if [ "$new_target" = "-" ]; then
             if ! "$UBNT_FW" update-interface delete "$IFACE" "$DIRECTION" "$old_target" "$FAMILY"; then
-                die "native firewall engine failed to remove $FAMILY attachment from $IFACE ($old_dir)"
-                recover_apply_failure "$old_target" "$old_state"
+                echo "ERROR: native firewall engine failed to remove $FAMILY attachment from $IFACE ($old_dir)" >&2
+                recover_apply_failure "$new_attachment" "$old_state"
                 return 1
             fi
             if ! hits=$(find_target); then
-                recover_apply_failure "$old_target" "$old_state"
+                recover_apply_failure "$new_attachment" "$old_state"
                 return 1
             fi
             case "$hits" in
                 '') ;;
                 *)
-                    die "firewall attachment is still effective after removal: $IFACE $old_dir $FAMILY -> $hits"
-                    recover_apply_failure "$old_target" "$old_state"
+                    echo "ERROR: firewall attachment is still effective after removal: $IFACE $old_dir $FAMILY -> $hits" >&2
+                    recover_apply_failure "$new_attachment" "$old_state"
                     return 1
                     ;;
             esac
         else
-            NAME=$desired
+            NAME=$new_target
             if ! check_name; then
-                recover_apply_failure "$old_target" "$old_state"
+                recover_apply_failure "$new_attachment" "$old_state"
                 return 1
             fi
             if ! check_native_name; then
-                recover_apply_failure "$old_target" "$old_state"
+                recover_apply_failure "$new_attachment" "$old_state"
                 return 1
             fi
-            if ! "$UBNT_FW" update-interface update "$IFACE" "$DIRECTION" "$desired" "$FAMILY"; then
-                echo "ERROR: native firewall engine failed to install $FAMILY attachment '$desired' on $IFACE ($old_dir)" >&2
-                recover_apply_failure "$old_target" "$old_state"
+            if ! "$UBNT_FW" update-interface update "$IFACE" "$DIRECTION" "$new_target" "$FAMILY"; then
+                echo "ERROR: native firewall engine failed to install $FAMILY attachment '$new_target' on $IFACE ($old_dir)" >&2
+                recover_apply_failure "$new_attachment" "$old_state"
                 return 1
             fi
             if ! verify_present; then
-                recover_apply_failure "$old_target" "$old_state"
+                recover_apply_failure "$new_attachment" "$old_state"
                 return 1
             fi
         fi
-    done <<<"$old_state"
+    done
 
     if ! require_all_effective; then
+        # The desired set was applied but is not effective (missing, stale,
+        # shadowed, unreachable or without a terminal default).  Restore the
+        # pre-change state where possible, then stop the interface: the
+        # configuration requires enforcement that the dataplane does not have.
         if ! restore_state <<<"$old_state"; then
             echo "ERROR: could not restore the pre-commit firewall state for $IFACE." >&2
-            if interface_is_up; then
-                sudo ip link set dev "$IFACE" down || true
-                echo "ERROR: $IFACE left administratively down." >&2
-            fi
-        elif [ "$new_attachment" -eq 1 ]; then
-            fail_closed_new_attachment
+            stop_interface "could not restore the pre-commit firewall state"
+            return 1
         fi
+        stop_interface "the configured firewall attachments are not effective"
         return 1
     fi
     return 0
@@ -626,7 +912,13 @@ require_all_effective() {
                 if ! chain_is_nonempty; then
                     return 1
                 fi
+                if ! chain_has_terminal_default; then
+                    return 1
+                fi
                 if ! verify_dispatch_exact; then
+                    missing=1
+                fi
+                if ! verify_hook_reachable; then
                     missing=1
                 fi
             fi

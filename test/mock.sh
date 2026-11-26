@@ -83,11 +83,29 @@ op=$1; shift
 case "$op" in
     -S)
         if [ $# -eq 0 ]; then
+            # A real EdgeOS router always has the firewall hook jumps in the
+            # base chains.  Synthesize them so the reachability check sees the
+            # hardware shape; the negative cases use the BASE_* variables.
+            [ "${FAIL_IPT_S:-0}" = "1" ] && exit 2
+            if [ "${NO_BASE_HOOKS:-0}" != "1" ]; then
+                [ "${BASE_SHADOW:-0}" = "1" ] &&
+                    printf '%s\n' "-A FORWARD -i $IFNAME -j DROP"
+                [ "${BASE_SHADOW_OTHER:-0}" = "1" ] &&
+                    printf '%s\n' "-A FORWARD -i eth9 -j DROP"
+                printf '%s\n' \
+                    "-A INPUT -j VYATTA_FW_LOCAL_HOOK" \
+                    "-A FORWARD -j VYATTA_FW_IN_HOOK" \
+                    "-A FORWARD -j VYATTA_FW_OUT_HOOK"
+            fi
             [ -f "$S" ] && cat "$S"
             exit 0
         fi
         grep -qxF -- "$1" "$C" 2>/dev/null || exit 1
         if [ "${EMPTY_CHAIN:-0}" = "1" ]; then exit 0; fi
+        if [ "${NONTERMINAL_CHAIN:-0}" = "1" ]; then
+            printf '%s\n' "-A $1 -j LOG"
+            exit 0
+        fi
         printf '%s\n' "-A $1 -m comment --comment synthetic-default -j RETURN"
         exit 0
         ;;
@@ -268,19 +286,34 @@ cat >"$SBIN/my_cli_shell_api" <<'EOF'
 #!/bin/sh
 mode=$1
 shift
+if [ -n "${FAIL_API_PATTERN:-}" ] &&
+    printf '%s' "$*" | grep -q -- "$FAIL_API_PATTERN"; then
+    echo "configd: session error" >&2
+    exit 1
+fi
 key=""
+node=""
 if [ "${1:-}" = "interfaces" ] && [ "${2:-}" = "vxlan" ]; then
     ifname=$3
     shift 3
-    node=""
     for a in "$@"; do node="${node:+$node.}$a"; done
     key="$CONF/$ifname.$node"
 else
+    ifname=""
     path=$(printf '%s' "$*" | tr ' ' '/')
     key="$CONF/$path"
 fi
 case "$mode" in
-    exists) [ -e "$key" ] && exit 0 || exit 1 ;;
+    exists)
+        if [ -n "$ifname" ] && [ -z "$node" ]; then
+            # The interface container exists when any of its leaves does.
+            for f in "$CONF/$ifname".*; do
+                [ -e "$f" ] && exit 0
+            done
+            exit 1
+        fi
+        [ -e "$key" ] && exit 0 || exit 1
+        ;;
     returnValue) [ -e "$key" ] && cat "$key" || true; exit 0 ;;
     returnValues) [ -e "$key" ] && cat "$key" || true; exit 0 ;;
 esac
@@ -342,6 +375,8 @@ reset_sandbox() {
     : >"$CHAINS"
     : >"$CHAINS6"
     unset FAIL_ADD FAIL_DEL FAIL_ADDR FAIL_FW_UPDATE FAIL_FW_DELETE
+    unset FAIL_DOWN FAIL_UP FAIL_API_PATTERN FAIL_IPT_S
+    unset NO_BASE_HOOKS BASE_SHADOW BASE_SHADOW_OTHER NONTERMINAL_CHAIN
 }
 
 set_conf() { printf '%s' "$2" >"$CONF/$IF.$1"; }
@@ -1123,6 +1158,228 @@ if run_reconciler >/dev/null 2>&1 &&
     ok
 else
     bad "removing disable must bring the interface up through the parent reconciler"
+fi
+
+# ---------------------------------------------------------------------------
+# RC2 review-fix regression scenarios.
+# ---------------------------------------------------------------------------
+
+# Scenario 47: an ambiguous live dispatch is a fail-closed condition when an
+# attachment is configured: the commit fails and the interface is taken down.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_fw_ruleset name VXLAN_IN2
+set_conf firewall.in.name VXLAN_IN
+run_reconciler >/dev/null 2>&1
+printf '%s\n' "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN2" >>"$IPTSTATE"
+if run_reconciler >/dev/null 2>&1; then
+    bad "ambiguous dispatch with an attachment must fail the commit"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1002" ] &&
+    grep -q "ambiguous firewall dispatch" "$TMP/err"; then
+    ok
+else
+    bad "ambiguous dispatch with an attachment must take the interface down"
+fi
+
+# Scenario 48: the same ambiguous state on an intentionally unfiltered interface
+# fails the commit without disrupting the interface.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+printf '%s\n' "-A VYATTA_FW_IN_HOOK -i $IF -j A" "-A VYATTA_FW_IN_HOOK -i $IF -j B" >"$IPTSTATE"
+if run_reconciler >/dev/null 2>&1; then
+    bad "ambiguous dispatch without an attachment must fail the commit"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ] &&
+    grep -q "no attachment is configured" "$TMP/err"; then
+    ok
+else
+    bad "ambiguous dispatch without an attachment must not disrupt the interface"
+fi
+
+# Scenario 49: an unreadable filter table is fail-closed only when enforcement
+# is configured.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_conf firewall.in.name VXLAN_IN
+if FAIL_IPT_S=1 run_reconciler >/dev/null 2>&1; then
+    bad "unreadable table with an attachment must fail"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1002" ]; then
+    ok
+else
+    bad "unreadable table with an attachment must take the interface down"
+fi
+
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+if FAIL_IPT_S=1 run_reconciler >/dev/null 2>&1; then
+    bad "unreadable table without an attachment must fail"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ]; then
+    ok
+else
+    bad "unreadable table without an attachment must not disrupt the interface"
+fi
+
+# Scenario 50: a failure to capture unrelated mutable interface state aborts
+# without touching the interface.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_conf firewall.in.name VXLAN_IN
+run_reconciler >/dev/null 2>&1
+if FAIL_ADDR=1 run_reconciler >/dev/null 2>&1; then
+    bad "mutable capture failure must fail"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ] &&
+    fw_state_has "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN" &&
+    grep -q "live state could not be captured" "$TMP/err"; then
+    ok
+else
+    bad "mutable capture failure must leave the interface untouched"
+fi
+
+# Scenario 51: a removal quiesces the interface before the dispatch is removed
+# and the reconciler reactivates it only after the commit's gate.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_conf firewall.in.name VXLAN_IN
+run_reconciler >/dev/null 2>&1
+: >"$TMP/log"
+rm -f "$CONF/$IF.firewall.in.name"
+if run_reconciler >/dev/null 2>&1 &&
+    [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ] &&
+    fw_state_lacks "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN"; then
+    down_line=$(grep -n "link set dev $IF down" "$TMP/log" | head -1 | cut -d: -f1)
+    del_line=$(grep -n "ubnt-fw update-interface delete $IF in VXLAN_IN name" "$TMP/log" | head -1 | cut -d: -f1)
+    up_line=$(grep -n "link set dev $IF up" "$TMP/log" | head -1 | cut -d: -f1)
+    if [ -n "$down_line" ] && [ -n "$del_line" ] && [ -n "$up_line" ] &&
+        [ "$down_line" -lt "$del_line" ] && [ "$del_line" -lt "$up_line" ]; then
+        ok
+    else
+        bad "removal must quiesce before the delete and activate after it"
+    fi
+else
+    bad "removal with quiesce must leave the interface up without the dispatch"
+fi
+
+# Scenario 52: a failed removal restores the previous dispatch and reactivates.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_conf firewall.in.name VXLAN_IN
+run_reconciler >/dev/null 2>&1
+rm -f "$CONF/$IF.firewall.in.name"
+if FAIL_FW_DELETE=1 run_reconciler >/dev/null 2>&1; then
+    bad "failed removal must fail the commit"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ] &&
+    fw_state_has "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN"; then
+    ok
+else
+    bad "failed removal must restore the dispatch and reactivate"
+fi
+
+# Scenario 53: a recreation whose netdevice deletion fails restores the old
+# dispatch and the old administrative state.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_fw_ruleset name VXLAN_IN2
+set_conf firewall.in.name VXLAN_IN
+run_reconciler >/dev/null 2>&1
+set_conf vni 43
+set_conf firewall.in.name VXLAN_IN2
+if FAIL_DEL=1 run_reconciler >/dev/null 2>&1; then
+    bad "failed recreation deletion must fail"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ] &&
+    fw_state_has "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN" &&
+    fw_state_lacks "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN2" &&
+    grep -q "failed to delete" "$TMP/err"; then
+    ok
+else
+    bad "failed recreation deletion must restore the old dispatch and state"
+fi
+
+# Scenario 54: a failed administrative-down before recreation also restores the
+# old dispatch and leaves the interface up.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_conf firewall.in.name VXLAN_IN
+run_reconciler >/dev/null 2>&1
+set_conf vni 43
+if FAIL_DOWN=1 run_reconciler >/dev/null 2>&1; then
+    bad "failed administrative down must fail the recreation"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ] &&
+    fw_state_has "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN"; then
+    ok
+else
+    bad "failed administrative down must leave the old state intact"
+fi
+
+# Scenario 55: a configuration API failure is not read as "no attachment": the
+# commit fails and the existing dispatch is kept.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_conf firewall.in.name VXLAN_IN
+run_reconciler >/dev/null 2>&1
+if FAIL_API_PATTERN=firewall run_reconciler >/dev/null 2>&1; then
+    bad "configuration API failure must fail the commit"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1003" ] &&
+    fw_state_has "-A VYATTA_FW_IN_HOOK -i $IF -j VXLAN_IN" &&
+    grep -q "configuration API failure" "$TMP/err"; then
+    ok
+else
+    bad "configuration API failure must keep the existing dispatch"
+fi
+
+# Scenario 56: a configured attachment that is unreachable from the base chain
+# fails the gate and the interface is taken down.
+reset_sandbox
+set_live v4 192.0.2.1 192.0.2.2 4789
+set_conf vni 42
+set_conf remote-ip "192.0.2.2"
+set_conf local-ip "192.0.2.1"
+set_fw_ruleset name VXLAN_IN
+set_conf firewall.in.name VXLAN_IN
+run_reconciler >/dev/null 2>&1
+if BASE_SHADOW=1 run_reconciler >/dev/null 2>&1; then
+    bad "shadowed hook must fail the commit"
+elif [ "$(cat "$SYS/class/net/$IF/flags")" = "0x1002" ] &&
+    grep -q "shadowed" "$TMP/err"; then
+    ok
+else
+    bad "shadowed hook must take the interface down"
 fi
 
 echo "mock: pass=$PASS fail=$FAIL"

@@ -60,8 +60,14 @@ cat >"$BIN/ip" <<'EOF'
 if [ "$1" = "link" ] && [ "$2" = "set" ] && [ "$3" = "dev" ]; then
     ifname=$4
     case "$5" in
-        down) printf '%s\n' "0x1002" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags" ;;
-        up) printf '%s\n' "0x1003" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags" ;;
+        down)
+            [ "${FAIL_DOWN:-0}" = "1" ] && exit 2
+            printf '%s\n' "0x1002" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags"
+            ;;
+        up)
+            [ "${FAIL_UP:-0}" = "1" ] && exit 2
+            printf '%s\n' "0x1003" >"$VXLAN_SYSFS_ROOT/class/net/$ifname/flags"
+            ;;
     esac
     exit 0
 fi
@@ -79,11 +85,30 @@ op=$1; shift
 case "$op" in
     -S)
         if [ $# -eq 0 ]; then
+            # A real EdgeOS router always has the firewall hook jumps in the
+            # base chains.  Synthesize them so the reachability check has the
+            # shape it sees on hardware; the negative cases are controlled by
+            # the BASE_* variables.
+            [ "${FAIL_IPT_S:-0}" = "1" ] && exit 2
+            if [ "${NO_BASE_HOOKS:-0}" != "1" ]; then
+                [ "${BASE_SHADOW:-0}" = "1" ] &&
+                    printf '%s\n' "-A FORWARD -i vxlan42 -j DROP"
+                [ "${BASE_SHADOW_OTHER:-0}" = "1" ] &&
+                    printf '%s\n' "-A FORWARD -i eth9 -j DROP"
+                printf '%s\n' \
+                    "-A INPUT -j VYATTA_FW_LOCAL_HOOK" \
+                    "-A FORWARD -j VYATTA_FW_IN_HOOK" \
+                    "-A FORWARD -j VYATTA_FW_OUT_HOOK"
+            fi
             [ -f "$S" ] && cat "$S"
             exit 0
         fi
         grep -qxF -- "$1" "$C" 2>/dev/null || exit 1
         if [ "${EMPTY_CHAIN:-0}" = "1" ]; then exit 0; fi
+        if [ "${NONTERMINAL_CHAIN:-0}" = "1" ]; then
+            printf '%s\n' "-A $1 -j LOG"
+            exit 0
+        fi
         printf '%s\n' "-A $1 -m comment --comment synthetic-default -j RETURN"
         exit 0
         ;;
@@ -148,6 +173,11 @@ cat >"$SBIN/my_cli_shell_api" <<'EOF'
 #!/bin/sh
 op=$1
 shift
+if [ -n "${FAIL_API_PATTERN:-}" ] &&
+    printf '%s' "$*" | grep -q -- "$FAIL_API_PATTERN"; then
+    echo "configd: session error" >&2
+    exit 1
+fi
 key=$(printf '%s' "$*" | tr ' ' '/')
 path="$CONF/$key"
 case "$op" in
@@ -391,7 +421,7 @@ grep -qxF -- "-A VYATTA_FW_IN_HOOK -i eth9 -j OTHER" "$IPTSTATE" && ok || bad "r
 
 # ambiguous dispatch is refused
 printf '%s\n' "-A VYATTA_FW_IN_HOOK -i vxlan42 -j A" "-A VYATTA_FW_IN_HOOK -i vxlan42 -j B" >"$IPTSTATE"
-run_helper_ck "capture ambiguous dispatch" 1 --capture vxlan42
+run_helper_ck "capture ambiguous dispatch" 3 --capture vxlan42
 grep -q "ambiguous firewall dispatch" "$TMP/err" && ok || bad "ambiguous dispatch diagnostic"
 
 # ------------------------------------------------------------- fail-closed
@@ -429,6 +459,102 @@ run_apply "$old" vxlan42
 run_helper_ck "status" 0 --status vxlan42
 grep -q "configured name in VXLAN_IN" "$TMP/out" && ok || bad "status configured output"
 grep -q "effective  name in VXLAN_IN" "$TMP/out" && ok || bad "status effective output"
+
+# ------------------------------------------------------------- quiesce (removal)
+# A replacement/insertion is a single atomic vendor operation; a removal is the
+# one transition that reduces enforcement, so the helper quiesces the interface
+# and leaves it down for the caller to activate after its own gate.
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_attachment vxlan42 in name VXLAN_IN
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+if run_apply "$old" vxlan42; then ok; else bad "add before removal"; fi
+flags_eq "new attachment keeps the interface up" vxlan42 "0x1003"
+
+rm -f "$CONF/interfaces/vxlan/vxlan42/firewall/in/name"
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+if run_apply "$old" vxlan42; then ok; else bad "quiesced removal"; fi
+flags_eq "removal leaves the interface down for activation" vxlan42 "0x1002"
+if grep -q -- "vxlan42" "$IPTSTATE"; then bad "removal left a dispatch"; else ok; fi
+
+# failed removal: the old dispatch is restored before reactivation
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_attachment vxlan42 in name VXLAN_IN
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+run_apply "$old" vxlan42
+rm -f "$CONF/interfaces/vxlan/vxlan42/firewall/in/name"
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+if FAIL_FW_DELETE=1 run_apply "$old" vxlan42; then bad "failed removal must fail"; else ok; fi
+flags_eq "failed removal reactivates after restore" vxlan42 "0x1003"
+state_eq "failed removal restores the dispatch" "$IPTSTATE" "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN"
+
+# a quiesce failure aborts before any mutation
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_attachment vxlan42 in name VXLAN_IN
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+run_apply "$old" vxlan42
+rm -f "$CONF/interfaces/vxlan/vxlan42/firewall/in/name"
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+if FAIL_DOWN=1 run_apply "$old" vxlan42; then bad "quiesce failure must fail"; else ok; fi
+flags_eq "quiesce failure leaves the interface untouched" vxlan42 "0x1003"
+state_eq "quiesce failure leaves the dispatch" "$IPTSTATE" "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN"
+grep -q "cannot quiesce" "$TMP/err" && ok || bad "quiesce failure diagnostic"
+
+# an unknown administrative state is treated as "may be up": a down is
+# attempted and confirmed before the dispatch is removed
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_attachment vxlan42 in name VXLAN_IN
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+run_apply "$old" vxlan42
+rm -f "$CONF/interfaces/vxlan/vxlan42/firewall/in/name"
+printf '%s\n' "garbage" >"$SYS/class/net/vxlan42/flags"
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+if run_apply "$old" vxlan42; then ok; else bad "unknown admin state removal"; fi
+flags_eq "unknown state resolved by an attempted down" vxlan42 "0x1002"
+
+# ------------------------------------------------------------- capture / API
+reset_case
+set_iface vxlan42
+printf '%s\n' "-A VYATTA_FW_IN_HOOK -i vxlan42 -j A" "-A VYATTA_FW_IN_HOOK -i vxlan42 -j B" >"$IPTSTATE"
+run_helper_ck "capture ambiguous dispatch" 3 --capture vxlan42
+grep -q "ambiguous firewall dispatch" "$TMP/err" && ok || bad "ambiguous dispatch diagnostic"
+FAIL_IPT_S=1 run_helper_ck "capture unreadable table" 4 --capture vxlan42
+grep -q "cannot capture firewall state" "$TMP/err" && ok || bad "unreadable table diagnostic"
+
+# an API failure must not be read as "no attachment configured"
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_attachment vxlan42 in name VXLAN_IN
+old=$(run_helper --capture vxlan42; cat "$TMP/out")
+printf '%s\n' "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN" >"$IPTSTATE"
+printf '%s\n' "VXLAN_IN" >"$CHAINS"
+if FAIL_API_PATTERN=firewall run_apply "$old" vxlan42; then bad "API failure must fail the apply"; else ok; fi
+grep -qxF -- "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN" "$IPTSTATE" && ok || bad "API failure must not remove the dispatch"
+grep -q "configuration API failure" "$TMP/err" && ok || bad "API failure diagnostic"
+
+# ------------------------------------------------------------- effective state
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_attachment vxlan42 in name VXLAN_IN
+printf '%s\n' "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN" >"$IPTSTATE"
+printf '%s\n' "VXLAN_IN" >"$CHAINS"
+run_helper_ck "verify-all accepts a reachable hook" 0 --verify-all vxlan42
+NO_BASE_HOOKS=1 run_helper_ck "verify-all rejects an unreachable hook" 1 --verify-all vxlan42
+grep -q "is not reached" "$TMP/err" && ok || bad "unreachable hook diagnostic"
+BASE_SHADOW=1 run_helper_ck "verify-all rejects an interface-scoped shadow" 1 --verify-all vxlan42
+grep -q "shadowed" "$TMP/err" && ok || bad "shadowed hook diagnostic"
+BASE_SHADOW_OTHER=1 run_helper_ck "verify-all allows another interface's rule" 0 --verify-all vxlan42
+NONTERMINAL_CHAIN=1 run_helper_ck "verify-all rejects a non-terminal default" 1 --verify-all vxlan42
+grep -q "terminal default" "$TMP/err" && ok || bad "terminal default diagnostic"
 
 echo "unit-firewall: pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]

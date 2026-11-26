@@ -1,3 +1,32 @@
+edgeos-vxlan (0.3.0~rc2+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * Release candidate 2: targeted correctness and security review fixes on
+    top of RC1. No new feature scope.
+  * Fail closed when the live firewall dispatch is ambiguous or unreadable,
+    but only when the interface is configured with an attachment; an
+    intentionally unfiltered interface is left unchanged.
+  * Treat configuration-API diagnostics as fatal instead of reading them as
+    "node absent", so a broken read can no longer remove a dispatch or bring a
+    disabled interface up.
+  * Treat an unreadable administrative state as "may be up" and attempt a
+    verified down; never claim a down that was not confirmed.
+  * Quiesce the interface across a dispatch removal (the only transition that
+    reduces enforcement) and reactivate it only after the previous policy is
+    restored and verified. A single replacement/insertion is one atomic
+    vendor iptables operation (established by instrumenting the installed
+    ubnt-fw binary).
+  * Verify hook reachability from INPUT/FORWARD and a terminal default action
+    in the target chain, in addition to the exact dispatch.
+  * Recover from a failed netdevice deletion after firewall mutation by
+    restoring the pre-commit firewall state and administrative state.
+  * Hardware runbook rewritten by blast radius; the vxlan41913 migration is a
+    quiesced, fail-closed handover (IPv4 in+local and IPv6 in+local); global
+    interventions are restricted to a disposable router.
+  * Regression: 64 helper + 87 firewall + 90 template + 58 mock = 299
+    off-device checks.
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Thu, 26 Nov 2026 19:00:00 +0000
+
 edgeos-vxlan (0.3.0~rc1+edgeos3.0.1.e50) unstable; urgency=medium
 
   * Release candidate 1 for 0.3.0: native firewall integration for routed

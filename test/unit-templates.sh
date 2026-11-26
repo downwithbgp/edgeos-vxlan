@@ -256,7 +256,7 @@ ck_file_has "reconciler captures live firewall state" "$ROOT/src/vyatta-vxlan" \
 ck_file_has "reconciler restores firewall state on rollback" "$ROOT/src/vyatta-vxlan" \
     '"$VXLAN_FIREWALL" --restore "$INTERFACE"'
 ck_file_has "reconciler reads the working configuration" "$ROOT/src/vyatta-vxlan" \
-    '"$VYATTA_API" exists interfaces vxlan'
+    'api_exists interfaces vxlan "$INTERFACE"'
 ck_file_lacks "reconciler does not use existsEffective in the interface subtree" \
     "$ROOT/src/vyatta-vxlan" '"$VYATTA_API" existsEffective'
 ck_file_has "reconciler uses the JSON live-state path" "$ROOT/src/vyatta-vxlan" \

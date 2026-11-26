@@ -24,16 +24,55 @@ VXLAN_BIN_BRCTL=${vxlan_bin_brctl:-/usr/sbin/brctl}
 VXLAN_BIN_MODPROBE=${vxlan_bin_modprobe:-/sbin/modprobe}
 VXLAN_SYSFS_ROOT=${vxlan_sysfs_root:-/sys}
 
+# The vendor API exits 1 both for "node absent" and for an internal failure; a
+# failure writes a diagnostic to stderr while a negative lookup is silent.
+# Reading an API failure as "absent" could silently drop configured enforcement
+# or an administrative `disable`, so a diagnostic aborts the commit.
+api_exists() {
+    local err rc=0
+    err=$("$VYATTA_API" exists "$@" 2>&1 >/dev/null) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        return 0
+    fi
+    if [ -n "$err" ]; then
+        echo "ERROR: configuration API failure: $err" >&2
+        exit 1
+    fi
+    return 1
+}
+
 node_exists() {
-    "$VYATTA_API" exists interfaces vxlan "$INTERFACE" "$@"
+    api_exists interfaces vxlan "$INTERFACE" "$@"
 }
 
 node_value() {
-    "$VYATTA_API" returnValue interfaces vxlan "$INTERFACE" "$@"
+    local value err
+    err=${TMPDIR:-/tmp}/vxlan-api.$$
+    if value=$("$VYATTA_API" returnValue interfaces vxlan "$INTERFACE" "$@" 2>"$err"); then
+        rm -f "$err"
+        printf '%s' "$value"
+        return 0
+    fi
+    if [ -s "$err" ]; then
+        echo "ERROR: configuration API failure: $(cat "$err")" >&2
+    fi
+    rm -f "$err"
+    return 1
 }
 
 node_values() {
-    "$VYATTA_API" returnValues interfaces vxlan "$INTERFACE" "$@"
+    local value err
+    err=${TMPDIR:-/tmp}/vxlan-api.$$
+    if value=$("$VYATTA_API" returnValues interfaces vxlan "$INTERFACE" "$@" 2>"$err"); then
+        rm -f "$err"
+        printf '%s' "$value"
+        return 0
+    fi
+    if [ -s "$err" ]; then
+        echo "ERROR: configuration API failure: $(cat "$err")" >&2
+    fi
+    rm -f "$err"
+    return 1
 }
 
 # exists() reads the working configuration, including nodes added by the
@@ -41,7 +80,7 @@ node_values() {
 # subtree's end action the subtree has not been marked committed yet, so it
 # reports the newly added nodes as absent.
 node_exists_working() {
-    "$VYATTA_API" exists interfaces vxlan "$INTERFACE" "$@"
+    api_exists interfaces vxlan "$INTERFACE" "$@"
 }
 
 firewall_configured() {
@@ -105,6 +144,69 @@ read_iface_flags() {
             printf '%d\n' "$((10#$raw))"
             ;;
     esac
+}
+
+# Sets INTERFACE_ADMIN to up, down, absent or unknown.  A missing netdevice is
+# distinct from one whose flags cannot be read: only the former is a safe
+# "cannot carry traffic" answer.
+read_admin_state() {
+    local flags
+    if ! interface_exists; then
+        INTERFACE_ADMIN=absent
+        return 0
+    fi
+    if ! flags=$(read_iface_flags); then
+        INTERFACE_ADMIN=unknown
+        return 0
+    fi
+    if (((flags & 0x1) != 0)); then
+        INTERFACE_ADMIN=up
+    else
+        INTERFACE_ADMIN=down
+    fi
+}
+
+# Stop the interface from carrying traffic and report exactly what was
+# verified.  An unknown administrative state is treated as "may be up" and a
+# down is attempted; a down is never claimed when it was not confirmed.
+stop_interface() {
+    local reason=$1
+    read_admin_state
+    case "$INTERFACE_ADMIN" in
+        absent)
+            echo "ERROR: $reason; $INTERFACE does not exist." >&2
+            return 0
+            ;;
+        down)
+            echo "ERROR: $reason; $INTERFACE is administratively down." >&2
+            return 0
+            ;;
+    esac
+    if ! sudo ip link set dev "$INTERFACE" down; then
+        echo "ERROR: $reason; $INTERFACE could not be taken down and may still carry traffic." >&2
+        return 0
+    fi
+    read_admin_state
+    case "$INTERFACE_ADMIN" in
+        down) echo "ERROR: $reason; $INTERFACE left administratively down." >&2 ;;
+        *) echo "ERROR: $reason; $INTERFACE was taken down but its administrative state could not be confirmed." >&2 ;;
+    esac
+    return 0
+}
+
+# Bring the interface back up and report the outcome.
+resume_interface() {
+    local reason=$1
+    if ! sudo ip link set dev "$INTERFACE" up; then
+        echo "ERROR: $reason; $INTERFACE could not be brought back up." >&2
+        return 1
+    fi
+    read_admin_state
+    case "$INTERFACE_ADMIN" in
+        up) echo "INFO: $reason; $INTERFACE restored to the up state." >&2 ;;
+        *) echo "WARNING: $reason; $INTERFACE was brought up but its administrative state could not be confirmed." >&2 ;;
+    esac
+    return 0
 }
 
 # Canonical endpoint text; an unspecified local address is represented as "-"
@@ -394,14 +496,14 @@ apply_desired_mutable_state() {
         :
     elif firewall_configured; then
         if ! verify_firewall_attachments; then
-            echo "ERROR: refusing to make $INTERFACE operational without its configured firewall attachments." >&2
-            sudo ip link set dev "$INTERFACE" down || true
-            return 1
+            stop_interface "refusing to make $INTERFACE operational without its configured firewall attachments"
+            return 3
         fi
     fi
 
     if ! flags=$(read_iface_flags); then
-        return 1
+        stop_interface "cannot determine the administrative state of $INTERFACE"
+        return 3
     fi
 
     if node_exists disable; then
@@ -506,10 +608,6 @@ capture_live_snapshot() {
     fi
     OLD_ADDRESSES=("${LIVE_ADDRESSES[@]}")
 
-    if ! capture_firewall_state; then
-        return 1
-    fi
-
     return 0
 }
 
@@ -553,20 +651,39 @@ rollback_live_snapshot() {
     if ! printf '%s\n' "$FIREWALL_SNAPSHOT" |
         "$VXLAN_FIREWALL" --restore "$INTERFACE"; then
         echo "ERROR: could not restore the previous firewall attachments for $INTERFACE." >&2
-        echo "ERROR: leaving $INTERFACE administratively down." >&2
+        stop_interface "the previous firewall state could not be restored"
         return 1
     fi
 
     if [ "$OLD_UP" -eq 1 ]; then
-        sudo ip link set dev "$INTERFACE" up || return 1
+        resume_interface "rollback restored the previous firewall state" || return 1
     fi
 
     echo "Rollback of $INTERFACE completed." >&2
     return 0
 }
 
+# The netdevice deletion for a recreation failed and the previous interface is
+# still present.  Restore the pre-commit firewall state, then the pre-commit
+# administrative state; protection is restored before reactivation.
+recover_failed_delete() {
+    if ! printf '%s\n' "$FIREWALL_SNAPSHOT" |
+        "$VXLAN_FIREWALL" --restore "$INTERFACE"; then
+        echo "ERROR: could not restore the previous firewall attachments for $INTERFACE." >&2
+        stop_interface "the previous firewall state could not be restored"
+        return 1
+    fi
+    if [ "$OLD_UP" -eq 1 ]; then
+        resume_interface "the previous firewall attachments were restored" || return 1
+    fi
+    return 0
+}
+
 if [ "$ACTION" = "DELETE" ]; then
-    delete_interface
+    if ! delete_interface; then
+        echo "ERROR: refusing to remove the firewall dispatches for $INTERFACE: the netdevice could not be deleted." >&2
+        exit 1
+    fi
     if ! remove_firewall_attachments; then
         echo "ERROR: $INTERFACE was deleted but its firewall dispatches could not be removed." >&2
         exit 1
@@ -679,11 +796,21 @@ if interface_exists; then
         RECREATE=1
     fi
 else
-    if ! capture_firewall_state; then
-        echo "ERROR: cannot capture firewall state for $INTERFACE." >&2
+    RECREATE=1
+fi
+
+# The firewall state is captured before any mutation.  An untrustworthy live
+# firewall state is a fail-closed condition only when the configuration
+# requires enforcement: an intentionally unfiltered interface is left
+# unchanged rather than disrupted.  A failure to capture unrelated mutable
+# interface state (above) aborts the commit without touching the interface.
+if ! capture_firewall_state; then
+    if firewall_configured; then
+        stop_interface "cannot establish a trustworthy live firewall state for $INTERFACE"
         exit 1
     fi
-    RECREATE=1
+    echo "ERROR: cannot capture the live firewall state for $INTERFACE; no attachment is configured, so the interface is left unchanged." >&2
+    exit 1
 fi
 
 # Apply the desired firewall attachments before any interface mutation.  The
@@ -697,7 +824,19 @@ if ! printf '%s\n' "$FIREWALL_SNAPSHOT" |
 fi
 
 if [ "$RECREATE" -eq 1 ]; then
-    delete_interface
+    if ! delete_interface; then
+        echo "ERROR: failed to delete $INTERFACE for recreation." >&2
+        if ! interface_exists; then
+            if ! remove_firewall_attachments; then
+                echo "WARNING: stale firewall dispatches remain for the deleted $INTERFACE." >&2
+            fi
+            exit 1
+        fi
+        if ! recover_failed_delete; then
+            exit 2
+        fi
+        exit 1
+    fi
 
     set +e
 
@@ -753,12 +892,14 @@ if [ "$APPLY_RC" -ne 0 ]; then
     echo "ERROR: Failed to apply requested VXLAN state for $INTERFACE." >&2
     # The active configuration still describes the previous firewall state.
     # Restore it; if that fails, do not leave an operational interface with an
-    # uncertain policy.
+    # uncertain policy.  A gate failure (3) is a deliberate fail-closed
+    # decision: restore the previous dispatch but leave the interface down.
     if ! printf '%s\n' "$FIREWALL_SNAPSHOT" |
         "$VXLAN_FIREWALL" --restore "$INTERFACE"; then
         echo "ERROR: could not restore the previous firewall attachments for $INTERFACE." >&2
-        echo "ERROR: leaving $INTERFACE administratively down." >&2
-        sudo ip link set dev "$INTERFACE" down || true
+        stop_interface "the previous firewall state could not be restored"
+    elif [ "$APPLY_RC" -ne 3 ] && [ "$OLD_UP" -eq 1 ]; then
+        resume_interface "the previous firewall attachments were restored"
     fi
     exit "$APPLY_RC"
 fi
