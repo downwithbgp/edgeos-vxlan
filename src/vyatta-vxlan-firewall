@@ -140,6 +140,28 @@ configured_default_action() {
     esac
 }
 
+# Enumerate the configured rule numbers of the current FAMILY/NAME ruleset.
+# A silent negative means the ruleset has no explicit rules (default-action
+# only), which is a valid configuration.  An API diagnostic is a failure: an
+# unreadable configuration must not be read as "no rules".
+configured_rule_numbers() {
+    local out err msg
+    err=${TMPDIR:-/tmp}/vxlan-fw-api.$$
+    if out=$("$VYATTA_API" listNodes firewall "$FAMILY" "$NAME" rule 2>"$err"); then
+        rm -f "$err"
+        printf '%s\n' "$out"
+        return 0
+    fi
+    if [ -s "$err" ]; then
+        msg=$(cat "$err")
+        rm -f "$err"
+        echo "ERROR: configuration API failure: $msg" >&2
+        return 1
+    fi
+    rm -f "$err"
+    return 0
+}
+
 # --------------------------------------------------------------- validation
 
 check_iface() {
@@ -515,6 +537,37 @@ chain_has_terminal_default() {
             ;;
     esac
     CHAIN_DEFAULT_POLICY=${parsed%% *}
+    return 0
+}
+
+# A configured ruleset's explicit rules must be present in the effective chain.
+# The vendor embeds the rule number in each rule's comment ("<chain>-<n>").
+# A chain reduced to its default-action rule would otherwise pass the non-empty
+# and terminal-default checks while enforcing a materially different policy —
+# the failure mode observed when EdgeOS 3.0.1 applies firewall changes in a
+# scripted session.  This is the same bounded vendor-format check used for the
+# terminal rule, not an analysis of the operator's rules.
+chain_matches_configured_rules() {
+    local cmd rules nums n
+    cmd=$(iptables_cmd)
+    if ! rules=$(sudo "$cmd" -t filter -S "$NAME" 2>/dev/null); then
+        die "firewall ruleset chain '$NAME' is missing"
+        return 1
+    fi
+    if ! nums=$(configured_rule_numbers); then
+        return 1
+    fi
+    for n in $nums; do
+        n=${n//\'/}
+        case "$n" in
+            '' | *[!0-9]*) continue ;;
+        esac
+        if ! printf '%s\n' "$rules" | grep -Eq -- "--comment \"?$NAME-$n(\"| )" ||
+            printf '%s\n' "$rules" | grep -Eq -- "--comment \"?$NAME-$n default-action"; then
+            die "firewall ruleset chain '$NAME' is missing configured rule $n"
+            return 1
+        fi
+    done
     return 0
 }
 
@@ -1033,6 +1086,9 @@ require_all_effective() {
                 fi
                 if [ "$CHAIN_DEFAULT_POLICY" != "$configured_default" ]; then
                     die "firewall ruleset chain '$NAME' ends in default-action '$CHAIN_DEFAULT_POLICY', not the configured '$configured_default'"
+                    return 1
+                fi
+                if ! chain_matches_configured_rules; then
                     return 1
                 fi
                 if ! verify_dispatch_exact; then

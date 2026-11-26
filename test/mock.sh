@@ -362,6 +362,14 @@ case "$mode" in
         ;;
     returnValue) [ -e "$key" ] && cat "$key" || true; exit 0 ;;
     returnValues) [ -e "$key" ] && cat "$key" || true; exit 0 ;;
+    listNodes)
+        if [ -d "$key" ]; then
+            (cd "$key" && ls -1) | sed "s/^/'/;s/$/'/" | tr '\n' ' '
+            echo
+            exit 0
+        fi
+        exit 1
+        ;;
 esac
 exit 1
 EOF

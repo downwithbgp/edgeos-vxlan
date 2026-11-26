@@ -109,6 +109,17 @@ case "$op" in
             printf '%s\n' "-A $1 -j LOG"
             exit 0
         fi
+        case "$(basename "$0")" in
+            ip6tables) fam=ipv6-name ;;
+            *) fam=name ;;
+        esac
+        if [ "${DEGRADED_CHAIN:-0}" != "1" ] &&
+            [ -d "$CONF/firewall/$fam/$1/rule" ]; then
+            for d in "$CONF/firewall/$fam/$1/rule"/*; do
+                [ -d "$d" ] || continue
+                printf '%s\n' "-A $1 -m comment --comment $1-$(basename "$d") -j RETURN"
+            done
+        fi
         policy=drop
         for fam in name ipv6-name; do
             f="$CONF/firewall/$fam/$1/default-action"
@@ -220,6 +231,14 @@ case "$op" in
         fi
         exit 0
         ;;
+    listNodes)
+        if [ -d "$path" ]; then
+            ls "$path" 2>/dev/null | sed "s/^/'/;s/$/'/" | tr '\n' ' '
+            echo
+            exit 0
+        fi
+        exit 1
+        ;;
 esac
 exit 1
 EOF
@@ -248,7 +267,7 @@ reset_case() {
     unset FAIL_FW_UPDATE FAIL_FW_DELETE FAIL_API_PATTERN FAIL_API_AFTER_FW
     unset API_FAIL_MARKER
     unset EMPTY_CHAIN NONTERMINAL_CHAIN NONUNCONDITIONAL_CHAIN
-    unset MISMATCHED_DEFAULT TARGET_INCONSISTENT
+    unset MISMATCHED_DEFAULT TARGET_INCONSISTENT DEGRADED_CHAIN
     rm -f "$TMP/api-fail"
 }
 
@@ -270,6 +289,11 @@ set_ruleset() { # set_ruleset <name|ipv6-name> <name>
 
 set_ruleset_policy() { # set_ruleset_policy <name|ipv6-name> <name> <policy>
     printf '%s' "$3" >"$CONF/firewall/$1/$2/default-action"
+}
+
+set_rule() { # set_rule <name|ipv6-name> <ruleset> <n>
+    mkdir -p "$CONF/firewall/$1/$2/rule/$3"
+    printf '%s' accept >"$CONF/firewall/$1/$2/rule/$3/action"
 }
 
 set_attachment() { # set_attachment <iface> <in|out|local> <name|ipv6-name> <ruleset>
@@ -605,6 +629,22 @@ NONUNCONDITIONAL_CHAIN=1 run_helper_ck "verify-all rejects a conditional termina
 grep -q "unconditional" "$TMP/err" && ok || bad "unconditional default diagnostic"
 TARGET_INCONSISTENT=1 run_helper_ck "verify-all rejects a verdict inconsistent with the default-action" 1 --verify-all vxlan42
 grep -q "does not correspond" "$TMP/err" && ok || bad "verdict consistency diagnostic"
+
+# A chain reduced to its default-action rule must fail when the configuration
+# declares explicit rules (the EdgeOS scripted-session degradation).
+reset_case
+set_iface vxlan42
+set_ruleset name VXLAN_IN
+set_rule name VXLAN_IN 20
+set_rule name VXLAN_IN 30
+set_attachment vxlan42 in name VXLAN_IN
+printf '%s\n' "-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN" >"$IPTSTATE"
+printf '%s\n' "VXLAN_IN" >"$CHAINS"
+run_helper_ck "verify-all accepts a chain with the configured rules" 0 --verify-all vxlan42
+DEGRADED_CHAIN=1 run_helper_ck "verify-all rejects a chain reduced to its default action" 1 --verify-all vxlan42
+grep -q "missing configured rule 20" "$TMP/err" && ok || bad "degraded chain diagnostic"
+FAIL_API_PATTERN='firewall name VXLAN_IN rule' run_helper_ck "verify-all rejects an unreadable rule list" 1 --verify-all vxlan42
+grep -q "configuration API failure" "$TMP/err" && ok || bad "rule-list API diagnostic"
 
 # ------------------------------------------------------------- multi-attachment quiesce
 # More than one dispatch change is applied sequentially, so it is quiesced: the
