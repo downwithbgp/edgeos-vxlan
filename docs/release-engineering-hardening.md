@@ -3,7 +3,7 @@
 **Branch:** `ci/release-engineering-hardening`, based on `origin/main`
 `c917f33` (tag `v0.2.2`).
 **Status:** review-ready CI branch; nothing merged, tagged or published.
-**Verification:** local checks plus two green GitHub Actions runs, including an
+**Verification:** local checks plus green GitHub Actions runs, including an
 independent verification of the published `v0.2.2` release.
 
 ## 1. Scope and isolation
@@ -178,6 +178,9 @@ and reported no findings.
   * Verify published release: success; `v0.2.2` validation PASS
     (`Kmod SHA256 0cc647…`, `Integration SHA256 026d4d46…`).
 * Documentation-commit run: <https://github.com/downwithbgp/edgeos-vxlan/actions/runs/45903324988>
+  * Static analysis: success.
+  * Build and validate packages: success.
+* Review-fix run: <https://github.com/downwithbgp/edgeos-vxlan/actions/runs/45905792742>
   * Static analysis: success.
   * Build and validate packages: success.
 
