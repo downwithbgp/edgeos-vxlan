@@ -11,6 +11,9 @@ while IFS= read -r f; do
     bash -n "$f"
 done < <(find "$ROOT/src" "$ROOT/test" \( -name '*.sh' -o -name 'vyatta-vxlan' -o -name 'vyatta-vxlan-bridge' -o -name 'vyatta-vxlan-firewall' \) | sort)
 
+echo "== unit: build script =="
+bash "$ROOT/test/unit-build.sh"
+
 echo "== unit: helper =="
 bash "$ROOT/test/unit-helper.sh"
 
