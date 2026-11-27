@@ -1216,7 +1216,7 @@ Build with:
 dpkg-buildpackage -us -uc -b -a mipsel
 ```
 
-The build produces (version from `debian/changelog`; the v0.3.0 release candidate is shown):
+The build produces (version from `debian/changelog`; the v0.3.0 release is shown):
 
 ```text
 edgeos-vxlan_0.3.0~rc1+edgeos3.0.1.e50_all.deb
