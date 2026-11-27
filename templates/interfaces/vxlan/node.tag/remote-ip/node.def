@@ -1,2 +1,6 @@
-type: ipv4
-help: Remote VXLAN VTEP IPv4 address [REQUIRED]
+type: ipv4,ipv6
+help: Remote peer address of this VTEP [REQUIRED]
+val_help: ipv4; Remote IPv4 address
+val_help: ipv6; Remote IPv6 address
+syntax:expression: exec "/opt/vyatta/sbin/vyatta-vxlan-addr check-endpoint remote $VAR(@)"
+commit:expression: exec "/opt/vyatta/sbin/vyatta-vxlan-addr check-endpoints '$VAR(../local-ip/@)' '$VAR(@)'"

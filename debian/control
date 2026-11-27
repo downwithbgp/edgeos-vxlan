@@ -14,7 +14,7 @@ Description: VXLAN kernel module for Ubiquiti EdgeRouter X
 
 Package: edgeos-vxlan
 Architecture: all
-Depends: ${misc:Depends}, edgeos-vxlan-kmod (= ${binary:Version}), vyatta-cfg-system, libvyatta-cfg1 (= 1:1.0.18+t5862406.er.3.0.1.ef8cbcb)
+Depends: ${misc:Depends}, edgeos-vxlan-kmod (= ${binary:Version}), vyatta-cfg-system, vyatta-cfg-firewall (= 1:0.14.14+t5862406.er.3.0.1.5fd48fe), iptables, libvyatta-cfg1 (= 1:1.0.18+t5862406.er.3.0.1.ef8cbcb)
 Description: EdgeOS configuration integration for VXLAN
  Adds native Vyatta/EdgeOS configuration-mode support for VXLAN
  interfaces.

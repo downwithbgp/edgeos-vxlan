@@ -1,8 +1,8 @@
 # edgeos-vxlan
 
-Native VXLAN support for the Ubiquiti EdgeRouter X running EdgeOS 3.0.1.
+Native IPv4 and IPv6 VXLAN support for the Ubiquiti EdgeRouter X running EdgeOS 3.0.1.
 
-This project adds the missing Linux `vxlan.ko` kernel module and integrates VXLAN interfaces into the native EdgeOS/Vyatta configuration system. The v0.2 kernel package also carries a narrowly scoped `udp_tunnel.ko` backport for CVE-2022-50405 on the supported EdgeOS 3.0.1 kernel.
+This project adds the missing Linux `vxlan.ko` kernel module and integrates VXLAN interfaces into the native EdgeOS/Vyatta configuration system, supporting both IPv4 and IPv6 VXLAN underlays. The v0.2 kernel package also carries a narrowly scoped `udp_tunnel.ko` backport for CVE-2022-50405 on the supported EdgeOS 3.0.1 kernel.
 
 Example:
 
@@ -21,6 +21,23 @@ save
 exit
 ```
 
+An IPv6 underlay uses the same tree with IPv6 endpoints:
+
+```text
+configure
+
+set interfaces vxlan vxlan42 address 198.51.100.1/30
+set interfaces vxlan vxlan42 local-ip 2001:db8::1
+set interfaces vxlan vxlan42 remote-ip 2001:db8::2
+set interfaces vxlan vxlan42 vni 42
+set interfaces vxlan vxlan42 port 4789
+set interfaces vxlan vxlan42 mtu 1430
+
+commit
+save
+exit
+```
+
 After configuration, the interface behaves like a native EdgeOS interface:
 
 ```text
@@ -31,11 +48,23 @@ vxlan42      198.51.100.1/30      u/u
 
 ## Quick install
 
+The currently published release is **v0.3.0**. It adds native EdgeOS firewall attachments for
+VXLAN interfaces while keeping the v0.2.x interface feature set; see
+[`docs/v0.3.0-release-notes.md`](docs/v0.3.0-release-notes.md) for features, supported workflows and
+limitations. Existing v0.2.2 installations upgrade in place.
+
+> **Supported workflows and important limitations.** Firewall ruleset changes must be made in the
+> interactive EdgeOS CLI; scripted (script-template) commits can misapply them on EdgeOS 3.0.1. The
+> extension manages enforcement during its own configuration lifecycle — it is **not** a continuous
+> firewall integrity monitor. Bridged firewall attachments are not supported. See
+> [`docs/v0.3.0-support-boundary.md`](docs/v0.3.0-support-boundary.md) and
+> [`docs/v0.3.0-edgeos-scripted-commit-limitation.md`](docs/v0.3.0-edgeos-scripted-commit-limitation.md).
+
 Check whether your router is supported without making any changes:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.2.1/install.sh |
+  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.3.0/install.sh |
   sh -s -- --check
 ```
 
@@ -43,7 +72,7 @@ Install `edgeos-vxlan`:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.2.1/install.sh |
+  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.3.0/install.sh |
   sudo sh
 ```
 
@@ -58,18 +87,18 @@ Prefer to inspect the installer first?
 
 ```bash
 curl -fLO \
-  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.2.1/install.sh
+  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.3.0/install.sh
 
 less install.sh
 sudo sh install.sh
 ```
 
-The installer is pinned to release `v0.2.1`; it does not execute the moving `main` branch.
+The installer is pinned to release `v0.3.0`; it does not execute the moving `main` branch.
 
 
 ## Supported platform
 
-Version `0.2.1` is deliberately restricted to the platform on which it has been built and tested.
+The project is deliberately restricted to the platform on which it has been built and tested.
 
 ```text
 Device:       Ubiquiti EdgeRouter X / ER-e50
@@ -96,6 +125,11 @@ Do not install the package on other EdgeRouter models, EdgeOS releases, or kerne
 * Linux VXLAN kernel support through `vxlan.ko`
 * A narrowly scoped `udp_tunnel.ko` security backport for CVE-2022-50405
 * Native `interfaces vxlan vxlanN` EdgeOS configuration
+* IPv4 and IPv6 VXLAN underlays (`local-ip`/`remote-ip`), with the endpoint family enforced
+* Family-aware default MTU — 1450 over an IPv4 underlay, 1430 over an IPv6 underlay
+* Canonical endpoint comparison, so an equivalent re-spelling does not recreate the interface
+* Endpoint validation that rejects malformed, prefix-carrying, mixed-family and unusable addresses before anything is changed
+* Fail-closed live-state capture before any destructive step
 * Persistent configuration through `/config/config.boot`
 * Automatic module loading
 * VXLAN restoration during boot
@@ -119,6 +153,13 @@ Do not install the package on other EdgeRouter models, EdgeOS releases, or kerne
   * description
   * administrative disable state
 * Non-disruptive updates for mutable interface properties, including bridge membership, path cost, and port priority
+* Native EdgeOS firewall attachment for routed VXLAN interfaces:
+  * `firewall in`, `firewall out` and `firewall local`
+  * IPv4 `name` and IPv6 `ipv6-name` rulesets, independently of the underlay family
+  * commit-time reference validation and completion from the configured rulesets
+  * fail-closed verification that the interface dispatch is effective before the interface is activated
+  * dispatch snapshot/restore across recreation failures
+  * rejection of firewall attachments on VXLAN bridge ports
 * Controlled interface recreation for VXLAN identity changes
 * Rollback to the previous live interface state, including bridge membership, path cost, and port priority, if recreation fails
 * Deterministic locally administered MAC addresses
@@ -170,8 +211,14 @@ Provides:
 
 * EdgeOS configuration templates
 * the `vyatta-vxlan` reconciliation helper
+* the `vyatta-vxlan-addr` dual-family address and identity helper
 * the `vyatta-vxlan-bridge` bridge-membership helper
+* the `vyatta-vxlan-firewall` attachment lifecycle helper
 * VXLAN recognition in `Vyatta::Interface`
+
+The integration package depends on the stock `vyatta-cfg-firewall` package (the `firewall name` /
+`firewall ipv6-name` configuration tree) and `iptables`. It does not pull in a new firewall engine or a
+new userspace dependency beyond what the supported firmware already provides.
 
 It depends on the exact matching kernel package and the tested EdgeOS configuration packages.
 
@@ -183,14 +230,14 @@ Install the kernel module first:
 
 ```bash
 sudo dpkg -i \
-  edgeos-vxlan-kmod_0.2.1+edgeos3.0.1.e50_mipsel.deb
+  edgeos-vxlan-kmod_0.2.2+edgeos3.0.1.e50_mipsel.deb
 ```
 
 Then install the EdgeOS integration package:
 
 ```bash
 sudo dpkg -i \
-  edgeos-vxlan_0.2.1+edgeos3.0.1.e50_all.deb
+  edgeos-vxlan_0.2.2+edgeos3.0.1.e50_all.deb
 ```
 
 Verify that the module is loaded:
@@ -206,6 +253,43 @@ vxlan
 ip6_udp_tunnel
 udp_tunnel
 ```
+
+### Upgrading from v0.2.2 to v0.3.0
+
+v0.3.0 upgrades from v0.2.2 without changing existing VXLAN configuration. Configurations without
+`firewall` attachments keep their established unfiltered behavior; the attachment subtree is
+optional. Install both packages in a single `dpkg` transaction, kernel package first:
+
+```bash
+sudo dpkg -i \
+  edgeos-vxlan-kmod_0.3.0+edgeos3.0.1.e50_mipsel.deb \
+  edgeos-vxlan_0.3.0+edgeos3.0.1.e50_all.deb
+```
+
+The upgrade replaces files and leaves live interfaces in place. The integration package now depends on
+`vyatta-cfg-firewall` and `iptables`, both already present on the supported firmware. Verify with
+`dpkg -V edgeos-vxlan edgeos-vxlan-kmod`, `show configuration commands`, and the firewall status
+commands in the native firewall section.
+
+The package upgrade RC5 → 0.3.0 was qualified on the EdgeRouter X with the operational `vxlan41913`
+interface and its native attachments in place; the runtime payload is byte-identical to RC5, so a
+loaded module stays valid until the next reboot.
+
+### Upgrading from v0.2.1
+
+Upgrade both packages in a single `dpkg` invocation, kernel package first (replace the filenames with the downloaded v0.2.2 files):
+
+```bash
+sudo dpkg -i \
+  edgeos-vxlan-kmod_0.2.2+edgeos3.0.1.e50_mipsel.deb \
+  edgeos-vxlan_0.2.2+edgeos3.0.1.e50_all.deb
+```
+
+The upgrade replaces files only: it does not modify the saved configuration, recreate interfaces, or unload a loaded module (`depmod`/`modprobe` run, and an already-loaded `udp_tunnel` is left alone until a safe reload or reboot). Verify the result with `dpkg -V edgeos-vxlan edgeos-vxlan-kmod` (silent) and `dpkg --audit`.
+
+The package-upgrade path has been exercised with a live tunnel on the supported platform (release-candidate pair) and in container simulations of the v0.2.1 ↔ release-candidate transactions. The exact v0.2.1 → v0.2.2 upgrade carrying an existing, active **IPv4** VXLAN has not been directly hardware-tested — after upgrading, review the tunnel (`ip -j -d link show dev vxlanN`, `show interfaces`) and re-commit if you want to exercise the configuration path.
+
+A downgrade uses the same single invocation with the v0.2.1 files; `dpkg` prints a `downgrading ...` warning, which is expected.
 
 ## Configuration
 
@@ -254,6 +338,42 @@ The latter should show values similar to:
 }
 ```
 
+
+### IPv6 underlay
+
+`local-ip` and `remote-ip` also accept IPv6 literals; both must be the same family:
+
+```text
+configure
+
+set interfaces vxlan vxlan42 address 198.51.100.1/30
+set interfaces vxlan vxlan42 local-ip 2001:db8::1
+set interfaces vxlan vxlan42 remote-ip 2001:db8::2
+set interfaces vxlan vxlan42 vni 42
+set interfaces vxlan vxlan42 port 4789
+
+commit
+save
+exit
+```
+
+With `mtu` unset, an IPv6-underlay tunnel comes up at the family default of 1430, and `ip -j -d link show dev vxlan42` reports the endpoints as `local6`/`remote6`:
+
+```json
+{
+  "info_kind": "vxlan",
+  "info_data": {
+    "id": 42,
+    "remote6": "2001:db8::2",
+    "local6": "2001:db8::1",
+    "port": 4789
+  }
+}
+```
+
+Use the JSON form for diagnostics on this platform: in the firmware's `iproute2` build the human-readable `ip -d link show` output renders some numeric fields incorrectly.
+
+Malformed addresses, addresses carrying a prefix, mixed families, and — for the remote endpoint — link-local, multicast, unspecified, loopback and IPv4-mapped addresses are rejected at commit time before anything is changed. An unspecified **local** address (`0.0.0.0` or `::`) is accepted and means "no specific local address". The remote endpoint is fixed (point-to-point): multiple remote VTEPs and learned peers are not supported.
 
 ### Bridged VXLAN
 
@@ -319,16 +439,32 @@ interfaces {
         }
         description <text>
         disable
-        local-ip <IPv4 address>
-        mtu <64-8024>
+        firewall {
+            in {
+                name <IPv4 ruleset>
+                ipv6-name <IPv6 ruleset>
+            }
+            out {
+                name <IPv4 ruleset>
+                ipv6-name <IPv6 ruleset>
+            }
+            local {
+                name <IPv4 ruleset>
+                ipv6-name <IPv6 ruleset>
+            }
+        }
+        local-ip <IPv4 or IPv6 address>
+        mtu <68-8024>
         port <1-65535>
-        remote-ip <IPv4 address>
-        vni <0-16777215>
+        remote-ip <IPv4 or IPv6 address>
+        vni <1-16777215>
     }
 }
 ```
 
-`vni`, `local-ip`, and `remote-ip` are required.
+The `firewall` subtree attaches existing `firewall name` / `firewall ipv6-name` rulesets; it does not create or modify policy. `firewall` attachments are supported on routed VXLAN interfaces and rejected when the interface is a bridge port. See [Native interface firewall](#native-interface-firewall).
+
+`vni`, `local-ip`, and `remote-ip` are required, and `local-ip`/`remote-ip` must be the same address family. The `mtu` minimum is the kernel's own VXLAN minimum (68): a value the kernel cannot apply is rejected at commit time instead of failing later.
 
 The default UDP destination port is:
 
@@ -336,11 +472,22 @@ The default UDP destination port is:
 4789
 ```
 
-The default MTU is:
+The default MTU is family-aware: `1450` over an IPv4 underlay and `1430` over an IPv6 underlay on a standard untagged 1500-byte path.
+
+### MTU guidance
+
+The VXLAN interface MTU must fit inside the underlay path MTU:
 
 ```text
-1450
+VXLAN MTU = underlay path MTU − (14 Ethernet + IP + 8 UDP + 8 VXLAN)
+            IPv4 outer IP header: −20   (total −50)
+            IPv6 outer IP header: −40   (total −70)
+            per 802.1Q tag on the outer path: −4
 ```
+
+For the standard untagged 1500-byte path that gives 1450 over IPv4 and 1430 over IPv6 — the defaults above. One 802.1Q tag on the path gives 1426 over IPv6, and a PPPoE path whose MTU is already 1492 gives 1422 (the 8 bytes of PPPoE overhead are already reflected in the path MTU — do not subtract them twice).
+
+The integration does not rely on over-sized outer packets being fragmented: size the tunnel for the path, and set an explicit `mtu` when your underlay differs from the standard case.
 
 ## Interface update behavior
 
@@ -353,6 +500,11 @@ The following properties are changed in place without recreating the interface:
 * bridge membership
 * description
 * administrative state
+* firewall attachments (`in`, `out`, `local`; IPv4 and IPv6)
+
+Firewall attachments are applied by the reconciler **before** any netdevice mutation, then verified.
+A firewall-only change therefore does not recreate the interface. The pre-change dispatch is captured
+so a failed recreation can restore it.
 
 The following properties define the VXLAN tunnel identity and require interface recreation:
 
@@ -360,14 +512,17 @@ The following properties define the VXLAN tunnel identity and require interface 
 * local IP
 * remote IP
 * UDP destination port
+* the underlay address family (implied by the endpoints; an IPv4 ↔ IPv6 change is an identity change)
 
 When an identity change is committed, the integration:
 
-1. captures the existing live VXLAN state;
-2. removes the old interface;
-3. creates the requested VXLAN interface;
-4. restores the configured mutable state, including bridge membership;
-5. brings the interface to the requested administrative state.
+1. captures the existing live VXLAN state, including the effective firewall dispatch;
+2. applies the desired firewall attachment set and verifies it;
+3. removes the old interface;
+4. creates the requested VXLAN interface;
+5. restores the configured mutable state, including bridge membership;
+6. verifies the required firewall attachments immediately before bringing the interface up;
+7. brings the interface to the requested administrative state.
 
 If creation or reconciliation fails, the helper attempts to restore the previous live VXLAN interface, including:
 
@@ -380,9 +535,26 @@ If creation or reconciliation fails, the helper attempts to restore the previous
 * description
 * configured global addresses
 * bridge membership
+* firewall attachments (`in`, `out`, `local`, IPv4 and IPv6)
 * administrative state
 
+If the previous firewall dispatch cannot be reconstructed, the interface is left administratively
+down and the failure is reported; it is not brought up with an unknown policy.
+
 The failed configuration operation still returns an error so that EdgeOS reports the commit failure.
+
+The kernel interface index (`ifindex`) changes on recreation and is **not** preserved; the properties listed above are reapplied or restored.
+
+### Failed commits and partial configuration
+
+EdgeOS configuration commits are not universally atomic: the engine commits each priority subtree independently and can write the successful part of a commit that failed overall. If a VXLAN commit fails, **do not `save`** — first compare the active configuration with the kernel, for example:
+
+```bash
+show configuration commands | grep vxlan42
+ip -j -d link show dev vxlan42
+```
+
+then set the values so that they agree again and re-commit before saving. The integration validates everything it can before mutating, and restores the captured kernel state when a recreation fails, but it cannot make the configuration engine transactional.
 
 ## Deterministic MAC addresses
 
@@ -492,7 +664,9 @@ commit succeeded
 teardown succeeded
 ```
 
-After reboot, the VXLAN kernel module, patched UDP-tunnel dependency, native configuration, deterministic MAC address, MTU, interface address or bridge membership, and operational state are restored.
+After reboot, the VXLAN kernel module, patched UDP-tunnel dependency, native configuration, deterministic MAC address, MTU, interface address or bridge membership, and operational state are restored. Save + reboot restoration was re-validated with an IPv6 underlay on the release candidate: the tunnel, its identity, MTU 1430, the deterministic MAC and both overlay addresses came back automatically, and bidirectional IPv4 and IPv6 overlay traffic passed afterwards.
+
+Dynamic underlay addressing (SLAAC/DHCPv6) at boot has not been validated — see Known limitations.
 
 ## Removal
 
@@ -520,10 +694,14 @@ sudo dpkg -r edgeos-vxlan-kmod
 
 The packages contain safeguards against:
 
-* removing `edgeos-vxlan` while saved VXLAN configuration exists;
+* removing `edgeos-vxlan` while saved VXLAN configuration exists (this includes any `firewall` attachments under `interfaces vxlan`);
+* removing `edgeos-vxlan` while live VXLAN interfaces exist;
 * removing `edgeos-vxlan-kmod` while live VXLAN interfaces remain.
 
 Removing the integration package also restores the original diverted `Vyatta::Interface` file. Removing the kernel package restores the original EdgeOS `udp_tunnel.ko` preserved by its separate `dpkg-divert`.
+
+Package removal does not silently leave an active VXLAN interface without its integration: remove or
+disable the interfaces and save the configuration first.
 
 ## Underlay trust and security
 
@@ -574,7 +752,313 @@ On the supported EdgeRouter X, this behavior was validated with a VXLAN interfac
 
 `edgeos-vxlan` does not automatically create or modify firewall policy. Underlay filtering remains an explicit deployment responsibility.
 
+### Restricting a fixed VXLAN peer (IPv6 underlay)
+
+`remote-ip` is not an ingress allowlist for IPv6 either. The same restrict-to-the-intended-peer policy can be expressed with an EdgeOS IPv6 local firewall ruleset; if the underlay interface already has a local IPv6 policy attached (for example a VLAN ruleset with a default drop), extend that existing ruleset with the VXLAN rules — do not replace it, and keep the management path in mind:
+
+```text
+configure
+
+set firewall ipv6-name VXLAN_UNDERLAY_LOCAL6 default-action accept
+
+set firewall ipv6-name VXLAN_UNDERLAY_LOCAL6 rule 10 action accept
+set firewall ipv6-name VXLAN_UNDERLAY_LOCAL6 rule 10 description 'Allow configured VXLAN peer'
+set firewall ipv6-name VXLAN_UNDERLAY_LOCAL6 rule 10 protocol udp
+set firewall ipv6-name VXLAN_UNDERLAY_LOCAL6 rule 10 source address <remote-v6>
+set firewall ipv6-name VXLAN_UNDERLAY_LOCAL6 rule 10 destination port 4789
+
+set firewall ipv6-name VXLAN_UNDERLAY_LOCAL6 rule 20 action drop
+set firewall ipv6-name VXLAN_UNDERLAY_LOCAL6 rule 20 description 'Drop other VXLAN senders'
+set firewall ipv6-name VXLAN_UNDERLAY_LOCAL6 rule 20 protocol udp
+set firewall ipv6-name VXLAN_UNDERLAY_LOCAL6 rule 20 destination port 4789
+
+set interfaces ethernet eth1 firewall local ipv6-name VXLAN_UNDERLAY_LOCAL6
+
+commit
+save
+exit
+```
+
+On the release-candidate deployment, an extension of the underlay's existing local IPv6 ruleset (default drop) was in place while the tunnel was validated; adapt the rule numbers to your own ruleset and validate the drop behaviour on your deployment.
+
 This is a source-address allowlist, not cryptographic authentication. On an untrusted or spoofable underlay, use an authenticated and encrypted transport when peer authenticity or confidentiality is required.
+
+## Native interface firewall
+
+`interfaces vxlan vxlanN firewall ...` attaches ordinary EdgeOS `firewall name` and
+`firewall ipv6-name` rulesets to the traffic carried by the VXLAN interface. The attachment is applied
+by the stock EdgeOS `ubnt-fw` engine to the decapsulated inner traffic; it is not a filter on the outer
+UDP transport.
+
+This is the native alternative to maintaining independent iptables scripts or startup hooks. The
+package attaches operator-owned policies; it never creates permissive or restrictive rulesets, and it
+does not infer trust from interface addressing.
+
+### Syntax
+
+```text
+set interfaces vxlan vxlan42 firewall in name VXLAN_IN
+set interfaces vxlan vxlan42 firewall in ipv6-name VXLANv6_IN
+
+set interfaces vxlan vxlan42 firewall out name VXLAN_OUT
+set interfaces vxlan vxlan42 firewall out ipv6-name VXLANv6_OUT
+
+set interfaces vxlan vxlan42 firewall local name VXLAN_LOCAL
+set interfaces vxlan vxlan42 firewall local ipv6-name VXLANv6_LOCAL
+```
+
+| Direction | Native hook | Matches | Meaning |
+|---|---|---|---|
+| `in` | `FORWARD`, `VYATTA_FW_IN_HOOK` | `-i vxlanN` | forwarded packets arriving on the VXLAN interface |
+| `out` | `FORWARD`, `VYATTA_FW_OUT_HOOK` | `-o vxlanN` | forwarded packets leaving the VXLAN interface |
+| `local` | `INPUT`, `VYATTA_FW_LOCAL_HOOK` | `-i vxlanN` | packets destined for the router itself |
+
+`name` is an IPv4 ruleset; `ipv6-name` is an IPv6 ruleset. The overlay policy family is independent of
+the underlay family and both overlay families may be active at the same time. A VXLAN interface can
+therefore use an IPv4 underlay with IPv6-only inner policy, an IPv6 underlay with IPv4 inner policy, or
+any other combination.
+
+`out` follows native EdgeOS semantics: it matches **forwarded** traffic leaving the interface. Traffic
+originated by the router itself is handled by `OUTPUT` and is not matched by `firewall out`.
+
+### Policy ownership and validation
+
+* The rulesets must already exist under `firewall name` / `firewall ipv6-name`.
+* A missing ruleset, a mixed direction/family, an unsafe ruleset name, or a bridge-port attachment is
+  rejected at commit time, before any interface or firewall change.
+* Tab completion lists the configured rulesets of the matching family.
+* The package does not create, rename, or delete rules. A ruleset still referenced by an attachment
+  cannot be deleted by the EdgeOS engine.
+* Firewall policy on other interfaces, NAT, routing, conntrack state and hardware offload is not
+  modified.
+
+### Lifecycle and failure behavior
+
+The attachment is part of the interface's desired operational state:
+
+1. The reconciler captures the current live firewall dispatch.
+2. It applies the complete desired attachment set through `ubnt-fw` and verifies every jump with
+   `iptables -C` / `ip6tables -C`.
+3. It creates or recreates the netdevice only after the desired dispatch is in place.
+4. Immediately before bringing the interface up it verifies the required attachments again.
+
+If a **new** attachment cannot be established on an already-operational interface, the helper restores
+the pre-change dispatch and takes the interface administratively down; the commit fails with an
+explicit error. If a **replacement** fails, the previous dispatch remains in place and the interface
+stays up, still protected by the previous policy.
+
+On a failed recreation, the previous netdevice state **and** the previous firewall dispatch are
+restored. If the dispatch cannot be reconstructed, the interface is left down and the commit fails;
+the integration does not bring up an interface with an unknown policy.
+
+On interface deletion, the netdevice is removed first and its dispatches are removed afterwards. A
+failed deletion therefore leaves the still-live interface protected.
+
+All of this is bounded by the EdgeOS commit engine: commits are not atomic, and a failed commit can
+still write the successful part of the configuration. Follow the existing rule: after a failed
+commit, do not `save`; compare the active configuration with the kernel and re-commit the correct
+values first.
+
+### Routed and bridged operation
+
+Routed VXLAN interfaces support the full `in`/`out`/`local` attachment set described above.
+
+Bridged VXLAN interfaces **reject** firewall attachments. A frame forwarded by the Linux bridge
+between two ports is not seen by the routed `FORWARD` chain with `-i <vxlan-port>`; with bridge
+netfilter the logical input is the bridge device, and enabling `br_netfilter` would change the
+handling of all bridged traffic on the router. A port attachment would therefore look like
+enforcement while leaving L2-forwarded traffic unfiltered. This release does not enable bridge
+netfilter or claim bridged L2 firewall enforcement. Existing bridge functionality is unchanged.
+
+### Underlay and overlay boundaries
+
+Keep the four security concerns distinct:
+
+* **Transport reachability** — the route to the remote VTEP. `remote-ip` sets the normal outbound
+  destination; it is not an authenticated peer identity or an ingress allowlist.
+* **Underlay peer filtering** — a `firewall local` policy on the physical/VLAN interface carrying the
+  outer UDP/4789 traffic. This is where you restrict which underlay source may send VXLAN packets.
+* **Overlay firewall enforcement** — `firewall in`/`out`/`local` on the VXLAN interface, which sees the
+  decapsulated inner traffic.
+* **Cryptographic authentication and confidentiality** — not provided by VXLAN. Use IPsec or another
+  authenticated transport where required.
+
+An overlay attachment does not filter the outer VXLAN transport, and an underlay policy does not
+filter the inner traffic. Both are needed for a complete deployment.
+
+### Generic IPv6 tunnelbroker example
+
+This example is deliberately generic. It uses documentation address ranges; replace them with your
+provider's transfer subnet, routed allocation, and peer address.
+
+Assume:
+
+* IPv4 Internet underlay on `eth1`, router address `192.0.2.10/24`, gateway `192.0.2.1`;
+* tunnelbroker VTEP `192.0.2.2`, VNI `5002`, UDP port `4789`;
+* IPv6 transfer subnet `2001:db8:5002::/64`, broker transfer address `2001:db8:5002::1`;
+* routed IPv6 allocation `2001:db8:5002:100::/56`, routed via the transfer address;
+* the router provides IPv6-only transit; inner IPv4 is blocked.
+
+Underlay peer filtering (outer UDP/4789) on `eth1`:
+
+```text
+set firewall name VXLAN_UNDERLAY4 default-action accept
+set firewall name VXLAN_UNDERLAY4 description 'Restrict VXLAN underlay peer'
+set firewall name VXLAN_UNDERLAY4 rule 10 action accept
+set firewall name VXLAN_UNDERLAY4 rule 10 protocol udp
+set firewall name VXLAN_UNDERLAY4 rule 10 source address 192.0.2.2
+set firewall name VXLAN_UNDERLAY4 rule 10 destination port 4789
+set firewall name VXLAN_UNDERLAY4 rule 20 action drop
+set firewall name VXLAN_UNDERLAY4 rule 20 protocol udp
+set firewall name VXLAN_UNDERLAY4 rule 20 destination port 4789
+set interfaces ethernet eth1 firewall local name VXLAN_UNDERLAY4
+```
+
+The routed VXLAN interface, overlay addresses and policy:
+
+```text
+set interfaces vxlan vxlan5002 vni 5002
+set interfaces vxlan vxlan5002 local-ip 192.0.2.10
+set interfaces vxlan vxlan5002 remote-ip 192.0.2.2
+set interfaces vxlan vxlan5002 port 4789
+set interfaces vxlan vxlan5002 mtu 1450
+set interfaces vxlan vxlan5002 address 2001:db8:5002::2/64
+
+# The routed /56 is reached through the broker's transfer address.
+set protocols static route6 2001:db8:5002:100::/56 next-hop 2001:db8:5002::1
+
+# IPv6 overlay ingress: NDP/ICMPv6 essentials, established/related, then deny.
+set firewall ipv6-name VXLAN6_IN default-action drop
+set firewall ipv6-name VXLAN6_IN rule 10 action accept
+set firewall ipv6-name VXLAN6_IN rule 10 description 'IPv6 NDP and essential ICMPv6'
+set firewall ipv6-name VXLAN6_IN rule 10 protocol icmpv6
+set firewall ipv6-name VXLAN6_IN rule 10 icmpv6 type neighbour-solicitation
+set firewall ipv6-name VXLAN6_IN rule 11 action accept
+set firewall ipv6-name VXLAN6_IN rule 11 protocol icmpv6
+set firewall ipv6-name VXLAN6_IN rule 11 icmpv6 type neighbour-advertisement
+set firewall ipv6-name VXLAN6_IN rule 12 action accept
+set firewall ipv6-name VXLAN6_IN rule 12 protocol icmpv6
+set firewall ipv6-name VXLAN6_IN rule 12 icmpv6 type router-solicitation
+set firewall ipv6-name VXLAN6_IN rule 13 action accept
+set firewall ipv6-name VXLAN6_IN rule 13 protocol icmpv6
+set firewall ipv6-name VXLAN6_IN rule 13 icmpv6 type router-advertisement
+set firewall ipv6-name VXLAN6_IN rule 20 action accept
+set firewall ipv6-name VXLAN6_IN rule 20 state established enable
+set firewall ipv6-name VXLAN6_IN rule 20 state related enable
+# Add the services this router or its downstream networks may receive here.
+
+# IPv4 overlay is explicitly blocked: this deployment is IPv6-only transit.
+set firewall name VXLAN4_IN default-action drop
+set firewall name VXLAN4_IN description 'Inner IPv4 is not part of this transit service'
+
+set interfaces vxlan vxlan5002 firewall in ipv6-name VXLAN6_IN
+set interfaces vxlan vxlan5002 firewall in name VXLAN4_IN
+```
+
+If the router itself terminates IPv6 services over the tunnel, add a separate `local` ruleset with
+NDP/ICMPv6 essentials, established/related, and explicit management rules; do not rely on the
+forwarded-ingress ruleset for router-destined traffic.
+
+MTU: over an untagged 1500-byte IPv4 underlay the VXLAN MTU is `1500 - 50 = 1450`. One 802.1Q tag
+reduces it by another 4 bytes; PPPoE paths may be lower. If the customer traffic and provider path
+require it, clamp TCP MSS as well; the MTU setting alone is not an MSS clamp.
+
+Verification:
+
+```bash
+show configuration commands | grep vxlan5002
+show interfaces
+show firewall ipv6-name VXLAN6_IN
+show firewall name VXLAN4_IN
+for chain in VYATTA_FW_IN_HOOK VYATTA_FW_OUT_HOOK VYATTA_FW_LOCAL_HOOK; do
+    sudo iptables -S "$chain"
+done
+for chain in VYATTA_FW_IN_HOOK VYATTA_FW_OUT_HOOK VYATTA_FW_LOCAL_HOOK; do
+    sudo ip6tables -S "$chain"
+done
+ip -j -d link show dev vxlan5002
+ip -6 neigh show dev vxlan5002
+ip -6 route show 2001:db8:5002:100::/56
+bridge fdb show dev vxlan5002
+```
+
+Then verify from an external host:
+
+* the overlay transfer address and an address from the routed /56 are reachable;
+* IPv6 NDP resolves the peer and the FDB learns its MAC;
+* a permitted IPv6 TCP/TLS service works;
+* a denied IPv6 port is blocked;
+* an inner IPv4 probe is blocked;
+* an underlay UDP/4789 probe from a source other than the configured VTEP is blocked by
+  `VXLAN_UNDERLAY4` before decapsulation.
+
+### Verification and troubleshooting
+
+The authoritative state is the live netfilter dispatch, not just the configuration text:
+
+```bash
+show configuration commands | grep -A6 'vxlan vxlan42'
+show firewall name VXLAN_IN
+show firewall ipv6-name VXLANv6_IN
+sudo iptables-save -t filter | grep vxlan42
+sudo ip6tables-save -t filter | grep vxlan42
+ip -j -d link show dev vxlan42
+```
+
+The expected dispatch is one jump per configured direction/family, for example:
+
+```text
+-A VYATTA_FW_IN_HOOK -i vxlan42 -j VXLAN_IN
+-A VYATTA_FW_OUT_HOOK -o vxlan42 -j VXLAN_OUT
+-A VYATTA_FW_LOCAL_HOOK -i vxlan42 -j VXLAN_LOCAL
+```
+
+If the interface is up but a configured jump is missing, the commit-time gate has not been satisfied;
+the commit should have failed. If the interface was brought up by an older package or the jump was
+removed out-of-band, commit the interface again to reconcile it, or take the interface down until the
+policy is restored.
+
+### `ip -d` reporting defect on EdgeOS 3.0.1
+
+The vendor `iproute2-ss171113` binary on EdgeOS 3.0.1 prints corrupt numeric attributes in its
+human-readable `ip -d link show` output (VNI, UDP port, ageing, queue counts, promiscuity). The defect
+is in the MIPS build of the display path, not in the kernel and not in VXLAN: `ip -d` on `lo` and
+`eth0` shows the same corruption, while `ip -j -d` reports the correct values. Packet captures and
+working connectivity confirm the dataplane values are correct.
+
+Use the JSON form for diagnostics and automation:
+
+```bash
+ip -j -d link show dev vxlan42
+```
+
+The reconciler has always used `ip -j -d`; a regression test now pins that. Do not replace the
+platform's iproute2 package just to fix the human-readable output.
+
+### Checksum offload
+
+Local `tcpdump` captures of VXLAN traffic can show apparently invalid UDP checksums while checksum
+offload is enabled. In the validated deployment this was a capture artifact; disabling TX offload
+changed the capture but not the connectivity, and the actual fault was an incorrect VNI. Keep
+offload enabled unless there is independent evidence of a dataplane checksum problem, and treat local
+capture checksum warnings as non-authoritative.
+
+### Upgrade from v0.2.2
+
+Existing VXLAN configurations have no `firewall` nodes and keep their established behavior. The
+attachment subtree is optional. The package adds `vyatta-cfg-firewall` and `iptables` dependencies;
+both are part of the supported firmware. Package removal is refused while saved VXLAN configuration
+or live VXLAN interfaces exist, so an active interface cannot be left behind without its integration.
+
+### Hardware validation status
+
+The native attachment path has been exercised against the official EdgeOS 3.0.1 configuration engine
+in an emulated environment (configuration parsing, chain creation, dispatch installation, failed
+attachment fail-closed, attachment removal, and recreation rollback), and the Linux dataplane
+semantics have been exercised in network namespaces. **Hardware acceptance has not been executed.**
+The real-router procedure, including the continuous negative probe for boot/recreation fail-open
+windows, is in `docs/v0.3.0-hardware-acceptance.md`. Do not treat the emulated or namespace results as
+a substitute for that acceptance run.
 
 ## Kernel build provenance
 
@@ -732,12 +1216,12 @@ Build with:
 dpkg-buildpackage -us -uc -b -a mipsel
 ```
 
-The build produces:
+The build produces (version from `debian/changelog`; the v0.3.0 release is shown):
 
 ```text
-edgeos-vxlan_0.2.1+edgeos3.0.1.e50_all.deb
+edgeos-vxlan_0.3.0~rc1+edgeos3.0.1.e50_all.deb
 
-edgeos-vxlan-kmod_0.2.1+edgeos3.0.1.e50_mipsel.deb
+edgeos-vxlan-kmod_0.3.0~rc1+edgeos3.0.1.e50_mipsel.deb
 ```
 
 Packages are compressed using gzip for compatibility with the older `dpkg` version shipped by EdgeOS.
@@ -757,10 +1241,19 @@ Packages are compressed using gzip for compatibility with the older `dpkg` versi
 ├── src/
 │   ├── Interface.pm
 │   ├── vyatta-vxlan
-│   └── vyatta-vxlan-bridge
+│   ├── vyatta-vxlan-addr
+│   ├── vyatta-vxlan-bridge
+│   └── vyatta-vxlan-firewall
 ├── templates/
 │   └── interfaces/
 │       └── vxlan/
+├── test/
+│   ├── run.sh
+│   ├── unit-helper.sh
+│   ├── unit-firewall.sh
+│   ├── unit-templates.sh
+│   ├── mock.sh
+│   └── integration-netns.sh
 └── upstream/
     └── libvyatta-cfg1/
         └── Interface.pm
@@ -772,7 +1265,22 @@ Packages are compressed using gzip for compatibility with the older `dpkg` versi
 
 ## Tested behavior
 
-Version `0.2.1` has been tested for:
+Version `0.2.2` has been tested on the supported platform (EdgeRouter X / ER-e50, EdgeOS 3.0.1 build 5862409, kernel `4.14.54-UBNT`). v0.3.0 was hardware-qualified as RC5 on the same platform; the final 0.3.0 runtime payload is byte-identical to the qualified RC5 build (verified by package payload comparison). The v0.2.1/v0.2.2 results remain as noted.
+
+Version `0.3.0` adds native firewall attachment. Its configuration-engine behavior, failure injection and dataplane semantics have been exercised **off-device**:
+
+* the official EdgeOS 3.0.1 configuration engine (MIPS, under qemu in a privileged container) parsed the new templates, created the `firewall name`/`firewall ipv6-name` chains, installed the expected `in`/`out`/`local` jumps for IPv4 and IPv6, and brought the routed VXLAN interface up;
+* an injected `ubnt-fw update-interface` failure on a fresh interface prevented interface creation and left no dispatch;
+* an injected failure when adding an attachment to an already-up interface restored the previous (empty) dispatch and took the interface administratively down;
+* an attachment-only commit installed and then removed the dispatch without recreating the netdevice;
+* a recreation failure with a changed VNI and a changed attachment rolled the interface back to the old identity and the old dispatch;
+* deletion removed the dispatch only after the netdevice was gone, and a failed deletion kept the interface and dispatch intact;
+* a Linux network-namespace test passed IPv4/IPv6 overlays over IPv4/IPv6 underlays, local/forwarded-ingress/forwarded-egress policy, established/related, unsolicited inbound, NDP under an IPv6 local policy, multiple VXLAN interfaces, and dispatch survival across netdevice recreation under traffic.
+
+**Hardware acceptance has not been executed.** The real-router procedure is in
+`docs/v0.3.0-hardware-acceptance.md`; the emulated and namespace results are not a substitute for it.
+
+The v0.2.2 hardware results remain:
 
 * kernel module loading;
 * VXLAN interface creation;
@@ -812,13 +1320,34 @@ Version `0.2.1` has been tested for:
 * patched `udp_tunnel.ko` runtime loading and cold boot;
 * repeated VXLAN teardown/recreation under active receive traffic;
 * alternate-source VXLAN receive behavior demonstrating that `remote-ip` is not an ingress ACL;
-* EdgeOS `local` firewall enforcement restricting UDP/4789 to an intended fixed peer.
+* EdgeOS `local` firewall enforcement restricting UDP/4789 to an intended fixed peer;
+* IPv6 underlay configuration through the native tree, including template validation and rejection of malformed, prefix-carrying and mixed-family endpoints **without touching live state**;
+* rejection of unusable IPv6 remote endpoints (link-local, multicast, unspecified, loopback, IPv4-mapped) and acceptance of an unspecified local endpoint;
+* native interface creation and deletion over an IPv6 underlay, with the correct VNI, UDP port, MTU, endpoint identity, MAC and overlay addresses;
+* bidirectional IPv4 and IPv6 overlay traffic over an IPv6 VXLAN underlay, including a post-reboot run (20/20 packets, zero loss);
+* IPv6 endpoint canonicalisation: an equivalent re-spelling does not recreate the interface, and no-op commits leave it in place;
+* family-aware MTU defaulting (1430 over IPv6, 1450 over IPv4), mutable MTU changes without recreation, and restoration of the family default when overrides are removed;
+* IPv4 ↔ IPv6 underlay transitions as identity changes with the correct endpoints applied;
+* minimum-MTU validation: values the kernel cannot apply (below the VXLAN minimum of 68, or above the platform maximum) are rejected at commit, leaving the candidate configuration unchanged;
+* deterministic-failure rollback with bridge state (membership, path cost, port priority) preserved across recreation and restored after a failed one (release-candidate build);
+* package upgrade with a live tunnel (release-candidate pair; no interface recreation).
 
-A point-to-point test between the EdgeRouter X and a Linux host successfully passed bidirectional traffic over the VXLAN interface.
+Point-to-point tests between the EdgeRouter X and a Linux host passed bidirectional IPv4 and IPv6 overlay traffic over an IPv6 VXLAN underlay; the earlier (v0.2.1) hardware testing validated bidirectional IPv4 overlay traffic over an IPv4 VXLAN underlay.
 
 ## Known limitations
 
-Version `0.2.1` remains intentionally small in scope.
+Version `0.3.0` remains intentionally small in scope.
+
+* **VTEP endpoints are statically configured.** The tunnel is a fixed-remote point-to-point link; a delegated-prefix change on the underlay is not tracked automatically — update `local-ip`/`remote-ip` and commit after a prefix change. Dynamic underlay addressing (SLAAC/DHCPv6) at boot has not been validated.
+* **EdgeOS commits are not universally atomic.** A failed commit can leave partially applied configuration in some cases; after a failed VXLAN commit, do not `save` — compare the active configuration with the kernel and re-converge first (see the failed-commit guidance above).
+* **Upgrade from v0.2.2 with a live IPv4 firewall attachment has not been hardware-tested.** The package-upgrade mechanism has been validated for the v0.2.x line (including with a live tunnel and container simulations), and the packages make no configuration or interface changes on upgrade. The v0.3.0 hardware sequence is in the acceptance procedure.
+* **Firewall policy is the operator's responsibility.** The package attaches existing `firewall name`/`firewall ipv6-name` rulesets; it does not create, rename, or modify them. `remote-ip` is not an ingress allowlist — see the native firewall and underlay trust sections.
+* **Bridged L2 firewall enforcement is not supported.** VXLAN bridge ports reject firewall attachments; global bridge netfilter is not enabled. Routed VXLAN is the supported enforcement case.
+* **`modify` and `ipv6-modify` (mangle) attachments are not exposed** for VXLAN in this release. `in`, `out` and `local` are the supported directions.
+* **`firewall out` follows native EdgeOS semantics**: it matches forwarded traffic leaving the interface, not traffic originated by the router.
+* **No continuous out-of-band firewall monitor.** If a dispatch is removed outside a configuration commit, the next VXLAN lifecycle commit detects and repairs it; there is no daemon watching the dataplane.
+* **Hardware acceptance is pending.** Configuration-engine emulation and Linux namespace tests are off-device evidence only; see `docs/v0.3.0-hardware-acceptance.md`.
+* **The vendor `ip -d` human output is defective** on EdgeOS 3.0.1; use `ip -j -d`. The reconciler does.
 
 Not yet validated or implemented as first-class configuration features:
 
@@ -826,14 +1355,13 @@ Not yet validated or implemented as first-class configuration features:
 * multicast VXLAN
 * VLAN-to-VNI mapping
 * flood-and-learn configuration beyond the basic Linux defaults
-* IPv6 underlay
 * multiple remote VTEPs
 * VXLAN-specific FDB configuration
 * hardware offload
 * other EdgeRouter models
 * other EdgeOS releases
 
-The current implementation has been validated for routed point-to-point VXLAN and native bridge attachment over an IPv4 underlay. It remains a fixed-remote, Linux VXLAN dataplane integration rather than a VXLAN control-plane implementation.
+The current implementation has been validated for routed point-to-point VXLAN — dual-stack overlays over IPv6 underlays and IPv4 overlays over IPv4 underlays — and for native bridge attachment on the supported platform. It remains a fixed-remote, Linux VXLAN dataplane integration rather than a VXLAN control-plane implementation.
 
 ### EdgeOS userspace warnings
 

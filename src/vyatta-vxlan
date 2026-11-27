@@ -1,4 +1,11 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# vyatta-vxlan - EdgeOS reconciliation helper for VXLAN interfaces.
+# Dual-family (IPv4/IPv6) underlay, fail-closed live-state snapshots and
+# transactional recreation with rollback.  Paths that tests need to replace
+# are overridable via environment variables (defaults unchanged).
+
 set -eEu -o pipefail
 
 if [ "$(id -g -n)" != "vyattacfg" ]; then
@@ -11,115 +18,386 @@ INTERFACE=${2:?missing interface}
 
 VYATTA_SBINDIR=${vyatta_sbindir:-/opt/vyatta/sbin}
 VYATTA_API="${VYATTA_SBINDIR}/my_cli_shell_api"
+VXLAN_ADDR="${VYATTA_SBINDIR}/vyatta-vxlan-addr"
+VXLAN_FIREWALL="${VYATTA_SBINDIR}/vyatta-vxlan-firewall"
+VXLAN_BIN_BRCTL=${vxlan_bin_brctl:-/usr/sbin/brctl}
+VXLAN_BIN_MODPROBE=${vxlan_bin_modprobe:-/sbin/modprobe}
+VXLAN_SYSFS_ROOT=${vxlan_sysfs_root:-/sys}
+
+# The vendor API exits 1 both for "node absent" and for an internal failure; a
+# failure writes a diagnostic to stderr while a negative lookup is silent.
+# Reading an API failure as "absent" could silently drop configured enforcement
+# or an administrative `disable`, so a diagnostic aborts the commit.
+api_exists() {
+    local err rc=0
+    err=$("$VYATTA_API" exists "$@" 2>&1 >/dev/null) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        return 0
+    fi
+    if [ -n "$err" ]; then
+        echo "ERROR: configuration API failure: $err" >&2
+        exit 1
+    fi
+    return 1
+}
 
 node_exists() {
-    "$VYATTA_API" exists interfaces vxlan "$INTERFACE" "$@"
+    api_exists interfaces vxlan "$INTERFACE" "$@"
 }
 
 node_value() {
-    "$VYATTA_API" returnValue interfaces vxlan "$INTERFACE" "$@"
+    local value err
+    err=${TMPDIR:-/tmp}/vxlan-api.$$
+    if value=$("$VYATTA_API" returnValue interfaces vxlan "$INTERFACE" "$@" 2>"$err"); then
+        rm -f "$err"
+        printf '%s' "$value"
+        return 0
+    fi
+    if [ -s "$err" ]; then
+        echo "ERROR: configuration API failure: $(cat "$err")" >&2
+    fi
+    rm -f "$err"
+    return 1
 }
 
 node_values() {
-    "$VYATTA_API" returnValues interfaces vxlan "$INTERFACE" "$@"
+    local value err
+    err=${TMPDIR:-/tmp}/vxlan-api.$$
+    if value=$("$VYATTA_API" returnValues interfaces vxlan "$INTERFACE" "$@" 2>"$err"); then
+        rm -f "$err"
+        printf '%s' "$value"
+        return 0
+    fi
+    if [ -s "$err" ]; then
+        echo "ERROR: configuration API failure: $(cat "$err")" >&2
+    fi
+    rm -f "$err"
+    return 1
+}
+
+# exists() reads the working configuration, including nodes added by the
+# current commit.  existsEffective() is not usable here: during the current
+# subtree's end action the subtree has not been marked committed yet, so it
+# reports the newly added nodes as absent.
+node_exists_working() {
+    api_exists interfaces vxlan "$INTERFACE" "$@"
+}
+
+# existsEffective() reads the last committed (active) configuration.  It is the
+# correct source for the state that was active before this commit, and it is
+# used only by the capture-failure decision below.  A diagnostic is returned as
+# status 2 instead of being folded into "absent": an unreadable previous
+# configuration must not be mistaken for "no enforcement was configured".
+api_exists_effective() {
+    local err rc=0
+    err=$("$VYATTA_API" existsEffective "$@" 2>&1 >/dev/null) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        return 0
+    fi
+    if [ -n "$err" ]; then
+        echo "ERROR: configuration API failure: $err" >&2
+        return 2
+    fi
+    return 1
+}
+
+node_exists_effective() {
+    api_exists_effective interfaces vxlan "$INTERFACE" "$@"
+}
+
+firewall_configured() {
+    local direction family
+    for family in name ipv6-name; do
+        for direction in in out local; do
+            if node_exists_working firewall "$direction" "$family"; then
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+# 0 = the previous configuration required enforcement, 1 = it did not,
+# 2 = it could not be established.
+firewall_configured_effective() {
+    local direction family rc
+    for family in name ipv6-name; do
+        for direction in in out local; do
+            rc=0
+            node_exists_effective firewall "$direction" "$family" || rc=$?
+            case "$rc" in
+                0) return 0 ;;
+                1) ;;
+                *) return "$rc" ;;
+            esac
+        done
+    done
+    return 1
+}
+
+capture_firewall_state() {
+    if ! FIREWALL_SNAPSHOT=$("$VXLAN_FIREWALL" --capture "$INTERFACE"); then
+        echo "ERROR: cannot capture live firewall attachments for $INTERFACE." >&2
+        return 1
+    fi
+    return 0
+}
+
+verify_firewall_attachments() {
+    "$VXLAN_FIREWALL" --verify-all "$INTERFACE"
+}
+
+remove_firewall_attachments() {
+    "$VXLAN_FIREWALL" --remove-all "$INTERFACE"
 }
 
 interface_exists() {
     ip link show dev "$INTERFACE" >/dev/null 2>&1
 }
 
-get_live_bridge() {
-    local link
+# Administrative-state bitmask of $INTERFACE as a decimal number.  The kernel
+# prints this sysfs attribute as 0x-prefixed hexadecimal (net-sysfs fmt_hex
+# with the %#x format); bare decimal is accepted too for other sources.
+# Anything else is rejected before any arithmetic is attempted.
+read_iface_flags() {
+    local raw digits
+    if ! raw=$(cat "${VXLAN_SYSFS_ROOT}/class/net/$INTERFACE/flags" 2>/dev/null); then
+        echo "ERROR: cannot read administrative state of $INTERFACE." >&2
+        return 1
+    fi
+    case "$raw" in
+        0[xX]*)
+            digits=${raw#0[xX]}
+            case "$digits" in
+                '' | *[!0-9a-fA-F]*)
+                    echo "ERROR: unexpected administrative state '$raw'." >&2
+                    return 1
+                    ;;
+            esac
+            printf '%d\n' "$((0x$digits))"
+            ;;
+        '' | *[!0-9]*)
+            echo "ERROR: unexpected administrative state '$raw'." >&2
+            return 1
+            ;;
+        *)
+            printf '%d\n' "$((10#$raw))"
+            ;;
+    esac
+}
 
-    if [ ! -L "/sys/class/net/${INTERFACE}/brport/bridge" ]; then
+# Sets INTERFACE_ADMIN to up, down, absent or unknown.  A missing netdevice is
+# distinct from one whose flags cannot be read: only the former is a safe
+# "cannot carry traffic" answer.
+read_admin_state() {
+    local flags
+    if ! interface_exists; then
+        INTERFACE_ADMIN=absent
         return 0
     fi
+    if ! flags=$(read_iface_flags); then
+        INTERFACE_ADMIN=unknown
+        return 0
+    fi
+    if (((flags & 0x1) != 0)); then
+        INTERFACE_ADMIN=up
+    else
+        INTERFACE_ADMIN=down
+    fi
+}
 
-    link=$(readlink "/sys/class/net/${INTERFACE}/brport/bridge") || return 0
+# Stop the interface from carrying traffic and report exactly what was
+# verified.  An unknown administrative state is treated as "may be up" and a
+# down is attempted; a down is never claimed when it was not confirmed.
+stop_interface() {
+    local reason=$1
+    read_admin_state
+    case "$INTERFACE_ADMIN" in
+        absent)
+            echo "ERROR: $reason; $INTERFACE does not exist." >&2
+            return 0
+            ;;
+        down)
+            echo "ERROR: $reason; $INTERFACE is administratively down." >&2
+            return 0
+            ;;
+    esac
+    if ! sudo ip link set dev "$INTERFACE" down; then
+        echo "ERROR: $reason; $INTERFACE could not be taken down and may still carry traffic." >&2
+        return 0
+    fi
+    read_admin_state
+    case "$INTERFACE_ADMIN" in
+        down) echo "ERROR: $reason; $INTERFACE left administratively down." >&2 ;;
+        *) echo "ERROR: $reason; $INTERFACE was taken down but its administrative state could not be confirmed." >&2 ;;
+    esac
+    return 0
+}
+
+# Bring the interface back up and report the outcome.
+resume_interface() {
+    local reason=$1
+    if ! sudo ip link set dev "$INTERFACE" up; then
+        echo "ERROR: $reason; $INTERFACE could not be brought back up." >&2
+        return 1
+    fi
+    read_admin_state
+    case "$INTERFACE_ADMIN" in
+        up) echo "INFO: $reason; $INTERFACE restored to the up state." >&2 ;;
+        *) echo "WARNING: $reason; $INTERFACE was brought up but its administrative state could not be confirmed." >&2 ;;
+    esac
+    return 0
+}
+
+# Canonical endpoint text; an unspecified local address is represented as "-"
+# so it compares equal to a live interface that has no `local`/`local6` key.
+canon_endpoint() {
+    local c
+    c=$("$VXLAN_ADDR" canon "$1") || return 1
+    case "$c" in
+        0.0.0.0 | ::) printf '%s' "-" ;;
+        *) printf '%s' "$c" ;;
+    esac
+}
+
+# Canonical text for addr/prefix values (literal part canonicalised, prefix
+# kept verbatim) so non-canonical spellings compare equal (ADJ-1).
+canon_prefixed() {
+    local ap=${1%%/*} prefix=${1#*/} c
+    [ "$ap" != "$1" ] || return 1
+    c=$("$VXLAN_ADDR" canon "$ap") || return 1
+    printf '%s/%s\n' "$c" "$prefix"
+}
+
+# Print the bridge this interface is currently a port of (empty output when it
+# is not a bridge port).  The brport directory only exists while the device is
+# enslaved to a bridge, so a missing bridge link inside it means the port state
+# cannot be read: fail instead of silently reporting "not bridged".
+get_live_bridge() {
+    local brport="${VXLAN_SYSFS_ROOT}/class/net/${INTERFACE}/brport"
+    local link
+
+    if [ ! -e "$brport" ]; then
+        return 0
+    fi
+    if [ ! -L "$brport/bridge" ]; then
+        echo "ERROR: cannot determine bridge membership of $INTERFACE." >&2
+        return 1
+    fi
+    if ! link=$(readlink "$brport/bridge"); then
+        echo "ERROR: cannot read bridge membership of $INTERFACE." >&2
+        return 1
+    fi
+    case "$link" in
+        '' | */)
+            echo "ERROR: unexpected bridge link '$link' for $INTERFACE." >&2
+            return 1
+            ;;
+    esac
     basename "$link"
 }
 
 get_live_bridge_cost() {
-    cat "/sys/class/net/${INTERFACE}/brport/path_cost"
+    cat "${VXLAN_SYSFS_ROOT}/class/net/${INTERFACE}/brport/path_cost"
 }
 
 get_live_bridge_priority() {
-    cat "/sys/class/net/${INTERFACE}/brport/priority"
+    cat "${VXLAN_SYSFS_ROOT}/class/net/${INTERFACE}/brport/priority"
 }
 
 apply_live_bridge_port_options() {
-    local bridge=$1
-    local cost=$2
-    local priority=$3
-
-    sudo /usr/sbin/brctl setpathcost \
-        "$bridge" "$INTERFACE" "$cost" || return $?
-
-    sudo /usr/sbin/brctl setportprio \
-        "$bridge" "$INTERFACE" "$priority" || return $?
+    local bridge=$1 cost=$2 priority=$3
+    sudo "$VXLAN_BIN_BRCTL" setpathcost "$bridge" "$INTERFACE" "$cost" || return $?
+    sudo "$VXLAN_BIN_BRCTL" setportprio "$bridge" "$INTERFACE" "$priority" || return $?
 }
 
 reconcile_bridge() {
-    local desired_bridge=$1
-    local current_bridge
-    local rc
-
-    current_bridge=$(get_live_bridge)
+    local desired_bridge=$1 current_bridge rc
+    if ! current_bridge=$(get_live_bridge); then
+        return 1
+    fi
 
     if [ "$current_bridge" = "$desired_bridge" ]; then
         return 0
     fi
 
     if [ -n "$desired_bridge" ] &&
-       [ ! -d "/sys/class/net/${desired_bridge}/bridge" ]; then
+        [ ! -d "${VXLAN_SYSFS_ROOT}/class/net/${desired_bridge}/bridge" ]; then
         echo "ERROR: Bridge $desired_bridge does not exist." >&2
         return 1
     fi
 
     if [ -n "$current_bridge" ]; then
-        sudo /usr/sbin/brctl delif \
-            "$current_bridge" "$INTERFACE" || return $?
+        sudo "$VXLAN_BIN_BRCTL" delif "$current_bridge" "$INTERFACE" || return $?
     fi
 
     if [ -n "$desired_bridge" ]; then
-        sudo /usr/sbin/brctl addif \
-            "$desired_bridge" "$INTERFACE" || {
+        sudo "$VXLAN_BIN_BRCTL" addif "$desired_bridge" "$INTERFACE" || {
             rc=$?
-
             echo "ERROR: Failed to add $INTERFACE to $desired_bridge." >&2
-
             if [ -n "$current_bridge" ] &&
-               [ -d "/sys/class/net/${current_bridge}/bridge" ]; then
+                [ -d "${VXLAN_SYSFS_ROOT}/class/net/${current_bridge}/bridge" ]; then
                 echo "Restoring $INTERFACE to $current_bridge..." >&2
-
-                sudo /usr/sbin/brctl addif \
-                    "$current_bridge" "$INTERFACE" || {
+                sudo "$VXLAN_BIN_BRCTL" addif "$current_bridge" "$INTERFACE" || {
                     echo "ERROR: Failed to restore bridge membership." >&2
                     return 2
                 }
             fi
-
             return "$rc"
         }
+    fi
+    return 0
+}
+
+# Delete $INTERFACE.  The interface is taken down before deletion so the
+# kernel tears it down cleanly, but a failure must not leave the previous
+# interface administratively down: its up/down state is captured first and
+# restored if the deletion fails.  A failed administrative-down aborts the
+# deletion without touching the interface.
+delete_interface() {
+    local flags was_up=0
+
+    if ! interface_exists; then
+        return 0
+    fi
+
+    if ! flags=$(read_iface_flags); then
+        echo "ERROR: refusing to delete $INTERFACE: administrative state could not be read." >&2
+        return 1
+    fi
+    if (((flags & 0x1) != 0)); then
+        was_up=1
+    fi
+
+    if ! sudo ip link set dev "$INTERFACE" down; then
+        echo "ERROR: failed to set $INTERFACE down before deletion." >&2
+        return 1
+    fi
+
+    if ! sudo ip link del dev "$INTERFACE"; then
+        echo "ERROR: failed to delete $INTERFACE." >&2
+        if [ "$was_up" -eq 1 ]; then
+            echo "Restoring $INTERFACE to the up state..." >&2
+            if ! sudo ip link set dev "$INTERFACE" up; then
+                echo "ERROR: failed to restore $INTERFACE to the up state." >&2
+            fi
+        fi
+        return 1
     fi
 
     return 0
 }
 
-delete_interface() {
-    if interface_exists; then
-        sudo ip link set dev "$INTERFACE" down || true
-        sudo ip link del dev "$INTERFACE"
-    fi
-}
-
 create_vxlan() {
-    local interface=$1
-    local vni=$2
-    local local_ip=$3
-    local remote_ip=$4
-    local port=$5
-
+    local interface=$1 vni=$2 local_ip=$3 remote_ip=$4 port=$5 family
+    if [ "$local_ip" = "-" ]; then
+        family=$("$VXLAN_ADDR" family "$remote_ip") || return 1
+        if [ "$family" = "v6" ]; then
+            local_ip="::"
+        else
+            local_ip="0.0.0.0"
+        fi
+    fi
     sudo ip link add dev "$interface" type vxlan \
         id "$vni" \
         local "$local_ip" \
@@ -128,25 +406,19 @@ create_vxlan() {
 }
 
 contains_address() {
-    local needle=$1
+    local needle=$1 address
     shift
-
-    local address
     for address in "$@"; do
         if [ "$address" = "$needle" ]; then
             return 0
         fi
     done
-
     return 1
 }
 
 derive_mac() {
-    local base_mac
-    local hash
-    local first
-
-    base_mac=$(cat /sys/class/net/eth0/address)
+    local base_mac hash first
+    base_mac=$(cat "${VXLAN_SYSFS_ROOT}/class/net/eth0/address")
 
     hash=$(
         printf '%s' "${base_mac}:${INTERFACE}" |
@@ -154,9 +426,8 @@ derive_mac() {
             awk '{print $1}'
     )
 
-    # Force locally-administered + unicast:
-    # bit 1 = 1, bit 0 = 0.
-    first=$(( (0x${hash:0:2} & 0xfc) | 0x02 ))
+    # Force locally-administered + unicast: bit 1 = 1, bit 0 = 0.
+    first=$(((0x${hash:0:2} & 0xfc) | 0x02))
 
     printf '%02x:%s:%s:%s:%s:%s\n' \
         "$first" \
@@ -167,115 +438,120 @@ derive_mac() {
         "${hash:10:2}"
 }
 
+# kind <TAB> id <TAB> port <TAB> family <TAB> local <TAB> remote
 get_live_vxlan_identity() {
-    ip -j -d link show dev "$INTERFACE" |
-        perl -MJSON::PP -0777 -e '
-            my $json = decode_json(<>);
-            exit 1 unless ref($json) eq "ARRAY" && @$json;
-
-            my $linkinfo = $json->[0]{linkinfo} || {};
-            my $data = $linkinfo->{info_data} || {};
-
-            my $kind =
-                defined($linkinfo->{info_kind}) ? $linkinfo->{info_kind} :
-                defined($linkinfo->{kind})      ? $linkinfo->{kind} :
-                "";
-
-            my $id =
-                defined($data->{id}) ? $data->{id} : "";
-
-            my $local =
-                defined($data->{local}) ? $data->{local} : "";
-
-            my $remote =
-                defined($data->{remote}) ? $data->{remote} : "";
-
-            my $port =
-                defined($data->{port})    ? $data->{port} :
-                defined($data->{dstport}) ? $data->{dstport} :
-                "";
-
-            print join("\t", $kind, $id, $local, $remote, $port);
-        '
+    ip -j -d link show dev "$INTERFACE" | "$VXLAN_ADDR" parse-live
 }
 
 read_desired_addresses() {
+    local raw c out i
     DESIRED_ADDRESSES=()
-
     if node_exists address; then
-        # returnValues emits shell-quoted values.
-        eval "DESIRED_ADDRESSES=( $(node_values address) )"
+        if ! raw=$(node_values address); then
+            echo "ERROR: cannot read configured addresses for $INTERFACE." >&2
+            return 1
+        fi
+        eval "DESIRED_ADDRESSES=( $raw )"
+        out=()
+        for i in "${DESIRED_ADDRESSES[@]}"; do
+            if ! c=$(canon_prefixed "$i"); then
+                echo "ERROR: cannot normalise configured address '$i'." >&2
+                return 1
+            fi
+            out+=("$c")
+        done
+        DESIRED_ADDRESSES=("${out[@]}")
     fi
+    return 0
 }
 
 read_live_addresses() {
+    local out c line raw
     LIVE_ADDRESSES=()
-
-    while read -r address; do
-        if [ -n "$address" ]; then
-            LIVE_ADDRESSES+=("$address")
+    if ! out=$(ip -o addr show dev "$INTERFACE" scope global); then
+        echo "ERROR: cannot read live addresses of $INTERFACE." >&2
+        return 1
+    fi
+    while read -r line; do
+        case "$line" in
+            *" inet "* | *" inet6 "*) ;;
+            *) continue ;;
+        esac
+        c=$(printf '%s\n' "$line" | awk '{print $4}')
+        [ -n "$c" ] || continue
+        raw=$c
+        if ! c=$(canon_prefixed "$raw"); then
+            echo "ERROR: cannot normalise live address '$raw'." >&2
+            return 1
         fi
-    done < <(
-        ip -o addr show dev "$INTERFACE" scope global |
-            awk '$3 == "inet" || $3 == "inet6" { print $4 }'
-    )
+        LIVE_ADDRESSES+=("$c")
+    done <<<"$out"
+    return 0
 }
 
 apply_desired_mutable_state() {
-    local live_mtu
-    local live_description
-    local flags
-    local address
-
-    live_mtu=$(cat "/sys/class/net/$INTERFACE/mtu")
+    local live_mtu live_description flags address
+    live_mtu=$(cat "${VXLAN_SYSFS_ROOT}/class/net/$INTERFACE/mtu")
 
     if [ "$live_mtu" != "$MTU" ]; then
         sudo ip link set dev "$INTERFACE" mtu "$MTU" || return $?
     fi
 
-    live_description=$(cat "/sys/class/net/$INTERFACE/ifalias" 2>/dev/null || true)
-
+    live_description=$(cat "${VXLAN_SYSFS_ROOT}/class/net/$INTERFACE/ifalias" 2>/dev/null || true)
     if [ "$live_description" != "$DESCRIPTION" ]; then
         sudo ip link set dev "$INTERFACE" alias "$DESCRIPTION" || return $?
     fi
 
-    read_desired_addresses
-    read_live_addresses
+    read_desired_addresses || return $?
+    read_live_addresses || return $?
 
     # Detach from a bridge before configuring L3 addresses.
     if [ -z "$BRIDGE" ]; then
-        "${VYATTA_SBINDIR}/vyatta-vxlan-bridge" \
-            "$INTERFACE" || return $?
+        "${VYATTA_SBINDIR}/vyatta-vxlan-bridge" "$INTERFACE" || return $?
     fi
 
     for address in "${LIVE_ADDRESSES[@]}"; do
         if ! contains_address "$address" "${DESIRED_ADDRESSES[@]}"; then
-            sudo ip addr del "$address" dev "$INTERFACE" || return $?
+            sudo "${VYATTA_SBINDIR}/vyatta-address" delete "$INTERFACE" "$address" || return $?
         fi
     done
 
     for address in "${DESIRED_ADDRESSES[@]}"; do
         if ! contains_address "$address" "${LIVE_ADDRESSES[@]}"; then
-            sudo /opt/vyatta/sbin/vyatta-address \
-                add "$INTERFACE" "$address" || return $?
+            sudo "${VYATTA_SBINDIR}/vyatta-address" add "$INTERFACE" "$address" || return $?
         fi
     done
 
     # When transitioning to L2 operation, remove addresses first and only
     # then reconcile the complete requested bridge-port state.
     if [ -n "$BRIDGE" ]; then
-        /opt/vyatta/sbin/vyatta-vxlan-bridge \
-            "$INTERFACE" || return $?
+        "${VYATTA_SBINDIR}/vyatta-vxlan-bridge" "$INTERFACE" || return $?
     fi
 
-    flags=$(cat "/sys/class/net/$INTERFACE/flags")
+    # The firewall attachments are applied by this reconciler before any
+    # interface mutation.  Verify again immediately before the interface is
+    # allowed to become operational.  If an attachment is not effective, fail
+    # closed: take the interface down and fail the commit.
+    if node_exists_working disable; then
+        :
+    elif firewall_configured; then
+        if ! verify_firewall_attachments; then
+            stop_interface "refusing to make $INTERFACE operational without its configured firewall attachments"
+            return 3
+        fi
+    fi
+
+    if ! flags=$(read_iface_flags); then
+        stop_interface "cannot determine the administrative state of $INTERFACE"
+        return 3
+    fi
 
     if node_exists disable; then
-        if (( (flags & 0x1) != 0 )); then
+        if (((flags & 0x1) != 0)); then
             sudo ip link set dev "$INTERFACE" down || return $?
         fi
     else
-        if (( (flags & 0x1) == 0 )); then
+        if (((flags & 0x1) == 0)); then
             sudo ip link set dev "$INTERFACE" up || return $?
         fi
     fi
@@ -283,62 +559,100 @@ apply_desired_mutable_state() {
     return 0
 }
 
+# Every component read is status-checked: an incomplete snapshot must abort
+# the commit before anything is deleted (RB-2).
 capture_live_snapshot() {
-    local identity
-    local flags
-    local address
-
+    local identity flags
     OLD_ADDRESSES=()
 
-    identity=$(get_live_vxlan_identity)
-
-    IFS=$'\t' read -r \
-        OLD_KIND \
-        OLD_VNI \
-        OLD_LOCAL_IP \
-        OLD_REMOTE_IP \
-        OLD_PORT <<< "$identity"
-
-    if [ "$OLD_KIND" != "vxlan" ]; then
-        echo "ERROR: $INTERFACE exists but is not a VXLAN interface."
+    if ! identity=$(get_live_vxlan_identity); then
+        echo "ERROR: cannot read live VXLAN identity for $INTERFACE." >&2
         return 1
     fi
 
-    OLD_MAC=$(cat "/sys/class/net/$INTERFACE/address")
-    OLD_MTU=$(cat "/sys/class/net/$INTERFACE/mtu")
-    OLD_DESCRIPTION=$(cat "/sys/class/net/$INTERFACE/ifalias" 2>/dev/null || true)
-    OLD_BRIDGE=$(get_live_bridge)
-    OLD_BRIDGE_COST=""
-    OLD_BRIDGE_PRIORITY=""
+    IFS=$'\t' read -r OLD_KIND OLD_VNI OLD_PORT OLD_FAMILY OLD_LOCAL_IP OLD_REMOTE_IP <<<"$identity"
 
-    if [ -n "$OLD_BRIDGE" ]; then
-        OLD_BRIDGE_COST=$(get_live_bridge_cost)
-        OLD_BRIDGE_PRIORITY=$(get_live_bridge_priority)
+    if [ "$OLD_KIND" != "vxlan" ]; then
+        echo "ERROR: $INTERFACE exists but is not a VXLAN interface." >&2
+        return 1
+    fi
+    case "$OLD_VNI" in '' | *[!0-9]*)
+        echo "ERROR: incomplete live identity (VNI)." >&2
+        return 1
+        ;;
+    esac
+    case "$OLD_PORT" in '' | *[!0-9]*)
+        echo "ERROR: incomplete live identity (UDP port)." >&2
+        return 1
+        ;;
+    esac
+    case "$OLD_FAMILY" in v4 | v6) ;;
+    *)
+        echo "ERROR: incomplete live identity (address family)." >&2
+        return 1
+        ;;
+    esac
+    if [ -z "$OLD_LOCAL_IP" ] || [ -z "$OLD_REMOTE_IP" ]; then
+        echo "ERROR: incomplete live identity (endpoints)." >&2
+        return 1
     fi
 
-    flags=$(cat "/sys/class/net/$INTERFACE/flags")
+    if ! OLD_MAC=$(cat "${VXLAN_SYSFS_ROOT}/class/net/$INTERFACE/address" 2>/dev/null); then
+        echo "ERROR: cannot read live MAC address." >&2
+        return 1
+    fi
+    if ! [[ "$OLD_MAC" =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]]; then
+        echo "ERROR: unexpected live MAC address '$OLD_MAC'." >&2
+        return 1
+    fi
 
-    if (( (flags & 0x1) != 0 )); then
+    if ! OLD_MTU=$(cat "${VXLAN_SYSFS_ROOT}/class/net/$INTERFACE/mtu" 2>/dev/null); then
+        echo "ERROR: cannot read live MTU." >&2
+        return 1
+    fi
+    case "$OLD_MTU" in '' | *[!0-9]*)
+        echo "ERROR: unexpected live MTU '$OLD_MTU'." >&2
+        return 1
+        ;;
+    esac
+
+    if ! OLD_DESCRIPTION=$(cat "${VXLAN_SYSFS_ROOT}/class/net/$INTERFACE/ifalias" 2>/dev/null); then
+        echo "ERROR: cannot read live description." >&2
+        return 1
+    fi
+
+    if ! OLD_BRIDGE=$(get_live_bridge); then
+        return 1
+    fi
+    OLD_BRIDGE_COST=""
+    OLD_BRIDGE_PRIORITY=""
+    if [ -n "$OLD_BRIDGE" ]; then
+        if ! OLD_BRIDGE_COST=$(get_live_bridge_cost) ||
+            ! OLD_BRIDGE_PRIORITY=$(get_live_bridge_priority); then
+            echo "ERROR: cannot read live bridge port state." >&2
+            return 1
+        fi
+    fi
+
+    if ! flags=$(read_iface_flags); then
+        return 1
+    fi
+    if (((flags & 0x1) != 0)); then
         OLD_UP=1
     else
         OLD_UP=0
     fi
 
-    while read -r address; do
-        if [ -n "$address" ]; then
-            OLD_ADDRESSES+=("$address")
-        fi
-    done < <(
-        ip -o addr show dev "$INTERFACE" scope global |
-            awk '$3 == "inet" || $3 == "inet6" { print $4 }'
-    )
+    if ! read_live_addresses; then
+        return 1
+    fi
+    OLD_ADDRESSES=("${LIVE_ADDRESSES[@]}")
 
     return 0
 }
 
 rollback_live_snapshot() {
     local address
-
     echo "Rolling back $INTERFACE to previous live state..." >&2
 
     if interface_exists; then
@@ -358,8 +672,7 @@ rollback_live_snapshot() {
     sudo ip link set dev "$INTERFACE" alias "$OLD_DESCRIPTION" || return 1
 
     for address in "${OLD_ADDRESSES[@]}"; do
-        sudo /opt/vyatta/sbin/vyatta-address \
-            add "$INTERFACE" "$address" || return 1
+        sudo "${VYATTA_SBINDIR}/vyatta-address" add "$INTERFACE" "$address" || return 1
     done
 
     reconcile_bridge "$OLD_BRIDGE" || return 1
@@ -371,16 +684,89 @@ rollback_live_snapshot() {
             "$OLD_BRIDGE_PRIORITY" || return 1
     fi
 
+    # A rollback must not bring the interface up without the firewall state
+    # that was live before the commit.  If the previous dispatch cannot be
+    # reconstructed, leave the interface down: a contained failure is safer
+    # than an operational but unfiltered interface.
+    if ! printf '%s\n' "$FIREWALL_SNAPSHOT" |
+        "$VXLAN_FIREWALL" --restore "$INTERFACE"; then
+        echo "ERROR: could not restore the previous firewall attachments for $INTERFACE." >&2
+        stop_interface "the previous firewall state could not be restored"
+        return 1
+    fi
+
     if [ "$OLD_UP" -eq 1 ]; then
-        sudo ip link set dev "$INTERFACE" up || return 1
+        resume_interface "rollback restored the previous firewall state" || return 1
     fi
 
     echo "Rollback of $INTERFACE completed." >&2
     return 0
 }
 
+# The netdevice deletion for a recreation failed and the previous interface is
+# still present.  Restore the pre-commit firewall state, then the pre-commit
+# administrative state; protection is restored before reactivation.
+recover_failed_delete() {
+    if ! printf '%s\n' "$FIREWALL_SNAPSHOT" |
+        "$VXLAN_FIREWALL" --restore "$INTERFACE"; then
+        echo "ERROR: could not restore the previous firewall attachments for $INTERFACE." >&2
+        stop_interface "the previous firewall state could not be restored"
+        return 1
+    fi
+    if [ "$OLD_UP" -eq 1 ]; then
+        resume_interface "the previous firewall attachments were restored" || return 1
+    fi
+    return 0
+}
+
+# Set while the desired firewall state is applied but the commit has not yet
+# settled.  If the script exits unexpectedly (a configuration-API diagnostic,
+# an unguarded failure under set -e), the trap returns the live interface to a
+# documented safe state instead of leaving the new dispatch live:
+#   - recreation: restore the pre-commit live snapshot (firewall first, then
+#     administrative state), or delete a partially created interface when
+#     there was no previous interface;
+#   - in place: restore the pre-commit dispatch and resume the previous
+#     administrative state.
+# If the firewall cannot be restored, the interface is left down.
+FIREWALL_MUTATED=0
+settle_on_exit() {
+    local rc=$?
+    [ "$FIREWALL_MUTATED" -eq 1 ] || return 0
+    FIREWALL_MUTATED=0
+    echo "ERROR: unexpected exit after the firewall change; restoring the pre-commit state." >&2
+    if [ "${RECREATE:-0}" -eq 1 ]; then
+        if [ "${HAVE_OLD_SNAPSHOT:-0}" -eq 1 ]; then
+            rollback_live_snapshot ||
+                stop_interface "the pre-commit live state could not be restored"
+        elif delete_interface; then
+            if ! remove_firewall_attachments; then
+                echo "WARNING: $INTERFACE was deleted but stale firewall dispatches remain; a later commit will reconcile them." >&2
+            fi
+        else
+            stop_interface "the partially created $INTERFACE could not be deleted"
+        fi
+    elif printf '%s\n' "$FIREWALL_SNAPSHOT" |
+        "$VXLAN_FIREWALL" --restore "$INTERFACE"; then
+        if [ "${OLD_UP:-0}" -eq 1 ]; then
+            resume_interface "the pre-commit firewall attachments were restored" || true
+        fi
+    else
+        stop_interface "the pre-commit firewall state could not be restored"
+    fi
+    return "$rc"
+}
+trap settle_on_exit EXIT
+
 if [ "$ACTION" = "DELETE" ]; then
-    delete_interface
+    if ! delete_interface; then
+        echo "ERROR: refusing to remove the firewall dispatches for $INTERFACE: the netdevice could not be deleted." >&2
+        exit 1
+    fi
+    if ! remove_firewall_attachments; then
+        echo "ERROR: $INTERFACE was deleted but its firewall dispatches could not be removed." >&2
+        exit 1
+    fi
     exit 0
 fi
 
@@ -394,10 +780,55 @@ else
     PORT=4789
 fi
 
+case "$VNI" in
+    '' | *[!0-9]*)
+        echo "ERROR: vni '$VNI' is not a numeric VNI." >&2
+        exit 1
+        ;;
+esac
+if [ "${#VNI}" -gt 8 ]; then
+    echo "ERROR: vni '$VNI' is outside 1-16777215." >&2
+    exit 1
+fi
+case "$PORT" in
+    '' | *[!0-9]*)
+        echo "ERROR: port '$PORT' is not a numeric UDP port." >&2
+        exit 1
+        ;;
+esac
+if [ "${#PORT}" -gt 5 ]; then
+    echo "ERROR: port '$PORT' is outside 1-65535." >&2
+    exit 1
+fi
+# Normalise leading zeros so the identity comparison below is numeric.
+VNI=$((10#$VNI))
+PORT=$((10#$PORT))
+if [ "$VNI" -lt 1 ] || [ "$VNI" -gt 16777215 ]; then
+    echo "ERROR: vni '$VNI' is outside 1-16777215." >&2
+    exit 1
+fi
+if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+    echo "ERROR: port '$PORT' is outside 1-65535." >&2
+    exit 1
+fi
+
+# Defence in depth: validate the desired endpoints before any mutation, even
+# though the configuration templates validate them as well (RB-7).
+if ! REMOTE_FAMILY=$("$VXLAN_ADDR" family "$REMOTE_IP"); then
+    echo "ERROR: remote-ip '$REMOTE_IP' is not a valid IPv4 or IPv6 address." >&2
+    exit 1
+fi
+if ! LOCAL_CANON=$(canon_endpoint "$LOCAL_IP") ||
+    ! REMOTE_CANON=$(canon_endpoint "$REMOTE_IP"); then
+    echo "ERROR: cannot normalise configured underlay endpoints." >&2
+    exit 1
+fi
+"$VXLAN_ADDR" check-endpoints "$LOCAL_IP" "$REMOTE_IP" || exit 1
+
 if node_exists mtu; then
     MTU=$(node_value mtu)
 else
-    MTU=1450
+    MTU=$("$VXLAN_ADDR" default-mtu "$REMOTE_FAMILY")
 fi
 
 if node_exists description; then
@@ -412,39 +843,97 @@ else
     BRIDGE=""
 fi
 
-read_desired_addresses
+read_desired_addresses || exit 1
 
 if [ -n "$BRIDGE" ] &&
-   [ "${#DESIRED_ADDRESSES[@]}" -ne 0 ]; then
+    [ "${#DESIRED_ADDRESSES[@]}" -ne 0 ]; then
     echo "ERROR: Can not add interface $INTERFACE with addresses to bridge." >&2
     exit 1
 fi
 
 MAC=$(derive_mac)
 
-/sbin/modprobe udp_tunnel
-/sbin/modprobe ip6_udp_tunnel
-/sbin/modprobe vxlan
+"$VXLAN_BIN_MODPROBE" udp_tunnel
+"$VXLAN_BIN_MODPROBE" ip6_udp_tunnel
+"$VXLAN_BIN_MODPROBE" vxlan
 
 RECREATE=0
 HAVE_OLD_SNAPSHOT=0
 
 if interface_exists; then
-    capture_live_snapshot
+    if ! capture_live_snapshot; then
+        echo "ERROR: refusing to modify $INTERFACE: live state could not be captured completely." >&2
+        exit 1
+    fi
     HAVE_OLD_SNAPSHOT=1
 
     if [ "$OLD_VNI" != "$VNI" ] ||
-       [ "$OLD_LOCAL_IP" != "$LOCAL_IP" ] ||
-       [ "$OLD_REMOTE_IP" != "$REMOTE_IP" ] ||
-       [ "$OLD_PORT" != "$PORT" ]; then
+        [ "$OLD_PORT" != "$PORT" ] ||
+        [ "$OLD_FAMILY" != "$REMOTE_FAMILY" ] ||
+        [ "$OLD_LOCAL_IP" != "$LOCAL_CANON" ] ||
+        [ "$OLD_REMOTE_IP" != "$REMOTE_CANON" ]; then
         RECREATE=1
     fi
 else
     RECREATE=1
 fi
 
+# The firewall state is captured before any mutation.  An untrustworthy live
+# firewall state is a fail-closed condition when either the candidate or the
+# previous (active) configuration requires enforcement: an intentionally
+# unfiltered interface is left unchanged rather than disrupted, but a candidate
+# that removes the final attachment must not hide enforcement that was active
+# before this commit.  A failure to capture unrelated mutable interface state
+# (above) aborts the commit without touching the interface.
+if ! capture_firewall_state; then
+    if firewall_configured; then
+        stop_interface "cannot establish a trustworthy live firewall state for $INTERFACE: the candidate configuration requires an attachment"
+        exit 1
+    fi
+    FW_PREVIOUS_RC=0
+    firewall_configured_effective || FW_PREVIOUS_RC=$?
+    case "$FW_PREVIOUS_RC" in
+        0)
+            stop_interface "cannot establish a trustworthy live firewall state for $INTERFACE: the previous configuration requires an attachment"
+            ;;
+        1)
+            echo "ERROR: cannot capture the live firewall state for $INTERFACE; neither the candidate nor the previous configuration requires an attachment, so the interface is left unchanged." >&2
+            ;;
+        *)
+            stop_interface "cannot establish a trustworthy live firewall state for $INTERFACE, and the previous configuration could not be read"
+            ;;
+    esac
+    exit 1
+fi
+
+# Apply the desired firewall attachments before any interface mutation.  The
+# snapshot above is the pre-commit state; --apply restores it if an attachment
+# change fails, and the reconciler restores it again if the interface is
+# recreated or a later mutable step fails.
+if ! printf '%s\n' "$FIREWALL_SNAPSHOT" |
+    "$VXLAN_FIREWALL" --apply "$INTERFACE"; then
+    echo "ERROR: Failed to apply firewall attachments for $INTERFACE." >&2
+    exit 1
+fi
+FIREWALL_MUTATED=1
+
 if [ "$RECREATE" -eq 1 ]; then
-    delete_interface
+    if ! delete_interface; then
+        echo "ERROR: failed to delete $INTERFACE for recreation." >&2
+        if ! interface_exists; then
+            if ! remove_firewall_attachments; then
+                echo "WARNING: stale firewall dispatches remain for the deleted $INTERFACE." >&2
+            fi
+            FIREWALL_MUTATED=0
+            exit 1
+        fi
+        if ! recover_failed_delete; then
+            FIREWALL_MUTATED=0
+            exit 2
+        fi
+        FIREWALL_MUTATED=0
+        exit 1
+    fi
 
     set +e
 
@@ -475,16 +964,45 @@ if [ "$RECREATE" -eq 1 ]; then
         if [ "$HAVE_OLD_SNAPSHOT" -eq 1 ]; then
             if ! rollback_live_snapshot; then
                 echo "ERROR: Rollback of $INTERFACE also failed." >&2
+                FIREWALL_MUTATED=0
                 exit 2
             fi
         else
-            delete_interface || true
+            if delete_interface; then
+                if ! remove_firewall_attachments; then
+                    echo "WARNING: $INTERFACE was deleted but stale firewall dispatches remain; a later commit will reconcile them." >&2
+                fi
+            fi
         fi
 
+        FIREWALL_MUTATED=0
         exit "$APPLY_RC"
     fi
 
+    FIREWALL_MUTATED=0
     exit 0
 fi
 
+set +e
 apply_desired_mutable_state
+APPLY_RC=$?
+set -e
+
+if [ "$APPLY_RC" -ne 0 ]; then
+    echo "ERROR: Failed to apply requested VXLAN state for $INTERFACE." >&2
+    # The active configuration still describes the previous firewall state.
+    # Restore it; if that fails, do not leave an operational interface with an
+    # uncertain policy.  A gate failure (3) is a deliberate fail-closed
+    # decision: restore the previous dispatch but leave the interface down.
+    if ! printf '%s\n' "$FIREWALL_SNAPSHOT" |
+        "$VXLAN_FIREWALL" --restore "$INTERFACE"; then
+        echo "ERROR: could not restore the previous firewall attachments for $INTERFACE." >&2
+        stop_interface "the previous firewall state could not be restored"
+    elif [ "$APPLY_RC" -ne 3 ] && [ "$OLD_UP" -eq 1 ]; then
+        resume_interface "the previous firewall attachments were restored"
+    fi
+    FIREWALL_MUTATED=0
+    exit "$APPLY_RC"
+fi
+
+FIREWALL_MUTATED=0

@@ -53,7 +53,7 @@ The maintainer review of 2026-10-10 asked for a clear split between what must be
 | RB-2 | Live-state capture must be status-checked and complete: the `ip -o addr` collection must not fail silently (the current process-substitution pattern swallows failures — demonstrated), and every snapshot component must be validated before any destructive step | Phase 3/5 |
 | RB-3 | MTU must become family-aware with the corrected evidence: oversized outer IPv6 packets are **not** fragmented by this path (source + probe), so 1450 over a 1500-byte IPv6 path loses the first packets and depends on PMTU feedback; default 1430 for that case, explicit `mtu` authoritative, target behaviour captured in Phase 7 | Phase 4 |
 | RB-4 | Rollback fidelity under **combined** changes: determine on target whether leaf handlers can mutate MTU/addresses/description/bridge state before the parent reconciler snapshots; if so, add the identity-aware leaf guard (or scope the rollback claim to snapshot-time state). Do not claim full rollback before this is demonstrated | Phase 1 + Phase 5 |
-| RB-5 | Deterministic failure injection: rollback tests must use controlled creation failures (VNI/port collision verified; mocked `ip` failures per step); unreachable-VTEP and firewall-drop are not creation failures | Phase 6/7 |
+| RB-5 | Deterministic failure injection: rollback tests must use controlled creation failures (**corrected 2026-10-10**: a duplicate VNI/UDP-port does *not* block creation — two VXLAN devices share a socket — so the validation runbook's Phase 5.4 uses a below-minimum MTU instead, which the kernel rejects deterministically; mocked `ip` failures per step); unreachable-VTEP and firewall-drop are not creation failures | Phase 6/7 |
 | RB-6 | IPv4 literal policy settled: never canonicalise to a value different from the platform's own parser; emulate platform parity exactly (leading-zero octets are octal in iproute2/glibc) or reject with an explicit message; tests for the chosen policy | Phase 2 |
 | RB-7 | Defence in depth: the reconciler validates desired endpoint families/classes itself before any mutation, even though the templates also validate | Phase 2/3 |
 
@@ -109,7 +109,7 @@ The maintainer review of 2026-10-10 asked for a clear split between what must be
 - `src/vyatta-vxlan-addr` — new helper, installed to `/opt/vyatta/sbin/`; Perl; core modules only (`Socket` for `inet_pton`/`inet_ntop`, `JSON::PP` in Phase 3); shebang `#!/usr/bin/perl`; GPL-2.0-only header consistent with the project.
 - `templates/interfaces/vxlan/node.tag/local-ip/node.def` — `type: ipv4,ipv6`; replace the `/opt/vyatta/sbin/local_ip` warning call with the helper's family-aware check; help text updated.
 - `templates/interfaces/vxlan/node.tag/remote-ip/node.def` — `type: ipv4,ipv6`; help text updated.
-- `templates/interfaces/vxlan/node.def` — one additional `commit:expression: exec` calling `check-endpoints` with `$VAR(./local-ip/)` and `$VAR(./remote-ip/)`.
+- `templates/interfaces/vxlan/node.tag/remote-ip/node.def` — one additional `commit:expression: exec` calling `check-endpoints` with the *value* references `$VAR(../local-ip/@)` and `$VAR(@)`. (A bare `$VAR(<path>)` is a presence test whose value is the node name, not the configured address.)
 - `debian/edgeos-vxlan.install` — add the helper.
 - `test/` — new suite for the helper (validation cases of test plan §A1).
 

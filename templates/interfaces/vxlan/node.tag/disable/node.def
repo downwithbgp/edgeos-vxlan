@@ -1,5 +1,7 @@
 help: Disable interface
 
-update: sudo sh -c "ip link show dev $VAR(../@) >/dev/null 2>&1 || exit 0; exec ip link set dev $VAR(../@) down"
+# Removal is handled by the parent reconciler: it brings the interface up only
+# after the firewall gate has passed.  A delete action here would activate the
+# interface before that gate runs.
 
-delete: sudo sh -c "ip link show dev $VAR(../@) >/dev/null 2>&1 || exit 0; exec ip link set dev $VAR(../@) up"
+update: if /opt/vyatta/sbin/vyatta-vxlan-addr identity-matches $VAR(../@); then sudo ip link set dev $VAR(../@) down; fi

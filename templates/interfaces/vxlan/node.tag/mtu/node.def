@@ -1,8 +1,8 @@
 type: u32
 priority: 460
 help: Maximum Transmission Unit (MTU)
-syntax:expression: $VAR(@) >= 64 && $VAR(@) <= 8024; "Must be between 64-8024"
-val_help: u32:64-8024; Maximum Transmission Unit (MTU)
+syntax:expression: $VAR(@) >= 68 && $VAR(@) <= 8024; "Must be between 68-8024"
+val_help: u32:68-8024; Maximum Transmission Unit (MTU)
 
 syntax:expression: exec " \
        mtu=`/usr/sbin/ubnt-hal getMtu`; \
@@ -11,8 +11,6 @@ syntax:expression: exec " \
            exit 1; \
        fi"
 
-default: 1450
+update: if /opt/vyatta/sbin/vyatta-vxlan-addr identity-matches $VAR(../@); then sudo ip link set dev $VAR(../@) mtu $VAR(@); fi
 
-update: sudo sh -c "ip link show dev $VAR(../@) >/dev/null 2>&1 || exit 0; exec ip link set dev $VAR(../@) mtu $VAR(@)"
-
-delete: sudo sh -c "ip link show dev $VAR(../@) >/dev/null 2>&1 || exit 0; exec ip link set dev $VAR(../@) mtu 1450"
+delete: if /opt/vyatta/sbin/vyatta-vxlan-addr identity-matches $VAR(../@); then mtu=$(/opt/vyatta/sbin/vyatta-vxlan-addr default-mtu-if $VAR(../@)) && sudo ip link set dev $VAR(../@) mtu "$mtu"; fi
