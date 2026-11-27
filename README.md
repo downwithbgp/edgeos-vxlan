@@ -48,15 +48,23 @@ vxlan42      198.51.100.1/30      u/u
 
 ## Quick install
 
-The currently published release is **v0.2.2**. v0.3.0 is a release candidate: its packages are built
-and validated off-device but are not published or tagged until the hardware acceptance procedure has
-been reviewed and the maintainer authorizes the release. The installer below still deploys v0.2.2.
+The currently published release is **v0.3.0**. It adds native EdgeOS firewall attachments for
+VXLAN interfaces while keeping the v0.2.x interface feature set; see
+[`docs/v0.3.0-release-notes.md`](docs/v0.3.0-release-notes.md) for features, supported workflows and
+limitations. Existing v0.2.2 installations upgrade in place.
+
+> **Supported workflows and important limitations.** Firewall ruleset changes must be made in the
+> interactive EdgeOS CLI; scripted (script-template) commits can misapply them on EdgeOS 3.0.1. The
+> extension manages enforcement during its own configuration lifecycle — it is **not** a continuous
+> firewall integrity monitor. Bridged firewall attachments are not supported. See
+> [`docs/v0.3.0-support-boundary.md`](docs/v0.3.0-support-boundary.md) and
+> [`docs/v0.3.0-edgeos-scripted-commit-limitation.md`](docs/v0.3.0-edgeos-scripted-commit-limitation.md).
 
 Check whether your router is supported without making any changes:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.2.2/install.sh |
+  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.3.0/install.sh |
   sh -s -- --check
 ```
 
@@ -64,7 +72,7 @@ Install `edgeos-vxlan`:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.2.2/install.sh |
+  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.3.0/install.sh |
   sudo sh
 ```
 
@@ -79,13 +87,13 @@ Prefer to inspect the installer first?
 
 ```bash
 curl -fLO \
-  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.2.2/install.sh
+  https://raw.githubusercontent.com/downwithbgp/edgeos-vxlan/v0.3.0/install.sh
 
 less install.sh
 sudo sh install.sh
 ```
 
-The installer is pinned to release `v0.2.2`; it does not execute the moving `main` branch.
+The installer is pinned to release `v0.3.0`; it does not execute the moving `main` branch.
 
 
 ## Supported platform
@@ -248,20 +256,24 @@ udp_tunnel
 
 ### Upgrading from v0.2.2 to v0.3.0
 
-The release candidate upgrades from v0.2.2 without changing existing VXLAN configuration. Configurations
-without `firewall` attachments keep their established unfiltered behavior; the attachment subtree is
+v0.3.0 upgrades from v0.2.2 without changing existing VXLAN configuration. Configurations without
+`firewall` attachments keep their established unfiltered behavior; the attachment subtree is
 optional. Install both packages in a single `dpkg` transaction, kernel package first:
 
 ```bash
 sudo dpkg -i \
-  edgeos-vxlan-kmod_0.3.0~rc1+edgeos3.0.1.e50_mipsel.deb \
-  edgeos-vxlan_0.3.0~rc1+edgeos3.0.1.e50_all.deb
+  edgeos-vxlan-kmod_0.3.0+edgeos3.0.1.e50_mipsel.deb \
+  edgeos-vxlan_0.3.0+edgeos3.0.1.e50_all.deb
 ```
 
 The upgrade replaces files and leaves live interfaces in place. The integration package now depends on
 `vyatta-cfg-firewall` and `iptables`, both already present on the supported firmware. Verify with
 `dpkg -V edgeos-vxlan edgeos-vxlan-kmod`, `show configuration commands`, and the firewall status
 commands in the native firewall section.
+
+The package upgrade RC5 → 0.3.0 was qualified on the EdgeRouter X with the operational `vxlan41913`
+interface and its native attachments in place; the runtime payload is byte-identical to RC5, so a
+loaded module stays valid until the next reboot.
 
 ### Upgrading from v0.2.1
 
@@ -1253,7 +1265,7 @@ Packages are compressed using gzip for compatibility with the older `dpkg` versi
 
 ## Tested behavior
 
-Version `0.2.2` has been tested on the supported platform (EdgeRouter X / ER-e50, EdgeOS 3.0.1 build 5862409, kernel `4.14.54-UBNT`). The release candidates' runtime payloads are byte-identical to the final build; tests were run on the release-candidate and v0.2.1 builds, as noted.
+Version `0.2.2` has been tested on the supported platform (EdgeRouter X / ER-e50, EdgeOS 3.0.1 build 5862409, kernel `4.14.54-UBNT`). v0.3.0 was hardware-qualified as RC5 on the same platform; the final 0.3.0 runtime payload is byte-identical to the qualified RC5 build (verified by package payload comparison). The v0.2.1/v0.2.2 results remain as noted.
 
 Version `0.3.0` adds native firewall attachment. Its configuration-engine behavior, failure injection and dataplane semantics have been exercised **off-device**:
 

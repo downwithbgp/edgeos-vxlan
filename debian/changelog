@@ -1,3 +1,26 @@
+edgeos-vxlan (0.3.0+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * v0.3.0 release: native EdgeOS firewall attachments for VXLAN.
+  * IPv4 and IPv6 in/out/local attachments with fail-closed lifecycle
+    management, firewall-aware reconciliation and rollback, effective
+    ruleset and dispatch verification (including the presence of every
+    configured rule number), and xtables lock contention handling.
+  * Compatibility: existing v0.2.2 configurations upgrade without change;
+    the firewall attachment subtree is optional.
+  * Hardware qualified on the EdgeRouter X (EdgeOS 3.0.1, Linux
+    4.14.54-UBNT), including the quiesced migration of an operational
+    routed WAN interface and saved-configuration restoration after reboot.
+  * Documented limitation: EdgeOS 3.0.1 scripted (script-template) commits
+    misapply firewall ruleset changes; interactive configuration is
+    required for firewall ruleset changes
+    (docs/v0.3.0-support-boundary.md,
+    docs/v0.3.0-edgeos-scripted-commit-limitation.md).
+  * Deferred: independent Internet-facing (OCI) probes.
+  * Regression: 64 helper + 122 firewall + 93 template + 70 mock = 349
+    off-device checks.
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Fri, 27 Nov 2026 01:30:00 +0000
+
 edgeos-vxlan (0.3.0~rc5+edgeos3.0.1.e50) unstable; urgency=medium
 
   * Release candidate 5: hardware-qualification corrective pass. No new
