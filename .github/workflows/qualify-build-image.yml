@@ -1,0 +1,133 @@
+# Manual qualification of the controlled reproducible build image.
+#
+# This workflow deliberately runs only on workflow_dispatch: ordinary PRs use
+# the host reproducibility job, while release qualification can consume the
+# recorded image identity/inventory from a manually dispatched run.
+
+name: Qualify reproducible build image
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ci/reproducible-builds
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qualify-build-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: Build and qualify image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Record source identity
+        run: |
+          mkdir -p qualification
+          git rev-parse HEAD > qualification/source-commit.txt
+          git describe --tags --always --dirty >> qualification/source-commit.txt
+
+      - name: Build image directly from final Dockerfile
+        run: |
+          IMAGE=edgeos-vxlan-reproducible:qualification
+          SNAPSHOT=$(sed -n 's/^ARG UBUNTU_SNAPSHOT=//p' containers/reproducible-build/Dockerfile)
+          [ -n "$SNAPSHOT" ] || { echo "ERROR: missing Dockerfile snapshot" >&2; exit 1; }
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "SNAPSHOT=$SNAPSHOT" >> "$GITHUB_ENV"
+          docker build \
+            --build-arg "UBUNTU_SNAPSHOT=$SNAPSHOT" \
+            --tag "$IMAGE" \
+            containers/reproducible-build \
+            2>&1 | tee qualification/image-build.log
+
+      - name: Record image identity and dependency inventory
+        run: |
+          docker image inspect "$IMAGE" --format '{{.Id}}' \
+            > qualification/image-id.txt
+          docker image inspect "$IMAGE" --format '{{json .Config}}' |
+            sha256sum > qualification/image-config.sha256
+          grep '^FROM ' containers/reproducible-build/Dockerfile \
+            > qualification/base-image.txt
+          grep '^ARG UBUNTU_SNAPSHOT' containers/reproducible-build/Dockerfile \
+            > qualification/dependency-snapshot.txt
+          sha256sum containers/reproducible-build/Dockerfile \
+            > qualification/Dockerfile.sha256
+          sha256sum containers/reproducible-build/ca-certificates.crt \
+            > qualification/ca-certificates.sha256
+          # shellcheck disable=SC2016
+          docker run --rm "$IMAGE" \
+            dpkg-query -W -f='${Package} ${Version}\n' |
+            LC_ALL=C sort > qualification/dependency-inventory.txt
+          sha256sum qualification/dependency-inventory.txt \
+            > qualification/dependency-inventory.sha256
+
+      - name: Reject dirty tracked source
+        run: |
+          printf '\nqualification dirty check\n' >> README.md
+          if ./scripts/build-reproducible-container.sh \
+              --no-build --image "$IMAGE" --source-rev HEAD \
+              --output-dir "$RUNNER_TEMP/dirty" >/dev/null 2>&1; then
+            echo "ERROR: dirty tracked source was accepted" >&2
+            exit 1
+          fi
+          git checkout -- README.md
+
+      - name: Offline non-root build A
+        run: |
+          ./scripts/build-reproducible-container.sh \
+            --no-build --image "$IMAGE" --source-rev HEAD \
+            --output-dir "$RUNNER_TEMP/build-a"
+
+      - name: Offline non-root build B from historical revision with spaced path
+        run: |
+          ./scripts/build-reproducible-container.sh \
+            --no-build --image "$IMAGE" --source-rev v0.3.0 \
+            --output-dir "$RUNNER_TEMP/build b"
+
+      - name: Verify expected canonical package hashes
+        run: |
+          expected_integration=6afa3f25e8145a6ebf31a947ab104b223b351aa615b51aa2a97389364a133e2a
+          expected_kmod=7ffe10f611932f6543b96b3ce5683b93b6c678a51ac1b63bcdb3d630e58c7827
+
+          integration=$(sha256sum "$RUNNER_TEMP/build-a/edgeos-vxlan_0.3.0+edgeos3.0.1.e50_all.deb" | cut -d ' ' -f1)
+          kmod=$(sha256sum "$RUNNER_TEMP/build-a/edgeos-vxlan-kmod_0.3.0+edgeos3.0.1.e50_mipsel.deb" | cut -d ' ' -f1)
+          [ "$integration" = "$expected_integration" ] ||
+            { echo "ERROR: integration hash mismatch: $integration" >&2; exit 1; }
+          [ "$kmod" = "$expected_kmod" ] ||
+            { echo "ERROR: kmod hash mismatch: $kmod" >&2; exit 1; }
+
+          cmp "$RUNNER_TEMP/build-a/edgeos-vxlan_0.3.0+edgeos3.0.1.e50_all.deb" \
+              "$RUNNER_TEMP/build b/edgeos-vxlan_0.3.0+edgeos3.0.1.e50_all.deb"
+          cmp "$RUNNER_TEMP/build-a/edgeos-vxlan-kmod_0.3.0+edgeos3.0.1.e50_mipsel.deb" \
+              "$RUNNER_TEMP/build b/edgeos-vxlan-kmod_0.3.0+edgeos3.0.1.e50_mipsel.deb"
+
+          cp "$RUNNER_TEMP/build-a"/*.deb qualification/
+          cp "$RUNNER_TEMP/build b"/*.deb qualification/
+          cp "$RUNNER_TEMP/build-a"/*.buildinfo "$RUNNER_TEMP/build-a"/*.changes qualification/
+          sha256sum qualification/*.deb > qualification/package-sha256.txt
+
+      - name: Export image archive and checksum
+        run: |
+          docker save "$IMAGE" -o qualification/image.docker.tar
+          sha256sum qualification/image.docker.tar \
+            > qualification/image.docker.tar.sha256
+
+      - name: Upload qualification artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reproducible-build-image-qualification
+          path: qualification/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
