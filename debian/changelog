@@ -1,3 +1,157 @@
+edgeos-vxlan (0.3.0+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * v0.3.0 release: native EdgeOS firewall attachments for VXLAN.
+  * IPv4 and IPv6 in/out/local attachments with fail-closed lifecycle
+    management, firewall-aware reconciliation and rollback, effective
+    ruleset and dispatch verification (including the presence of every
+    configured rule number), and xtables lock contention handling.
+  * Compatibility: existing v0.2.2 configurations upgrade without change;
+    the firewall attachment subtree is optional.
+  * Hardware qualified on the EdgeRouter X (EdgeOS 3.0.1, Linux
+    4.14.54-UBNT), including the quiesced migration of an operational
+    routed WAN interface and saved-configuration restoration after reboot.
+  * Documented limitation: EdgeOS 3.0.1 scripted (script-template) commits
+    misapply firewall ruleset changes; interactive configuration is
+    required for firewall ruleset changes
+    (docs/v0.3.0-support-boundary.md,
+    docs/v0.3.0-edgeos-scripted-commit-limitation.md).
+  * Deferred: independent Internet-facing (OCI) probes.
+  * Regression: 64 helper + 122 firewall + 93 template + 70 mock = 349
+    off-device checks.
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Fri, 27 Nov 2026 01:30:00 +0000
+
+edgeos-vxlan (0.3.0~rc5+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * Release candidate 5: hardware-qualification corrective pass. No new
+    feature scope.
+  * Wait for the xtables lock (-w) in every helper iptables/ip6tables
+    invocation. A concurrent lock holder could make a read fail; the helper
+    then failed closed, and the restore path could not re-establish the
+    removed dispatch. The commit now waits for the lock instead of aborting.
+  * Regression: 64 helper + 122 firewall + 93 template + 70 mock = 349
+    off-device checks.
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Thu, 26 Nov 2026 23:00:00 +0000
+
+edgeos-vxlan (0.3.0~rc4+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * Release candidate 4: hardware-qualification corrective pass. No new
+    feature scope.
+  * Reject a ruleset chain that lost its configured rules: every configured
+    rule number must be present in the effective chain (vendor <chain>-<n>
+    comment format), in addition to the non-empty and terminal
+    default-action checks. An unreadable rule list is a configuration-API
+    failure, not an empty ruleset. This closes the gap where an EdgeOS 3.0.1
+    scripted-session firewall apply could silently reduce a ruleset to its
+    default action and still pass verification.
+  * Document the hardware-proven EdgeOS 3.0.1 scripted-commit limitation and
+    the support boundary (interactive firewall changes; scripted VXLAN
+    configuration only against existing, correctly materialized rulesets).
+  * Regression: 64 helper + 121 firewall + 93 template + 70 mock = 348
+    off-device checks.
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Thu, 26 Nov 2026 22:00:00 +0000
+
+edgeos-vxlan (0.3.0~rc3+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * Release candidate 3: the RC2 maintainer review's remaining findings.
+    No new feature scope.
+  * Quiesce a change set that needs more than one sequential vendor
+    dispatch operation; keep a single replacement or insertion
+    nondisruptive. An operational interface no longer carries an
+    intermediate dispatch combination.
+  * Install EXIT traps in the helper and reconciler while a firewall
+    mutation is in flight. A configuration-API diagnostic after the
+    mutation restores the pre-change dispatch and administrative state;
+    a recreation runs the normal rollback; if the firewall cannot be
+    restored, the interface is left down.
+  * Base the capture-failure gate on the previous (effective)
+    configuration as well as the candidate. A candidate that removes the
+    final attachment no longer makes an enforced interface look
+    intentionally unfiltered; an unreadable previous state is
+    fail-closed.
+  * Verify the terminal rule against the vendor fw.cpp default-action
+    format: unconditional vendor comment, accept/drop/reject mapped to
+    RETURN/DROP/REJECT, and (for desired state) agreement with the
+    configured default-action. Rollback checks shape/verdict consistency
+    only. The vendor-owned policy trust boundary is documented.
+  * Hardware runbook: account for all runtime-only state (policy
+    routing/table, delegated-prefix loopback address, interface-specific
+    sysctls), separate native-only structural, router-originated,
+    isolated dataplane and external probe evidence, and replace invalid
+    multi-chain iptables -S invocations.
+  * Add the bounded first-hardware-session sequence
+    (docs/v0.3.0-first-hardware-session.md and
+    scripts/first-hardware-session.sh): inventory, backup, staging,
+    installation and isolated vxlan903 testing only.
+  * Regression: 64 helper + 116 firewall + 93 template + 70 mock = 343
+    off-device checks. Network-namespace integration 26/26; emulated
+    EdgeOS 3.0.1 configuration engine add/replace/remove commits passed
+    (evidence in docs/v0.3.0-rc3-evidence.md).
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Thu, 26 Nov 2026 21:00:00 +0000
+
+edgeos-vxlan (0.3.0~rc2+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * Release candidate 2: targeted correctness and security review fixes on
+    top of RC1. No new feature scope.
+  * Fail closed when the live firewall dispatch is ambiguous or unreadable,
+    but only when the interface is configured with an attachment; an
+    intentionally unfiltered interface is left unchanged.
+  * Treat configuration-API diagnostics as fatal instead of reading them as
+    "node absent", so a broken read can no longer remove a dispatch or bring a
+    disabled interface up.
+  * Treat an unreadable administrative state as "may be up" and attempt a
+    verified down; never claim a down that was not confirmed.
+  * Quiesce the interface across a dispatch removal (the only transition that
+    reduces enforcement) and reactivate it only after the previous policy is
+    restored and verified. A single replacement/insertion is one atomic
+    vendor iptables operation (established by instrumenting the installed
+    ubnt-fw binary).
+  * Verify hook reachability from INPUT/FORWARD and a terminal default action
+    in the target chain, in addition to the exact dispatch.
+  * Recover from a failed netdevice deletion after firewall mutation by
+    restoring the pre-commit firewall state and administrative state.
+  * Hardware runbook rewritten by blast radius; the vxlan41913 migration is a
+    quiesced, fail-closed handover (IPv4 in+local and IPv6 in+local); global
+    interventions are restricted to a disposable router.
+  * Regression: 64 helper + 87 firewall + 90 template + 58 mock = 299
+    off-device checks.
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Thu, 26 Nov 2026 19:00:00 +0000
+
+edgeos-vxlan (0.3.0~rc1+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * Release candidate 1 for 0.3.0: native firewall integration for routed
+    VXLAN interfaces.
+  * Add the interfaces vxlan firewall in/out/local subtrees for both IPv4
+    (name) and IPv6 (ipv6-name), using the stock ubnt-fw engine and the
+    Vyatta interface hook chains.
+  * Apply the complete desired attachment set from the VXLAN reconciler
+    before any interface mutation, so a failure can be rolled back against
+    the pre-change live firewall state.
+  * Fail closed: verify that every configured attachment is effective before
+    an interface is brought up; take an interface down if a newly requested
+    attachment cannot be established; leave it down if the previous firewall
+    state cannot be restored during rollback.
+  * Remove interface dispatches only after the netdevice has been deleted,
+    so a failed deletion cannot expose an operational unfiltered interface.
+  * Reject firewall attachments on VXLAN bridge ports: a port attachment does
+    not enforce L2-forwarded bridge traffic.  This prevents a misleading
+    configuration without enabling global bridge netfilter.
+  * Validate ruleset references, address family, interface direction, ruleset
+    name syntax and bridge membership at commit time.
+  * Extend the package removal guard to refuse removal while live VXLAN
+    interfaces exist, in addition to the saved-configuration guard.
+  * No kernel module change; the existing vxlan.ko, udp_tunnel.ko and
+    CVE-2022-50405 backport are unchanged.
+  * Documentation adds the native firewall syntax, underlay/overlay security
+    boundaries, routed/bridged semantics, troubleshooting, a generic IPv6
+    tunnelbroker example and a hardware acceptance procedure.
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Wed, 25 Nov 2026 12:00:00 +0000
+
 edgeos-vxlan (0.2.2+edgeos3.0.1.e50) unstable; urgency=medium
 
   * Release 0.2.2: IPv6 VXLAN underlay support on the supported platform.

@@ -68,7 +68,7 @@ jobs:
           shellcheck --version
           shellcheck install.sh scripts/*.sh test/*.sh \
             debian/*.preinst debian/*.postinst debian/*.prerm debian/*.postrm \
-            src/vyatta-vxlan src/vyatta-vxlan-bridge
+            src/vyatta-vxlan src/vyatta-vxlan-bridge src/vyatta-vxlan-firewall
 
       - name: Check Perl syntax
         run: perl -c src/vyatta-vxlan-addr >/dev/null
@@ -170,6 +170,38 @@ jobs:
           path: ci-artifacts/
           if-no-files-found: error
           compression-level: 0
+
+  # The netns dataplane test needs root and a real network namespace.  Keep it
+  # off untrusted pull-request refs; it still runs on main, trusted branches,
+  # tags, releases and manual dispatch.
+  dataplane:
+    name: Network-namespace dataplane
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install dataplane test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            iproute2 iptables iputils-ping python3
+
+      - name: Enable VXLAN modules
+        run: |
+          sudo modprobe vxlan udp_tunnel ip6_udp_tunnel || true
+
+      - name: Linux network-namespace dataplane test
+        env:
+          REQUIRE_NETNS_TEST: "1"
+        run: |
+          sudo -E bash test/integration-netns.sh
 
   published-release:
     name: Verify published release

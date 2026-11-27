@@ -78,6 +78,12 @@ apply_bridge_port_options() {
 
 validate_config() {
     if node_exists bridge-group bridge &&
+       node_exists firewall; then
+        echo "ERROR: Firewall attachments are not supported on VXLAN bridge port $INTERFACE." >&2
+        return 1
+    fi
+
+    if node_exists bridge-group bridge &&
        node_exists address; then
         echo "ERROR: Can not configure addresses on $INTERFACE while it is a bridge port." >&2
         return 1

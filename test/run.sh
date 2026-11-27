@@ -9,10 +9,13 @@ perl -c "$ROOT/src/vyatta-vxlan-addr" >/dev/null
 echo "== static: shell syntax =="
 while IFS= read -r f; do
     bash -n "$f"
-done < <(find "$ROOT/src" "$ROOT/test" \( -name '*.sh' -o -name 'vyatta-vxlan' -o -name 'vyatta-vxlan-bridge' \) | sort)
+done < <(find "$ROOT/src" "$ROOT/test" \( -name '*.sh' -o -name 'vyatta-vxlan' -o -name 'vyatta-vxlan-bridge' -o -name 'vyatta-vxlan-firewall' \) | sort)
 
 echo "== unit: helper =="
 bash "$ROOT/test/unit-helper.sh"
+
+echo "== unit: firewall helper =="
+bash "$ROOT/test/unit-firewall.sh"
 
 echo "== unit: templates =="
 bash "$ROOT/test/unit-templates.sh"
