@@ -4,7 +4,8 @@
 **Branch:** `ci/ipv6-native-qualification`.
 **Base commit:** `5958bc469ccf498e54bc0b9f361668e309f66b9d` (`origin/main`, PR #7 merge).
 **Record status:** local validation complete; hosted CI pending because the branch has not been
-published. This record distinguishes implemented functionality from proposed future work and does
+published. The package build, artifact validation, negative tests and reproducibility checks are
+included in §5. This record distinguishes implemented functionality from proposed future work and does
 not claim a CI result that did not run.
 
 ## 1. Scope
@@ -157,16 +158,21 @@ bash test/validate-release-negative.sh "$TMPDIR/edgeos-vxlan-build"
 ./scripts/verify-reproducible-build.sh --source-rev HEAD --work-dir "$TMPDIR/repro"
 ```
 
+The build was run from the committed tree at `28368d4` (the branch HEAD before this evidence
+update). The documented package payload hashes are unchanged.
+
 | Command | Exit | Result |
 |---|---:|---|
-| Canonical package build | PENDING | To be filled from the committed tree |
-| `validate-release.sh` | PENDING | To be filled from the committed tree |
-| Negative artifact-validation tests | PENDING | To be filled from the committed tree |
-| Reproducibility verification | PENDING | To be filled from the committed tree |
+| `scripts/build-reproducible.sh --output-dir "$TMPDIR/edgeos-vxlan-build"` | 0 | Both packages built; kmod `7ffe10f611932f6543b96b3ce5683b93b6c678a51ac1b63bcdb3d630e58c7827`, integration `6afa3f25e8145a6ebf31a947ab104b223b351aa615b51aa2a97389364a133e2a` |
+| `scripts/validate-release.sh "$TMPDIR/edgeos-vxlan-build"` | 0 | Artifact contract PASS; version `0.3.0+edgeos3.0.1.e50` |
+| `test/validate-release-negative.sh "$TMPDIR/edgeos-vxlan-build"` | 0 | **25 checks passed, 0 failed** |
+| `scripts/verify-reproducible-build.sh --source-rev HEAD --work-dir "$TMPDIR/edgeos-vxlan-repro"` | 0 | **SAME** for both packages; same hashes as the canonical build |
+| lintian (container, same suppressions as CI) | 0 | **PASS** (`--fail-on error`, no errors) |
 
-`lintian` is not installed on the local host; the CI package job runs it. The local validation does
-not claim lintian success. The build package payload, version and release pins are unchanged by
-this branch.
+The reproducibility hashes match the published v0.3.0 package hashes recorded by the project
+(`7ffe10f6…` and `6afa3f25…`), confirming that this branch does not change the package payload.
+`lintian` was run in a container because the development host does not have it installed; the
+hosted CI package job runs the same command.
 
 ## 6. CI status
 
@@ -220,7 +226,7 @@ checksums. The new APT helper is test/CI-only and does not alter the package pay
 8. The local host cannot create network namespaces; the privileged-container execution is recorded
    as such and is not hosted CI.
 9. Hosted CI is pending.
-10. `lintian` was not run locally; CI runs it.
+10. `lintian` was run in a container locally; hosted CI is still the authoritative CI result.
 
 ## 10. Reproduction
 
