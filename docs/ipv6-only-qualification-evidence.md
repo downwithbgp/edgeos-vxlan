@@ -177,9 +177,10 @@ bash test/validate-release-negative.sh "$TMPDIR/edgeos-vxlan-build"
 ```
 
 Canonical builds were run from the original base `5958bc4`, the branch HEAD `59d4b9b`, the
-intermediate review commits `28368d4`/`36494eb`, and in the controlled container for the base and
-branch. Every run produced the same canonical package hashes. Later commits in this record change
-only the test harness and documentation, so the package payload is unchanged.
+intermediate review commits `28368d4`/`36494eb`, the final review code commit `ca90f36`, and in the
+controlled container for the base and branch. Every run produced the same canonical package
+hashes. Later commits in this record change only the test harness and documentation, so the package
+payload is unchanged.
 
 | Command | Exit | Result |
 |---|---:|---|
@@ -188,10 +189,10 @@ only the test harness and documentation, so the package payload is unchanged.
 | `scripts/build-reproducible-container.sh --source-rev 5958bc4 --no-build --image edgeos-vxlan-reproducible:qualified` | 0 | Controlled container base: identical canonical hashes |
 | `scripts/build-reproducible-container.sh --source-rev 59d4b9b --no-build --image edgeos-vxlan-reproducible:qualified` | 0 | Controlled container branch: identical canonical hashes |
 | `sha256sum -c SHA256SUMS` in the downloaded v0.3.0 asset directory | 0 | Published assets verify as `c555a99a…`/`73059ba2…` |
-| `scripts/build-reproducible.sh --output-dir "$TMPDIR/edgeos-vxlan-build"` | 0 | Both packages built; kmod `7ffe10f611932f6543b96b3ce5683b93b6c678a51ac1b63bcdb3d630e58c7827`, integration `6afa3f25e8145a6ebf31a947ab104b223b351aa615b51aa2a97389364a133e2a` |
-| `scripts/validate-release.sh "$TMPDIR/edgeos-vxlan-build"` | 0 | Artifact contract PASS; version `0.3.0+edgeos3.0.1.e50` |
-| `test/validate-release-negative.sh "$TMPDIR/edgeos-vxlan-build"` | 0 | **25 checks passed, 0 failed** |
-| `scripts/verify-reproducible-build.sh --source-rev HEAD --work-dir "$TMPDIR/edgeos-vxlan-repro"` | 0 | **SAME** for both packages; same hashes as the canonical build |
+| `scripts/build-reproducible.sh --source-rev ca90f36 --output-dir "$TMPDIR/pkg-final-head"` | 0 | Final review build: kmod `7ffe10f611932f6543b96b3ce5683b93b6c678a51ac1b63bcdb3d630e58c7827`, integration `6afa3f25e8145a6ebf31a947ab104b223b351aa615b51aa2a97389364a133e2a` |
+| `scripts/validate-release.sh "$TMPDIR/pkg-final-head"` | 0 | Artifact contract PASS; version `0.3.0+edgeos3.0.1.e50` |
+| `test/validate-release-negative.sh "$TMPDIR/pkg-final-head"` | 0 | **25 checks passed, 0 failed** |
+| `scripts/verify-reproducible-build.sh --source-rev HEAD --work-dir "$TMPDIR/repro-final-head"` | 0 | **SAME** for both packages; same hashes as the canonical build |
 | lintian (container, same suppressions as CI) | 0 | **PASS** (`--fail-on error`, no errors) |
 
 `lintian` was run in a container because the development host does not have it installed; the
