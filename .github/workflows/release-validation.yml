@@ -265,9 +265,21 @@ jobs:
           if command -v tcpdump >/dev/null 2>&1; then
             echo "Packet capture: tcpdump is available."
           else
-            echo "Packet capture: tcpdump is unavailable; capture evidence will be recorded as skipped."
+            echo "Packet capture: tcpdump is absent; the dependency-preparation step will install it."
           fi
           exit "$missing"
+
+      - name: Prepare packet-capture tooling
+        run: |
+          if command -v tcpdump >/dev/null 2>&1; then
+            echo "tcpdump is already present; no package acquisition."
+            exit 0
+          fi
+          ./scripts/apt-update-ubuntu-only.sh
+          sudo apt-get install -y --no-install-recommends tcpdump
+
+      - name: Verify required packet-capture tooling
+        run: command -v tcpdump
 
       - name: Enable VXLAN modules
         run: |
@@ -276,7 +288,7 @@ jobs:
       - name: Establish and qualify the isolated IPv6-only topology
         env:
           REQUIRE_NETNS_TEST: "1"
-          REQUIRE_CAPTURE: "0"
+          REQUIRE_CAPTURE: "1"
           REQUIRE_RECONCILER: "1"
           EVIDENCE_DIR: ${{ runner.temp }}/ipv6-only-evidence
         run: |
