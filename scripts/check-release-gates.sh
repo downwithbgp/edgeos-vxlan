@@ -6,7 +6,13 @@
 # (admin token query or maintainer confirmation + post-publish check), and the
 # exact confirmation string.
 #
+# When --candidate-dir is supplied the gate also requires that candidate to
+# pass full candidate validation, including the mandatory IPv6-only
+# qualification checks. The promotion path always supplies it, so a candidate
+# that lost its qualification evidence cannot reach publication.
+#
 # Usage: check-release-gates.sh --tag TAG --confirm VALUE [--dry-run]
+#                                [--candidate-dir DIR]
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -16,6 +22,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TAG=
 CONFIRM=
 DRY_RUN=no
+CANDIDATE_DIR=
 POLICY=$ROOT/release/release-policy.json
 
 usage()
@@ -24,10 +31,12 @@ usage()
 Usage: check-release-gates.sh --tag TAG --confirm VALUE [--dry-run]
 
 Options:
-  --tag TAG       Release tag
-  --confirm V     Exact confirmation value
-  --dry-run       Report the gates without requiring publication state
-  -h, --help      Show this help
+  --tag TAG            Release tag
+  --confirm V          Exact confirmation value
+  --candidate-dir DIR  Extracted candidate; requires full validation,
+                        including IPv6-only qualification, before publication
+  --dry-run            Report the gates without requiring publication state
+  -h, --help           Show this help
 EOF
 }
 
@@ -46,6 +55,11 @@ while [ $# -gt 0 ]; do
         --dry-run)
             DRY_RUN=yes
             shift
+            ;;
+        --candidate-dir)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            CANDIDATE_DIR=$2
+            shift 2
             ;;
         -h|--help)
             usage
@@ -73,6 +87,7 @@ if [ "$DRY_RUN" = "yes" ]; then
     echo "Enable variable:     $ENABLE_VAR=true"
     echo "Immutable proof:     $IMMUTABLE_VAR=true + post-publish check"
     echo "Confirmation:        $CONFIRM"
+    echo "Candidate:           ${CANDIDATE_DIR:-(not supplied; qualification not re-checked)}"
     exit 0
 fi
 
@@ -95,6 +110,16 @@ fi
 [ "${!IMMUTABLE_VAR:-}" = "true" ] ||
     fail "set $IMMUTABLE_VAR=true only after enabling immutable releases"
 note "immutable state is confirmed by the maintainer variable; post-publish verification is mandatory"
+
+# The candidate must still satisfy the full qualification contract, including
+# the mandatory IPv6-only checks, at publication time. This is independent of
+# any earlier preflight validation.
+if [ -n "$CANDIDATE_DIR" ]; then
+    require_dir "$CANDIDATE_DIR"
+    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$CANDIDATE_DIR"         >/dev/null ||
+        fail "candidate does not satisfy the publication qualification contract"
+    note "candidate validation (including IPv6-only qualification) passed"
+fi
 
 echo "Release gates: PASS"
 echo "Tag:           $TAG"

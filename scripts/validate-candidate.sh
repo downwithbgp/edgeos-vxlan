@@ -336,6 +336,35 @@ if [ "$PUBLISHED_ASSETS" = "no" ]; then
     [ "$(sha256_file "$IPV6_EVIDENCE/summary.json")" = \
       "$(manifest_get "$MANIFEST" '.qualification.ipv6.evidence.summarySha256')" ] ||
         fail "retained IPv6 qualification summary hash does not match the manifest"
+
+    # The manifest's self-reported evidence identity must agree with the
+    # retained summary. The finalize stage independently bound the summary to
+    # the workflow environment; this cross-check prevents a manifest that
+    # claims provenance the evidence does not carry.
+    SUMMARY=$IPV6_EVIDENCE/summary.json
+    check_summary_field()
+    {
+        _field=$1 _expected=$2
+        _actual=$(jq -r "$_field // empty" "$SUMMARY")
+        [ "$_actual" = "$_expected" ] ||
+            fail "IPv6 evidence $_field ($_actual) does not match the manifest ($_expected)"
+    }
+    check_summary_field '.workflow.runId' \
+        "$(manifest_get "$MANIFEST" '.qualification.ipv6.workflow.runId')"
+    check_summary_field '.workflow.runAttempt' \
+        "$(manifest_get "$MANIFEST" '.qualification.ipv6.workflow.runAttempt')"
+    check_summary_field '.workflow.ref' \
+        "$(manifest_get "$MANIFEST" '.qualification.ipv6.workflow.ref')"
+    check_summary_field '.workflow.commit' \
+        "$(manifest_get "$MANIFEST" '.qualification.ipv6.workflow.commit')"
+    check_summary_field '.harness.commit' \
+        "$(manifest_get "$MANIFEST" '.qualification.ipv6.harness.commit')"
+    check_summary_field '.candidate.buildIdentity' \
+        "$(manifest_get "$MANIFEST" '.qualification.ipv6.buildIdentity')"
+    check_summary_field '.candidate.packageSha256' \
+        "$(manifest_get "$MANIFEST" '.qualification.ipv6.packageSha256')"
+    check_summary_field '.candidate.sourceCommit' \
+        "$(manifest_get "$MANIFEST" '.qualification.ipv6.sourceCommit')"
 fi
 
 for check_id in $REQUIRED_IPV6_CHECKS; do
@@ -401,11 +430,16 @@ done < <(jq -r '.qualification.ipv6.workarounds[].id' "$MANIFEST")
 
 
 # No unexpected top-level files. qualification/ holds logs and reproducibility
-# evidence; source.tar is the exact materialized input.
+# evidence; source.tar is the exact materialized input. promotion-plan.json and
+# promotion-verification.json are trusted promote-time transients: they are
+# written into the candidate directory by scripts/promote-release.sh, are not
+# release assets, and are not covered by the candidate identity.
 ALLOWED="release-candidate.json
 SHA256SUMS
 source.tar
 release-attestation.jsonl
+promotion-plan.json
+promotion-verification.json
 $INTEGRATION
 $KMOD
 $BUILDINFO
