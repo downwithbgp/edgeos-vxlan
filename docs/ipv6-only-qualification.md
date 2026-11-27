@@ -203,7 +203,7 @@ The new job is `ipv6-only` in `.github/workflows/release-validation.yml`, named
 | Isolation assertions | Inside `test/ipv6-only-netns.sh` before and after functional traffic. |
 | Dataplane | Same script; IPv6 ICMP/TCP/UDP, NDP, MTU, recreation, capture when available. |
 | Evidence | `$RUNNER_TEMP/ipv6-only-evidence` uploaded as `ipv6-only-qualification-evidence` on every outcome. |
-| Cleanup | The script's `EXIT`/`INT`/`TERM` trap, plus an `always()` cleanup step that reads the recorded namespace/link names. |
+| Cleanup | The script's `EXIT`/`INT`/`TERM` trap, plus an `always()` cleanup step that reconstructs the exact namespace/link names from the recorded suffix. |
 | Required reconciler | `REQUIRE_RECONCILER=1`; a missing Perl `JSON::PP` or harness failure fails the job instead of silently skipping the integration path. |
 | Packet capture | `REQUIRE_CAPTURE=0`; if tcpdump is absent, the suite records a capture **skip**. The functional and isolation results are unaffected. |
 
@@ -292,8 +292,8 @@ Cleanup after an interrupted run:
 sudo EVIDENCE_DIR=/tmp/ipv6-only-evidence bash test/ipv6-only-netns.sh --cleanup
 ```
 
-The cleanup command deletes only names recorded in `namespaces.txt`/`links.txt` that match the
-test's naming scheme. It does not flush host firewall rules, routes or sysctls.
+The cleanup command reconstructs the exact names from `run.env` (the recorded suffix); it does not
+delete arbitrary names by prefix. It does not flush host firewall rules, routes or sysctls.
 
 ## 8. Limitations and residual risks
 

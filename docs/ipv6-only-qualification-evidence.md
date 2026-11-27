@@ -158,8 +158,9 @@ bash test/validate-release-negative.sh "$TMPDIR/edgeos-vxlan-build"
 ./scripts/verify-reproducible-build.sh --source-rev HEAD --work-dir "$TMPDIR/repro"
 ```
 
-The build was run from the committed tree at `28368d4` (the branch HEAD before this evidence
-update). The documented package payload hashes are unchanged.
+The build was first run from the committed tree at `28368d4` and re-run from the review-fix
+commit `36494eb`; both builds produced the same package hashes. The review-fix commit changes only
+the test harness and documentation, so the package payload is unchanged.
 
 | Command | Exit | Result |
 |---|---:|---|
@@ -173,6 +174,28 @@ The reproducibility hashes match the published v0.3.0 package hashes recorded by
 (`7ffe10f6…` and `6afa3f25…`), confirming that this branch does not change the package payload.
 `lintian` was run in a container because the development host does not have it installed; the
 hosted CI package job runs the same command.
+
+### 5.1 Independent review
+
+An independent correctness review and a security review were run on the complete branch diff.
+Findings fixed before this record was finalised:
+
+* packet-capture analysis now fails closed on a tcpdump read error instead of reporting zero;
+* `addr6` uses `ip -6 addr replace` so a surviving address cannot abort the suite;
+* an unreadable transit default route is a failure, not a pass;
+* the UDP server PID is removed from the cleanup list;
+* SIGINT/SIGTERM run cleanup and exit 130;
+* symlinked evidence directories are rejected;
+* `--cleanup` reconstructs exact names from the recorded suffix rather than deleting by prefix;
+* tcpdump no longer retains root explicitly;
+* preflight covers the tools the suite actually invokes;
+* duplicate TCP/UDP assertions during capture are suppressed;
+* the rollback failure reason is asserted;
+* the support-matrix CI row is marked locally validated/hosted CI pending;
+* the open toolchain-dependency acceptance criterion is restored in the backlog.
+
+The security review found no blocking issue. It noted the existing `push: ci/**` privileged-job
+trust model as a pre-existing residual risk; branch protection and review remain the control.
 
 ## 6. CI status
 
