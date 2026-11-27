@@ -224,12 +224,12 @@ fi
 
 # --- negative controls: required rejection cases -----------------------------
 
-# 1. Missing IPv6 qualification evidence.
+# 1. Missing IPv6 qualification evidence (rejected by the schema layer).
 D=$TMP/no-ipv6
 mutate_copy "$CAND" "$D" 'del(.qualification.ipv6)'
 resign_id "$D/release-candidate.json"
-expect_fail_with "ipv6" "$ROOT/scripts/validate-candidate.sh" \
-    --candidate-dir "$D" --release
+expect_fail_with "is a required property" \
+    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$D" --release
 
 # 2. Missing mandatory check identifiers.
 D=$TMP/missing-check
@@ -327,14 +327,14 @@ expect_fail_with "trusted workflow path mismatch" \
 D=$TMP/modified-evidence
 rm -rf "$D"; cp -a "$CAND" "$D"
 printf 'tampered\n' >> "$D/qualification/ipv6-only/summary.txt"
-expect_fail_with "does not match the manifest" \
+expect_fail_with "evidence hash mismatch" \
     "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$D" --release
 
 # 13b. Missing retained evidence file.
 D=$TMP/missing-evidence
 rm -rf "$D"; cp -a "$CAND" "$D"
 rm "$D/qualification/ipv6-only/topology-after.txt"
-expect_fail_with "required file not found" \
+expect_fail_with "evidence file is missing" \
     "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$D" --release
 
 # 14. Unexpected skipped check.
@@ -380,21 +380,36 @@ printf 'swapped payload\n' > "$D/$INTEGRATION"
 expect_fail_with "artifact size mismatch" \
     "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$D" --release
 
-# 19. Promotion attempt that omits IPv6 qualification.
+# 19. Promotion attempt that omits IPv6 qualification. The manifest keeps a
+# schema-valid ipv6 block but loses the four required check entries, so this
+# reaches the semantic layer through the real promotion planner.
 D=$TMP/promote-unqualified
 make_candidate "$D" true
-jq 'del(.qualification.ipv6)
-    | .qualification.checks |= map(select(.id | startswith("ipv6-only") | not))' \
+jq '.qualification.checks |= map(select(.id | startswith("ipv6-only") | not))' \
     "$D/release-candidate.json" > "$TMP/d19.json"
 mv "$TMP/d19.json" "$D/release-candidate.json"
 resign_id "$D/release-candidate.json"
 d19id=$(jq -r '.candidate.id' "$D/release-candidate.json")
 d19sha=$(sha256_file "$D/release-candidate.json")
-expect_fail_with "ipv6" "$ROOT/scripts/promote-release.sh" \
+expect_fail_with "must appear exactly once" "$ROOT/scripts/promote-release.sh" \
     --candidate-dir "$D" --qualification --dry-run --fixture \
     --candidate-id "$d19id" --manifest-sha256 "$d19sha"
 
-# 20. Evidence substitution from another successful candidate.
+# 20. The publication gate rejects an unqualified candidate and accepts the
+# genuinely qualified one.
+GATE_ENV=(env GITHUB_ACTIONS=true GITHUB_EVENT_NAME=workflow_dispatch
+    GITHUB_REF=refs/heads/main RELEASE_ENVIRONMENT=release-publication
+    RELEASE_PUBLICATION_ENABLED=true IMMUTABLE_RELEASES_CONFIRMED=true)
+D=$TMP/gate-unqualified
+mutate_copy "$CAND" "$D" '.qualification.checks |= map(select(.id != "ipv6-only-capture"))'
+resign_id "$D/release-candidate.json"
+expect_fail_with "publication qualification contract" \
+    "${GATE_ENV[@]}" "$ROOT/scripts/check-release-gates.sh" \
+    --tag v0.3.1 --confirm PUBLISH --candidate-dir "$D"
+expect_pass "${GATE_ENV[@]}" "$ROOT/scripts/check-release-gates.sh" \
+    --tag v0.3.1 --confirm PUBLISH --candidate-dir "$CAND"
+
+# 21. Evidence substitution from another successful candidate.
 OTHER=$TMP/other-candidate
 make_candidate "$OTHER"
 # Regenerate the other candidate's evidence bound to a different build
@@ -413,6 +428,53 @@ mv "$TMP/d20.json" "$D/release-candidate.json"
 resign_id "$D/release-candidate.json"
 expect_fail_with "does not match the manifest" \
     "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$D" --release
+
+# 22. The retained summary itself must pass, not only the manifest's copy of
+# its claims: a failed summary is rejected even when the manifest says passed
+# and the evidence hashes agree.
+D=$TMP/summary-failed
+rm -rf "$D"; cp -a "$CAND" "$D"
+python3 - "$D/qualification/ipv6-only/summary.json" <<'PYFAIL'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+data["result"] = "failed"
+data["counts"]["fail"] = 3
+path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PYFAIL
+jq --arg s "$(sha256_file "$D/qualification/ipv6-only/summary.json")" \
+    '.qualification.ipv6.evidence.summarySha256=$s' \
+    "$D/release-candidate.json" > "$TMP/d22.json"
+mv "$TMP/d22.json" "$D/release-candidate.json"
+resign_id "$D/release-candidate.json"
+expect_fail_with "result is not passed" \
+    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$D" --release
+
+# 23. An evidence path that escapes the evidence directory is rejected.
+D=$TMP/evidence-traversal
+rm -rf "$D"; cp -a "$CAND" "$D"
+jq '.qualification.checks |= map(
+      if .id == "ipv6-only-isolation" then .evidenceFile="../release-candidate.json" else . end)' \
+    "$D/release-candidate.json" > "$TMP/d23.json"
+mv "$TMP/d23.json" "$D/release-candidate.json"
+resign_id "$D/release-candidate.json"
+expect_fail_with "unsafe relative path" \
+    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$D" --release
+
+# 24. Published-asset mode accepts the manifest without the raw evidence
+# directory, but still rejects a failed qualification status.
+D=$TMP/published-assets
+rm -rf "$D"; cp -a "$CAND" "$D"
+rm -rf "$D/qualification/ipv6-only"
+expect_pass "$ROOT/scripts/validate-candidate.sh" \
+    --candidate-dir "$D" --release --published-assets
+jq '.qualification.ipv6.status="failed"' "$D/release-candidate.json" > "$TMP/d24.json"
+mv "$TMP/d24.json" "$D/release-candidate.json"
+resign_id "$D/release-candidate.json"
+expect_fail_with "status is not passed" "$ROOT/scripts/validate-candidate.sh" \
+    --candidate-dir "$D" --release --published-assets
 
 echo "unit-release-ipv6-gate: pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]

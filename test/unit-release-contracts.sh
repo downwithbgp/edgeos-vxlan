@@ -412,11 +412,20 @@ expect_fail_with "confirmation value does not match" \
         RELEASE_PUBLICATION_ENABLED=true IMMUTABLE_RELEASES_CONFIRMED=true \
         "$ROOT/scripts/check-release-gates.sh" --tag v0.3.1 --confirm publish
 
-# A full set of correct gates passes (the only accepted combination).
+# A real publication without a candidate directory is refused: the gate
+# re-validates the qualification evidence.
+expect_fail_with "publication requires --candidate-dir" \
+    env GITHUB_ACTIONS=true GITHUB_EVENT_NAME=workflow_dispatch \
+        GITHUB_REF=refs/heads/main RELEASE_ENVIRONMENT=release-publication \
+        RELEASE_PUBLICATION_ENABLED=true IMMUTABLE_RELEASES_CONFIRMED=true \
+        "$ROOT/scripts/check-release-gates.sh" --tag v0.3.1 --confirm PUBLISH
+
+# A full set of correct gates passes with a qualified candidate.
 expect_pass env GITHUB_ACTIONS=true GITHUB_EVENT_NAME=workflow_dispatch \
     GITHUB_REF=refs/heads/main RELEASE_ENVIRONMENT=release-publication \
     RELEASE_PUBLICATION_ENABLED=true IMMUTABLE_RELEASES_CONFIRMED=true \
-    "$ROOT/scripts/check-release-gates.sh" --tag v0.3.1 --confirm PUBLISH
+    "$ROOT/scripts/check-release-gates.sh" --tag v0.3.1 --confirm PUBLISH \
+    --candidate-dir "$CAND"
 
 # --- adversarial matrix: attestation identity ---------------------------------
 

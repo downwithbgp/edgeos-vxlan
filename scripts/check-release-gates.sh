@@ -111,15 +111,16 @@ fi
     fail "set $IMMUTABLE_VAR=true only after enabling immutable releases"
 note "immutable state is confirmed by the maintainer variable; post-publish verification is mandatory"
 
-# The candidate must still satisfy the full qualification contract, including
-# the mandatory IPv6-only checks, at publication time. This is independent of
-# any earlier preflight validation.
-if [ -n "$CANDIDATE_DIR" ]; then
-    require_dir "$CANDIDATE_DIR"
-    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$CANDIDATE_DIR"         >/dev/null ||
-        fail "candidate does not satisfy the publication qualification contract"
-    note "candidate validation (including IPv6-only qualification) passed"
-fi
+# The candidate must still satisfy the qualification contract, including the
+# mandatory IPv6-only checks, at publication time. This is independent of any
+# earlier preflight validation. A real publication must supply the candidate;
+# there is no mode that skips this check.
+[ -n "$CANDIDATE_DIR" ] ||
+    fail "publication requires --candidate-dir; the gate re-validates qualification evidence"
+require_dir "$CANDIDATE_DIR"
+"$ROOT/scripts/validate-candidate.sh" --candidate-dir "$CANDIDATE_DIR" >/dev/null ||
+    fail "candidate does not satisfy the publication qualification contract"
+note "candidate validation (including IPv6-only qualification) passed"
 
 echo "Release gates: PASS"
 echo "Tag:           $TAG"

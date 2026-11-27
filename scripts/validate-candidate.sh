@@ -365,6 +365,25 @@ if [ "$PUBLISHED_ASSETS" = "no" ]; then
         "$(manifest_get "$MANIFEST" '.qualification.ipv6.packageSha256')"
     check_summary_field '.candidate.sourceCommit' \
         "$(manifest_get "$MANIFEST" '.qualification.ipv6.sourceCommit')"
+
+    # The manifest's pass/fail claims are copies. Enforce the retained summary
+    # itself with the canonical validator: result, fail count, required check
+    # statuses, capture and reconciler execution, and the declared
+    # skips/workarounds are all checked against the evidence bytes.
+    python3 "$ROOT/scripts/validate-ipv6-qualification-evidence.py" \
+        --summary "$SUMMARY" \
+        --evidence-dir "$IPV6_EVIDENCE" \
+        --expected-source-commit "$SOURCE_COMMIT" \
+        --expected-build-identity "$(manifest_get "$MANIFEST" '.build.identity')" \
+        --expected-package-sha256 "$(manifest_get "$MANIFEST" '.qualification.ipv6.packageSha256')" \
+        --expected-workflow-run-id "$(manifest_get "$MANIFEST" '.qualification.ipv6.workflow.runId')" \
+        --expected-workflow-run-attempt "$(manifest_get "$MANIFEST" '.qualification.ipv6.workflow.runAttempt')" \
+        --require-workflow-binding \
+        --require-package-execution \
+        --allow-skip host-global-ipv6-escape-unavailable \
+        --allow-skip iproute2-json-normalization \
+        --allow-workaround iproute2-json-normalization >/dev/null ||
+        fail "retained IPv6 qualification evidence does not validate"
 fi
 
 for check_id in $REQUIRED_IPV6_CHECKS; do
@@ -376,6 +395,7 @@ for check_id in $REQUIRED_IPV6_CHECKS; do
         fail "required IPv6 qualification check $check_id did not pass"
     file=$(jq -r '.[0].evidenceFile // empty' <<<"$entry")
     [ -n "$file" ] || fail "check $check_id records no evidence file"
+    validate_relative_path "$file"
     require_sha256_field "$check_id evidence" "$(jq -r '.[0].evidenceSha256' <<<"$entry")"
     if [ "$PUBLISHED_ASSETS" = "no" ]; then
         require_file "$IPV6_EVIDENCE/$file"

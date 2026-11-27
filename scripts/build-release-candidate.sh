@@ -7,7 +7,7 @@
 # qualification evidence under a canonical candidate ID.
 #
 # Usage:
-#   build-release-candidate.sh --output-dir DIR --image-archive-dir DIR [options]
+#   build-release-candidate.sh --stage build|finalize [options]
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -244,9 +244,11 @@ finalize_candidate()
         "workflow commit:$EXPECTED_EVIDENCE_COMMIT"; do
         [ -n "${pair#*:}" ] || fail "missing ${pair%%:*}"
     done
-    if [ -z "$EXPECTED_HARNESS_COMMIT" ]; then
-        EXPECTED_HARNESS_COMMIT=$(manifest_get "$BUILD_RECORD" '.source.trustedWorkflow.commit')
-    fi
+    [ -n "$EXPECTED_HARNESS_COMMIT" ] ||
+        fail "missing expected harness commit; provenance must be supplied independently"
+    [ "$EXPECTED_HARNESS_COMMIT" = \
+      "$(manifest_get "$BUILD_RECORD" '.source.trustedWorkflow.commit')" ] ||
+        fail "harness commit does not match the candidate trusted workflow commit"
 
     # The evidence records GITHUB_WORKFLOW_REF (owner/repo/path@ref); the
     # manifest binds the canonical workflow file path. Normalize and require
