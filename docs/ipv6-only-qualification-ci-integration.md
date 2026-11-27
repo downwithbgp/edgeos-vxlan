@@ -2,10 +2,10 @@
 
 **Status:** integration record, 2026-11-27. PR #8 (`Phase III: trusted release lifecycle`) merged
 to `main` at `0771455504056fcf45b6fc041cc541e20e12f0f2`. PR #9 integrated that main and ports
-the IPv6-only job into the canonical `ci.yml`. Hosted CI passed for the integration merge and for
-every documentation commit through `ec1a5c27767d787344d4b4e18224dd11aaa51869`; see §9. A later
-documentation-only commit changes no workflow, test or package input, so that verification applies
-to the branch content described here.
+the IPv6-only job into the canonical `ci.yml`. Hosted CI has passed for the integration merge and
+for every documentation-only commit on this branch; the runs are listed in §9. Documentation-only
+commits change no workflow, test or package input, so that verification applies to the branch
+content described here.
 **Scope:** CI integration and candidate-bound evidence. This document does **not** modify the
 publication policy, release workflows, historical assets or release gates.
 **Related:** [`ipv6-only-qualification.md`](ipv6-only-qualification.md),
@@ -173,7 +173,9 @@ cleanup and is **not** part of this integration. No workflow file was deleted in
 
 ## 8. Changed-file inventory
 
-Net change against the integration base `0771455` (`origin/main`): **19 files, +4712 −74**.
+Net change of the integration merge `92336a3` against its base `0771455` (`origin/main`):
+**19 files, +4712 −74**. The subsequent documentation-only record commits add
+`docs/ipv6-only-qualification-ci-integration.md` content (+128 −21) and touch no other file.
 
 | File | Change |
 |---|---|
