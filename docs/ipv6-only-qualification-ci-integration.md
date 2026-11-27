@@ -2,9 +2,10 @@
 
 **Status:** integration record, 2026-11-27. PR #8 (`Phase III: trusted release lifecycle`) merged
 to `main` at `0771455504056fcf45b6fc041cc541e20e12f0f2`. PR #9 integrated that main and ports
-the IPv6-only job into the canonical `ci.yml`. The latest HEAD verified by hosted CI is
-`8d952e0033f03405ef96b53fe6d3bb98a4a8d8f0`; later documentation-only commits do not change the
-workflow, tests or package payload recorded here.
+the IPv6-only job into the canonical `ci.yml`. Hosted CI passed for the integration merge and for
+every documentation commit through `ec1a5c27767d787344d4b4e18224dd11aaa51869`; see §9. A later
+documentation-only commit changes no workflow, test or package input, so that verification applies
+to the branch content described here.
 **Scope:** CI integration and candidate-bound evidence. This document does **not** modify the
 publication policy, release workflows, historical assets or release gates.
 **Related:** [`ipv6-only-qualification.md`](ipv6-only-qualification.md),
@@ -19,7 +20,7 @@ publication policy, release workflows, historical assets or release gates.
 | Recoverable backup | `backup/pr9-pre-phase3-integration` = `a7bc214520c17a3567f3d0f4d7d1c820388ce3c0` |
 | Merged Phase III main (integration base) | `0771455504056fcf45b6fc041cc541e20e12f0f2` |
 | Reviewed integration tree | `251c1cb` (rebase result); tree `eee30a20361c2d3111b2cb2eea6aeb548dc52845` |
-| Latest HEAD verified by hosted CI | `8d952e0033f03405ef96b53fe6d3bb98a4a8d8f0` (runs 46062441889 / 46062447034) |
+| Hosted verification recorded for | `ec1a5c27767d787344d4b4e18224dd11aaa51869` (runs 46063199151 / 46063207150, §9) |
 | Integration model | The reviewed rebase result was recorded as a merge commit with parents `a7bc214` and `0771455`. The merged tree is byte-identical to the reviewed rebase tree (`eee30a2…`), so review applies unchanged and no force-push of the published branch was required. |
 | Obsolete workflow | `release-validation.yml` removed; not resurrected |
 | APT helper | Main's masking implementation replaced by the stricter transient source-selection implementation; all main call sites use the same path |
@@ -196,13 +197,16 @@ The package payload is unchanged: the integration `.deb` is still
 
 | Run | Event | Result |
 |---|---|---|
+| [46063199151](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46063199151) | push at `ec1a5c2` | **success** — all six jobs passed, including IPv6-only qualification |
+| [46063207150](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46063207150) | pull_request at `ec1a5c2` | **success** — Static analysis, Build and validate packages and Reproducibility verification passed; the three privileged jobs skipped |
 | [46062441889](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46062441889) | push, `ci/ipv6-native-qualification` at `8d952e0` | **success** — Static analysis, Build and validate packages, Reproducibility verification, Published-release fixtures, Network-namespace dataplane and IPv6-only qualification all passed |
 | [46062447034](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46062447034) | pull_request, head `8d952e0` | **success** — Static analysis, Build and validate packages and Reproducibility verification passed; Published-release fixtures, Network-namespace dataplane and IPv6-only qualification skipped by their event guards |
 | [46060990232](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46060990232) | push at `92336a3` | **success** — all six jobs passed |
 | [46060996251](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46060996251) | pull_request at `92336a3` | **success** — privileged jobs skipped by their event guards |
 
 The PR runs confirm the trust boundary: untrusted PR code never reaches the privileged jobs. The
-skips are event guards, not qualifications, and are not reported as IPv6 evidence.
+skips are event guards, not qualifications, and are not reported as IPv6 evidence. Documentation
+commits after `ec1a5c2` run the same workflows; they change no workflow, test or package input.
 
 ### 9.1 Candidate-bound evidence from the integrated push run
 
