@@ -73,8 +73,10 @@ sudo REQUIRE_NETNS_TEST=1 REQUIRE_CAPTURE=1 REQUIRE_RECONCILER=1 \
 ```
 
 The suite prints `PASS`/`FAIL`/`SKIP` and a summary. The evidence directory contains the topology,
-environment, captures and the summary. A capture skip is not capture evidence. See
-`docs/ipv6-only-qualification.md` for the Level A–D model and the isolation contract.
+environment, raw captures, `captures/analysis.txt`, `summary.txt` and `summary.json`. A capture skip
+is not capture evidence. The authoritative CI job requires capture and installs tcpdump from the
+distribution source in a separate step when needed; local developer runs may leave it optional.
+See `docs/ipv6-only-qualification.md` for the Level A–D model and the isolation contract.
 
 Canonical package build and validation:
 
@@ -104,6 +106,17 @@ The workflow is `.github/workflows/release-validation.yml`.
 
 Hosted CI is evidence only after it has actually run. A branch that has not been pushed has
 **pending** CI, not a passing CI result.
+
+Keep development, qualification and publication separate. Published releases are immutable. A
+canonical rebuild is not expected to be byte-identical to a historical release whose mtimes were
+not normalized; compare member contents and record the distinction between published integrity,
+canonical reproducibility and payload equivalence. The current reconciliation is in
+`docs/ipv6-only-qualification-evidence.md`.
+
+PR #8 splits the current workflow into `ci.yml` and the release lifecycle. Do not merge this branch
+without porting the `ipv6-only` job into `ci.yml` and wiring its `summary.json` evidence into the
+candidate manifest; see `docs/ipv6-only-qualification-ci-integration.md`. Do not modify another
+agent's branch to force the integration.
 
 ## 5. Documentation
 

@@ -81,6 +81,10 @@ sudo REQUIRE_NETNS_TEST=1 REQUIRE_CAPTURE=1 REQUIRE_RECONCILER=1 \
   EVIDENCE_DIR=/tmp/ipv6-only-evidence bash test/ipv6-only-netns.sh
 ```
 
+The authoritative CI job requires packet capture (`REQUIRE_CAPTURE=1`) and installs tcpdump from
+the distribution source in a separate dependency-preparation step when it is absent. Local
+developer runs may leave capture optional, but must not report a skip as capture evidence.
+
 If the local host cannot grant `CAP_NET_ADMIN`, use a privileged container or record the validation
 as pending. A missing privilege must not be reported as a pass.
 
@@ -96,6 +100,18 @@ Reproducibility, package contents and provenance are release properties. Do not 
 `SOURCE_DATE_EPOCH`, archive ordering, dependency pins or the package payload to make a test pass
 without documenting the reason.
 
+Published releases are immutable. A canonical rebuild is expected to have a different package
+identity from a historical release whose mtimes were not normalized; do not describe a canonical
+hash as matching a published hash without a member-level comparison. Distinguish:
+
+1. integrity of the published artifacts;
+2. repeatability/reproducibility of independent canonical builds;
+3. payload equivalence between revisions;
+4. byte-for-byte equality with a historical published release.
+
+The v0.3.0 reconciliation is recorded in
+[`docs/ipv6-only-qualification-evidence.md`](docs/ipv6-only-qualification-evidence.md#51-package-integrity-reconciliation).
+
 ## 5. CI trust boundaries
 
 * Untrusted pull-request code must not run with `CAP_NET_ADMIN`, repository secrets or write
@@ -108,7 +124,13 @@ without documenting the reason.
   distribution source and do not disable signature or TLS verification.
 * Do not hide infrastructure failures with unconditional retries or `|| true`. Distinguish a
   product regression, a missing privilege, an unsupported platform and an external-service failure.
-* A test that could not execute must be reported as skipped/unsupported/blocked, not passed.
+* A test that could not execute must be reported as skipped/unsupported/blocked, not passed. A
+  required capture that fails is a failure, not a skip.
+* Keep development, qualification and publication separate. A qualification job does not publish;
+  publication gates consume qualification evidence. If the trusted release lifecycle (PR #8)
+  replaces `release-validation.yml`, port the `ipv6-only` job into `ci.yml` and wire
+  `summary.json` into the candidate manifest; do not merge a change that silently drops the job.
+  See [`docs/ipv6-only-qualification-ci-integration.md`](docs/ipv6-only-qualification-ci-integration.md).
 
 ## 6. Production infrastructure safety
 
@@ -136,7 +158,10 @@ limitation instead of weakening a requirement.
 * Run an independent review pass for network isolation, CI security and qualification-accuracy
   changes when the environment provides one.
 * Before declaring a branch ready, inspect the full diff, the working-tree status and the final
-  commit list. Do not push or open a pull request without explicit authorization.
+  commit list. Do not push or open a pull request without explicit authorization. Note untracked
+  files separately; a clean tracked tree is not the same as a directory with no untracked files.
+* Do not modify another agent's branch or independently redesign the trusted release lifecycle.
+  Document proposed integration contracts for maintainer review.
 
 ## 8. Documentation and history
 

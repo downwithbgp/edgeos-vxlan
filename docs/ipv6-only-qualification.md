@@ -103,8 +103,11 @@ The Level B contract is more than a successful IPv6 ping. The test asserts all o
 | IPv4 forwarding | `net.ipv4.conf.{all,default}.forwarding` is `0`. |
 | Translation | No `64:ff9b::/96` or `nat64` route and no `nat64`, `clat`, `464xlat` or `tayga*` interface. |
 | Interface kinds | Only loopback, veth, VXLAN and bridge devices are present. |
+| veth peers | Every workload veth peer is the intended namespace: VTEPs to the transit, hosts to their VTEP, and the IPv4 control pair to each other. A veth peer outside that set is a violation. |
 | Namespace boundaries | The five workload namespaces have distinct network-namespace inodes and none equals the host's namespace. |
-| Host escape | No host-side test veth remains after setup; the VTEP cannot reach a host IPv4 or global IPv6 address. |
+| Host escape | No host-side test veth remains after setup; the VTEP cannot reach a host IPv4 or global IPv6 address. A host-global-IPv6 control is skipped when no suitable address exists, and the skip is recorded. |
+| Host sysctls | The host's IPv4 `ip_forward` and IPv6 `all/forwarding` values are unchanged after the run. Namespace sysctls are written only through `ip netns exec`. |
+| Collision safety | The suite refuses to reuse pre-existing namespaces or host links; cleanup removes only objects recorded as created by this run. |
 | AF_INET negative control | An `AF_INET` socket can be created, but a UDP send to `198.51.100.2` fails with `ENETUNREACH` or `EHOSTUNREACH`. |
 
 IPv4 loopback and AF_INET kernel support deliberately remain. They are platform facilities, not
@@ -138,6 +141,16 @@ introduced state would fail the control.
 | Hidden translation | Namespaces | NAT64, DNS64, CLAT or a proxy conceals IPv4 reachability | No translation route/interface; external IPv4 send must fail | DNS64 is a resolver behaviour; no resolver is used in the dataplane test, so it is recorded as out of scope |
 | CI execution | Trusted refs only | Untrusted PR code gains `CAP_NET_ADMIN` | `if: github.event_name != 'pull_request'`; no `pull_request_target`; no extra permissions | A compromised trusted branch can misuse runner privileges, as with any CI job |
 | Production router | Project boundary | Test activity touches the maintainer's ER-X | No hardware access in this work; namespace topology only | Hardware qualification remains separate |
+| Inherited sockets | Process boundary | A pre-opened socket or Unix-domain socket bypasses the network namespace | The harness passes no extra file descriptors, uses no proxy environment, and runs only trusted project code | The harness is **not** a security sandbox for arbitrary adversarial code |
+| Alternative translation prefixes | Namespaces | A NAT64 implementation using a prefix other than `64:ff9b::/96` conceals IPv4 reachability | No IPv4 address or route exists in the workload; the transit has no default route; no translation interface is present; the IPv4 external-send control fails | A userspace proxy over a host Unix socket is outside the network-namespace model and is explicitly out of scope |
+| Proxy environment | Process environment | A host HTTP/HTTPS/ALL_PROXY variable could route traffic through an IPv4-capable proxy | The test does not use HTTP; proxy variables are not consulted by the dataplane tools; inherited environment is not treated as qualification evidence | Application-level proxy behavior is out of scope for the network dataplane |
+
+The absence of a `64:ff9b::/96` route is not, by itself, proof that every possible NAT64 deployment
+is absent. The stronger property here is the closed topology: the workload has no IPv4 address or
+route, the transit has no default IPv6 route, and no translation interface or external IPv6 path
+exists. A translation function would need one of those paths to reach an IPv4 destination; the
+assertions remove them. The harness qualifies trusted project code under controlled conditions; it
+is not a security sandbox for arbitrary adversarial code.
 
 The topology is intentionally conservative: it does not attempt to prove the absence of every
 possible IPv4 application dependency. It proves the specific Level B properties above, and the
@@ -159,7 +172,9 @@ IPv4 dependency inventory records the rest.
 | MTU boundary | 1430-byte VXLAN MTU; 1382-byte payload passes, 1383 is rejected with `-M do` | N6 |
 | Generic Linux bridge | `vxlan300` enslaved to `br300`; IPv6 ping and ND work | N6 (generic Linux only) |
 | Actual reconciler lifecycle | Real `src/vyatta-vxlan` creates, updates idempotently, recreates, rolls back on an invalid MTU, restores and deletes | N6-R (partial) |
-| Repeated execution and cleanup | Two consecutive runs leave no namespaces or host-side links | N6 |
+| Reconciler-created TCP/UDP | IPv6 TCP and UDP through the `vxlan900` interface created by the actual reconciler | N6-R (partial) |
+| Reconciler endpoint validation | Mixed-family and IPv6-multicast endpoints are rejected before mutation; the live interface is unchanged | N6-R (partial) |
+| Repeated execution and cleanup | Two consecutive runs leave no namespaces or host-side links; SIGTERM exits 130 and cleans up | N6 |
 
 ### 4.1 What the reconciler path actually executes
 
@@ -170,6 +185,8 @@ following components are real:
 * endpoint validation, canonicalisation and family checks;
 * `ip link add`, MAC assignment, MTU application, address reconciliation and link state;
 * live-state capture, idempotent comparison, recreation, rollback and deletion;
+* IPv6 TCP and UDP through the reconciler-created `vxlan900` interface;
+* rejection of mixed-family and IPv6-multicast endpoints before any mutation;
 * the real `ip` binary, sysfs device state and kernel VXLAN/NDP behaviour.
 
 The following are test doubles and are **not** evidence for those product layers:
@@ -198,14 +215,15 @@ The new job is `ipv6-only` in `.github/workflows/release-validation.yml`, named
 | Runner | `ubuntu-24.04`, GitHub-hosted |
 | Permissions | Workflow-level `contents: read`; no additional permissions are granted |
 | Privileges | `sudo` for network namespaces and `modprobe`; no repository secrets |
-| Dependency preparation | Tool-presence check only; no `apt-get` and no third-party repository. The runner image supplies `iproute2`, `iputils-ping`, Python 3, coreutils and (when present) tcpdump. |
+| Dependency preparation | Tool-presence check; `iproute2`, `iputils-ping`, Python 3 and coreutils come from the runner image. If tcpdump is absent, a separate step refreshes only the distribution APT source and installs tcpdump; no package is installed inside the isolated workload. |
+| Authoritative capture | `REQUIRE_CAPTURE=1`; tcpdump availability, startup, completion and analysis are required. An absent or failed capture fails the job. Raw captures and `analysis.txt` are uploaded. |
 | VXLAN modules | Explicit `modprobe vxlan udp_tunnel ip6_udp_tunnel`; a failure fails the job. |
 | Isolation assertions | Inside `test/ipv6-only-netns.sh` before and after functional traffic. |
 | Dataplane | Same script; IPv6 ICMP/TCP/UDP, NDP, MTU, recreation, capture when available. |
 | Evidence | `$RUNNER_TEMP/ipv6-only-evidence` uploaded as `ipv6-only-qualification-evidence` on every outcome. |
 | Cleanup | The script's `EXIT`/`INT`/`TERM` trap, plus an `always()` cleanup step that reconstructs the exact namespace/link names from the recorded suffix. |
 | Required reconciler | `REQUIRE_RECONCILER=1`; a missing Perl `JSON::PP` or harness failure fails the job instead of silently skipping the integration path. |
-| Packet capture | `REQUIRE_CAPTURE=0`; if tcpdump is absent, the suite records a capture **skip**. If tcpdump is present but capture or analysis fails, the suite fails (fail-closed). The functional and isolation results are unaffected by an unavailable tool. |
+| Packet capture | Authoritative CI requires capture (`REQUIRE_CAPTURE=1`). The script verifies tcpdump startup, capture completion, non-empty captures and the expected VXLAN/IPv6/TCP/UDP/ND counts, and rejects IPv4/ARP at both capture points. Local developer runs may leave capture optional. |
 
 No `pull_request_target` is used. No workflow permission is added. The job does not execute
 downloaded packages. On a release event the privileged job runs the tagged source; tags require
@@ -217,21 +235,25 @@ write access, so this is the existing trusted-tag boundary, not untrusted pull-r
 |---|---|---|
 | **Passed** | The assertion ran and its expected condition held. | Contributes to the exit status 0. |
 | **Failed** | The assertion ran and its expected condition did not hold, or a required dependency was missing under a `REQUIRE_*` flag. | Non-zero exit; the job fails. |
-| **Skipped** | The optional check could not run (for example, tcpdump is unavailable or the host has no global IPv6 address for the escape control). The reason is printed and recorded in `summary.txt`. A capture that starts but fails is **failed**, not skipped. | Does not fail the job unless the corresponding `REQUIRE_*` flag is set. Never reported as a pass. |
+| **Skipped** | A genuinely optional check could not run (for example, the host has no global IPv6 address for the escape control). The reason is printed and recorded in `summary.txt`. In authoritative CI, capture is not optional: an absent tcpdump fails dependency verification; a capture that starts but fails is **failed**. | Does not fail the job unless the corresponding `REQUIRE_*` flag is set. Never reported as a pass. |
 | **Unsupported** | The kernel or runner lacks a required facility (network namespaces, VXLAN module, root). With `REQUIRE_NETNS_TEST=1`, this is a failure; without it, the script exits 0 with an explicit `SKIP` line. | In CI, `REQUIRE_NETNS_TEST=1` makes this a failure. |
 | **Blocked** | Hosted CI has not run because the branch has not been published. | Not evidence of success; must be reported as pending. |
 
 The script prints `PASS:`, `FAIL:`, `SKIP:` and a final `ipv6-only: pass=... fail=... skip=...`
-line. The uploaded `summary.txt`, `environment.txt`, `topology-*.txt`, `captures/analysis.txt` and
-the per-test logs are the diagnostic record.
+line. The uploaded `summary.txt`, `summary.json`, `environment.txt`, `topology-*.txt`,
+`captures/*.pcap`, `captures/analysis.txt` and the per-test logs are the diagnostic record.
+`summary.json` (schema `edgeos-vxlan.ipv6-only-qualification/v1`) is the proposed machine-readable
+hand-off to a candidate/qualification manifest; see
+[`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md).
 
 ### 5.2 CI dependency reliability
 
 The transient failure after PR #7 was an `apt-get update` failure on an unrelated
 `packages.microsoft.com` repository. The namespace jobs do not need that repository.
 
-* The `ipv6-only` job performs **no package acquisition**; it checks the runner image's tools and
-  fails with a clear message if a required tool is missing.
+* The `ipv6-only` job performs no package acquisition for the dataplane itself. It checks the
+  runner image's tools and, when tcpdump is absent, installs only tcpdump from the distribution
+  source in a separate dependency-preparation step. The isolated workload starts afterwards.
 * The existing `dataplane` job checks for its tools first and acquires packages only when a tool is
   missing. If acquisition is needed, `scripts/apt-update-ubuntu-only.sh` refreshes only the
   distribution's own APT source file and disables the source-parts directory for that invocation.
@@ -307,9 +329,10 @@ delete arbitrary names by prefix. It does not flush host firewall rules, routes 
 4. **Bridge evidence is generic Linux only.** The VNI 300 section shows the topology can carry a
    bridged VXLAN and that ND works. It is not the physical EdgeOS bridged dataplane required by
    ENG-IPV6-04.
-5. **Packet capture is optional in CI.** The local validation record includes captures; a CI
-   runner without tcpdump records `capture=skipped` and still qualifies the functional and
-   isolation checks. Do not read a capture skip as capture evidence.
+5. **Packet capture is mandatory in authoritative CI.** The local developer default remains
+   optional, but the trusted `ipv6-only` job installs tcpdump when needed and sets
+   `REQUIRE_CAPTURE=1`; a capture failure fails the job. A local capture skip is not authoritative
+   evidence.
 6. **IPv4 loopback and AF_INET remain.** The test proves they do not provide external IPv4
    connectivity in the workload namespaces; it does not disable them. This is explicitly part of
    the Level B definition, not a hidden exception.
@@ -330,5 +353,7 @@ delete arbitrary names by prefix. It does not flush host firewall rules, routes 
 * [`engineering-backlog.md`](engineering-backlog.md) — ENG-IPV6-03 status and remaining work.
 * [`ipv6-only-qualification-evidence.md`](ipv6-only-qualification-evidence.md) — exact commands,
   environment, counts and limitations from the validation run.
+* [`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md) — proposed
+  integration contract with the trusted release lifecycle (PR #8).
 * [`architecture.md`](architecture.md) — layer model and endpoint rules.
 * [`deployment.md`](deployment.md) — deployment scenarios and operational guidance.

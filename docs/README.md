@@ -23,7 +23,8 @@ deployments, not because IPv4 is unsupported.
 | [`engineering-backlog.md`](engineering-backlog.md) | Repository-local engineering proposals and acceptance criteria; no remote issues created |
 | [`ipv6-only-qualification.md`](ipv6-only-qualification.md) | Level A–D qualification model, Level B isolation contract, threat model and CI integration |
 | [`ipv4-dependency-inventory.md`](ipv4-dependency-inventory.md) | Repository-wide IPv4 dependency audit and external service limitations |
-| [`ipv6-only-qualification-evidence.md`](ipv6-only-qualification-evidence.md) | Validation record for the Level B suite and the current CI status |
+| [`ipv6-only-qualification-evidence.md`](ipv6-only-qualification-evidence.md) | Validation record for the Level B suite, package-integrity reconciliation and the current CI status |
+| [`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md) | Proposed integration contract with the trusted release lifecycle (PR #8) |
 
 ## Current release records
 

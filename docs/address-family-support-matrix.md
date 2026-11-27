@@ -69,7 +69,10 @@ Notes:
 
 The N6 suite establishes the workload environment without usable external IPv4 connectivity; see
 [`ipv6-only-qualification.md`](ipv6-only-qualification.md). The N6-R row is the actual reconciler
-path with the EdgeOS configuration API and firewall dispatch replaced by test doubles.
+path with the EdgeOS configuration API and firewall dispatch replaced by test doubles. The
+authoritative CI job requires packet capture; local developer runs may leave it optional. The
+proposed candidate-manifest integration is in
+[`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md).
 
 | Area | N6 | N6-R | Claim |
 |---|---|---|---|
@@ -121,9 +124,9 @@ separate policy on the physical/VLAN interface and must use the family of the ou
 |---|---|---|---|---|---|
 | VXLAN dataplane with IPv6 underlay and IPv6 overlay | yes | yes | partial | yes | Validated with static endpoints; N6 adds isolated IPv6-only namespace evidence |
 | Isolated IPv6-only namespace dataplane (Level B) | yes | yes (N6) | — | — | Level B achieved at N6; not hardware |
-| Actual reconciler in the isolated topology (N6-R) | yes | partial (N6-R) | — | — | Reconciler lifecycle exercised; config API/firewall/bridge are test doubles |
+| Actual reconciler in the isolated topology (N6-R) | yes | partial (N6-R) | — | — | Reconciler lifecycle, endpoint rejection, and reconciler-created TCP/UDP exercised; config API/firewall/bridge are test doubles |
 | IPv6-only CI runner and control plane (Level D) | — | — | — | — | Not achieved; GitHub-hosted runner and control plane are dual-stack |
-| IPv6-only CI job with isolated namespaces | yes | partial (local N6) | — | — | Locally validated; hosted CI pending until the branch is published |
+| IPv6-only CI job with isolated namespaces | yes | partial (local N6) | — | — | Locally validated; authoritative hosted CI pending until the branch is published. CI requires packet capture and installs tcpdump separately if absent. |
 | VXLAN dataplane with IPv6 underlay and IPv4 overlay | yes | yes | — | yes | Validated on RC1/RC2 |
 | Dual-stack overlay over IPv6 underlay | yes | yes | partial | yes | Validated on RC2 (20/20) |
 | Router management over IPv6 only | n/a (EdgeOS) | — | — | — | Not validated by this project |

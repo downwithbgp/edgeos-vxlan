@@ -41,6 +41,7 @@ not change product runtime semantics, installer behavior or release assets.
 | ENG-IPV6-06 | Consistent IPv4 and IPv6 endpoint validation | P1 | No, the asymmetry is documented |
 | ENG-IPV6-07 | External VTEP qualification over real routed networks | P1 | No, external acceptance is not claimed |
 | ENG-IPV6-08 | Family-selective firewall state capture | P1 | No, provided the current limitation remains stated |
+| ENG-IPV6-09 | Routed-underlay PMTUD and ICMPv6 Packet Too Big qualification | P1 | No, provided the local-MTU limitation remains stated |
 
 ---
 
@@ -49,7 +50,10 @@ not change product runtime semantics, installer behavior or release assets.
 **Problem.** `install.sh` downloads release assets over HTTPS to GitHub and therefore depends on DNS
 and on an IPv6-reachable HTTPS endpoint. No IPv6-only acquisition test exists. The package files
 themselves can be installed offline with `dpkg`, but that path is not documented as a tested
-IPv6-only procedure.
+IPv6-only procedure. The 2026-11-27 audit observed no AAAA records for the GitHub release endpoints
+in one environment; this is a point-in-time external-service observation, not a permanent or
+universal claim. Re-check the endpoints at release time and provide a mirror or offline procedure
+rather than assuming the result.
 
 **Technical significance.** A deployment that has no IPv4 connectivity cannot use the network
 installer unless DNS, HTTPS, and every redirect are reachable over IPv6. This is separate from the
@@ -188,6 +192,21 @@ namespaces is Level B, not Level D.
   a clear error. The current negative controls validate the isolation validator and dataplane
   interruption; they do not prove that an arbitrary toolchain dependency is rejected. This
   criterion remains open.
+* [x] The authoritative hosted job requires packet capture; tcpdump is installed from the
+  distribution source in a separate dependency-preparation step if absent. Capture startup,
+  completion, non-empty output, VXLAN/IPv6/TCP/UDP/ND observations and absence of IPv4/ARP are
+  checked; a failed capture fails the job.
+* [x] The actual reconciler path is exercised for creation, IPv6 endpoint validation, address/MTU
+  application, idempotent reapplication, recreation, rollback, deletion and reconciler-created
+  IPv6 TCP/UDP.
+* [x] Base-versus-branch package equality and published-versus-canonical package differences are
+  resolved and recorded: published v0.3.0 (`c555a99a…`/`73059ba2…`) is not byte-identical to the
+  canonical rebuild (`7ffe10f6…`/`6afa3f25…`) because historical mtimes were not normalized; every
+  payload/control member is content-identical. See
+  [`ipv6-only-qualification-evidence.md`](ipv6-only-qualification-evidence.md#51-package-integrity-reconciliation).
+* [ ] The job is ported into the trusted-release-lifecycle `ci.yml` and wired into the candidate
+  manifest/release gate. This is a coordination item with PR #8; see
+  [`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md).
 * [ ] Level C: installer, package acquisition and management over IPv6 only. Deferred to
   ENG-IPV6-01/02.
 * [ ] Level D: IPv6-only runner/control plane/source and artifact acquisition. Not achievable with
@@ -357,3 +376,41 @@ IPv4 table can prevent an IPv6-only commit from capturing its pre-change state.
 * A missing table for an actually required family still fails closed.
 * Dual-family behavior is unchanged.
 * Tests cover the three family configurations and the failure modes.
+
+---
+
+## ENG-IPV6-09: Routed-underlay PMTUD and ICMPv6 Packet Too Big qualification
+
+**Problem.** The Level B suite verifies that the VXLAN interface enforces its configured 1430-byte
+MTU and that a 1383-byte payload is rejected with `-M do`. That is **local interface MTU
+enforcement**, not path-MTU discovery across a routed underlay with an intermediate bottleneck. The
+project documents PMTUD/PTB behavior but has no test for a path whose MTU is below 1500.
+
+**Technical significance.** An IPv6 underlay path that cannot deliver a full-size outer packet must
+generate and deliver ICMPv6 Packet Too Big so that the overlay sender can reduce its packet size.
+A test that only checks the local VXLAN MTU can pass while a real routed path blackholes large
+packets. The two properties must not be conflated.
+
+**Proposed validation methodology.**
+
+1. Extend the routed IPv6 topology with a transit bottleneck whose MTU is below the VXLAN
+   underlay's nominal MTU (for example 1280 or 1400).
+2. Verify the outer path drops oversized packets and returns ICMPv6 Packet Too Big with the correct
+   MTU; verify the VTEP does not fragment the outer IPv6 packet.
+3. Verify overlay TCP and UDP behave correctly: PMTUD-driven size reduction, no blackhole, and a
+   documented failure mode when PTB is filtered.
+4. Capture outer ICMPv6 PTB and inner traffic; record the exact MTU values and counters.
+5. Distinguish this from the existing local `vxlan` interface MTU boundary test in the evidence
+   record.
+
+**Dependencies.** Namespace topology extension; ICMPv6-aware path; packet capture; existing level B
+suite. No hardware is required for the namespace-level test; hardware PMTUD remains separate.
+
+**Acceptance criteria.**
+
+* A routed underlay bottleneck below 1500 bytes is demonstrated.
+* ICMPv6 PTB is observed with the correct next-hop MTU, or the exact reason it is not observable is
+  documented.
+* Overlay TCP/UDP recovers via PMTUD or fails with an explicit, documented blackhole mode.
+* The local VXLAN-MTU test remains distinct from the routed-PMTUD test in the evidence record.
+* The new test is part of the authoritative CI qualification or explicitly listed as pending.
