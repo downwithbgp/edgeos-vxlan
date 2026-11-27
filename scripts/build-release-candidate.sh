@@ -22,6 +22,11 @@ PRODUCTION=no
 RELEASE_TAG=
 WORKFLOW_REF=${GITHUB_REF:-refs/heads/ci/trusted-release-lifecycle}
 WORKFLOW_COMMIT=${GITHUB_SHA:-}
+EXPECTED_SOURCE_COMMIT=
+EXPECTED_WORKFLOW_COMMIT=
+EXPECTED_IMAGE_MANIFEST_DIGEST=
+EXPECTED_IMAGE_CONFIG_DIGEST=
+EXPECTED_IMAGE_QUALIFICATION_SHA256=
 
 usage()
 {
@@ -38,6 +43,11 @@ Options:
   --release-tag TAG          Release tag (default: v<changelog version>)
   --workflow-ref REF         Trusted workflow ref recorded in the manifest
   --workflow-commit SHA      Trusted workflow commit recorded in the manifest
+  --expected-source-commit SHA   Require this exact source commit
+  --expected-workflow-commit SHA Require this exact workflow commit
+  --expected-image-manifest-digest DIGEST Require this OCI manifest digest
+  --expected-image-config-digest DIGEST   Require this config digest
+  --expected-image-qualification-sha256 SHA Require this qualification hash
   -h, --help                 Show this help
 EOF
 }
@@ -83,6 +93,31 @@ while [ $# -gt 0 ]; do
             WORKFLOW_COMMIT=$2
             shift 2
             ;;
+        --expected-source-commit)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            EXPECTED_SOURCE_COMMIT=$2
+            shift 2
+            ;;
+        --expected-workflow-commit)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            EXPECTED_WORKFLOW_COMMIT=$2
+            shift 2
+            ;;
+        --expected-image-manifest-digest)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            EXPECTED_IMAGE_MANIFEST_DIGEST=$2
+            shift 2
+            ;;
+        --expected-image-config-digest)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            EXPECTED_IMAGE_CONFIG_DIGEST=$2
+            shift 2
+            ;;
+        --expected-image-qualification-sha256)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            EXPECTED_IMAGE_QUALIFICATION_SHA256=$2
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -123,6 +158,10 @@ if [ -e "$OUTPUT_DIR" ]; then
 fi
 COMMIT=$(git -C "$REPO" rev-parse --verify --quiet "${SOURCE_REF}^{commit}") ||
     fail "cannot resolve source revision: $SOURCE_REF"
+if [ -n "$EXPECTED_SOURCE_COMMIT" ]; then
+    [ "$COMMIT" = "$EXPECTED_SOURCE_COMMIT" ] ||
+        fail "source commit $COMMIT != expected $EXPECTED_SOURCE_COMMIT"
+fi
 
 DIRTY=$(GIT_OPTIONAL_LOCKS=0 git -C "$REPO" status --porcelain --untracked-files=no)
 if [ -n "$DIRTY" ]; then
@@ -187,6 +226,10 @@ REPOSITORY_ID=$(jq -r '.project.repositoryId' "$ROOT/release/release-policy.json
 if [ -z "$WORKFLOW_COMMIT" ]; then
     WORKFLOW_COMMIT=$COMMIT
 fi
+if [ -n "$EXPECTED_WORKFLOW_COMMIT" ]; then
+    [ "$WORKFLOW_COMMIT" = "$EXPECTED_WORKFLOW_COMMIT" ] ||
+        fail "workflow commit $WORKFLOW_COMMIT != expected $EXPECTED_WORKFLOW_COMMIT"
+fi
 
 echo "Verifying qualified build environment"
 "$ROOT/scripts/verify-build-environment.sh" --archive-dir "$IMAGE_DIR"
@@ -205,6 +248,18 @@ DEPENDENCY_SNAPSHOT=$(jq -er '.dependencySnapshot' "$QUAL")
 DEPENDENCY_INVENTORY_SHA=$(jq -er '.dependencyInventorySha256' "$QUAL")
 QUALIFICATION_SHA=$(sha256_file "$QUAL")
 IMAGE_SBOM_SHA=$(sha256_file "$IMAGE_DIR/image.spdx.json")
+if [ -n "$EXPECTED_IMAGE_MANIFEST_DIGEST" ]; then
+    [ "$MANIFEST_DIGEST" = "$EXPECTED_IMAGE_MANIFEST_DIGEST" ] ||
+        fail "image manifest digest does not match the expected digest"
+fi
+if [ -n "$EXPECTED_IMAGE_CONFIG_DIGEST" ]; then
+    [ "$CONFIG_DIGEST" = "$EXPECTED_IMAGE_CONFIG_DIGEST" ] ||
+        fail "image config digest does not match the expected digest"
+fi
+if [ -n "$EXPECTED_IMAGE_QUALIFICATION_SHA256" ]; then
+    [ "$QUALIFICATION_SHA" = "$EXPECTED_IMAGE_QUALIFICATION_SHA256" ] ||
+        fail "image qualification hash does not match the expected hash"
+fi
 [ "$(sha256_file "$IMAGE_DIR/image.docker.tar")" = "$DOCKER_ARCHIVE_SHA" ] ||
     fail "Docker archive checksum does not match the qualification"
 

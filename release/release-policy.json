@@ -30,7 +30,6 @@
     "environment": "release-publication",
     "enableVariable": "RELEASE_PUBLICATION_ENABLED",
     "immutableConfirmedVariable": "IMMUTABLE_RELEASES_CONFIRMED",
-    "immutableAdminTokenSecret": "IMMUTABLE_RELEASES_ADMIN_TOKEN",
     "signedTagsVariable": "RELEASE_REQUIRE_SIGNED_TAG",
     "confirmValue": "PUBLISH"
   },

@@ -17,7 +17,6 @@ TAG=
 CONFIRM=
 DRY_RUN=no
 POLICY=$ROOT/release/release-policy.json
-GH_BIN=${GH_BIN:-gh}
 
 usage()
 {
@@ -62,11 +61,9 @@ done
 [ -n "$TAG" ] || { usage >&2; exit 2; }
 is_release_tag "$TAG" || fail "invalid release tag: $TAG"
 require_file "$POLICY"
-REPO=$(jq -r '.project.repository' "$POLICY")
 ENVIRONMENT=$(jq -r '.publication.environment' "$POLICY")
 ENABLE_VAR=$(jq -r '.publication.enableVariable' "$POLICY")
 IMMUTABLE_VAR=$(jq -r '.publication.immutableConfirmedVariable' "$POLICY")
-ADMIN_TOKEN_VAR=$(jq -r '.publication.immutableAdminTokenSecret' "$POLICY")
 EXPECTED_CONFIRM=$(jq -r '.publication.confirmValue' "$POLICY")
 
 if [ "$DRY_RUN" = "yes" ]; then
@@ -74,7 +71,7 @@ if [ "$DRY_RUN" = "yes" ]; then
     echo "Tag:                 $TAG"
     echo "Environment:         $ENVIRONMENT (must be protected before activation)"
     echo "Enable variable:     $ENABLE_VAR=true"
-    echo "Immutable proof:     $ADMIN_TOKEN_VAR query or $IMMUTABLE_VAR=true"
+    echo "Immutable proof:     $IMMUTABLE_VAR=true + post-publish check"
     echo "Confirmation:        $CONFIRM"
     exit 0
 fi
@@ -93,30 +90,11 @@ fi
     fail "confirmation value does not match the policy"
 
 if [ -n "${IMMUTABLE_RELEASES_ADMIN_TOKEN:-}" ]; then
-    errfile=$(mktemp)
-    set +e
-    response=$(GH_TOKEN=$IMMUTABLE_RELEASES_ADMIN_TOKEN "$GH_BIN" api \
-        -H 'X-GitHub-Api-Version: 2026-03-10' \
-        "repos/$REPO/immutable-releases" 2>"$errfile")
-    rc=$?
-    set -e
-    if [ "$rc" -ne 0 ]; then
-        if grep -q '404' "$errfile" 2>/dev/null; then
-            rm -f "$errfile"
-            fail "immutable releases are not enabled (404)"
-        fi
-        rm -f "$errfile"
-        fail "cannot prove immutable-release state (API error); refusing publication"
-    fi
-    rm -f "$errfile"
-    enabled=$(jq -r '.enabled // false' <<<"$response")
-    [ "$enabled" = "true" ] ||
-        fail "immutable releases are not enabled"
-else
-    [ "${IMMUTABLE_RELEASES_CONFIRMED:-}" = "true" ] ||
-        fail "set $IMMUTABLE_VAR=true only after enabling immutable releases"
-    note "immutable state is confirmed by the maintainer variable; post-publish verification is mandatory"
+    fail "administrative immutable-release tokens are not accepted in the publication path"
 fi
+[ "${IMMUTABLE_RELEASES_CONFIRMED:-}" = "true" ] ||
+    fail "set $IMMUTABLE_VAR=true only after enabling immutable releases"
+note "immutable state is confirmed by the maintainer variable; post-publish verification is mandatory"
 
 echo "Release gates: PASS"
 echo "Tag:           $TAG"
