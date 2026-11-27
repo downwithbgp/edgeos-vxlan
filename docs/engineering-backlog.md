@@ -425,11 +425,13 @@ suite. No hardware is required for the namespace-level test; hardware PMTUD rema
 ## ENG-IPV6-10: Modern iproute2 JSON diagnostic tolerance
 
 **Problem.** On the GitHub-hosted Ubuntu runner, `ip -j -d link show` emits a non-JSON diagnostic
-line (`info: Using default fan map value (33)`) on stdout. The real `src/vyatta-vxlan` reconciler
-pipes that output to `vyatta-vxlan-addr parse-live`; the parser correctly rejects it, so an
-otherwise valid interface cannot be re-read. The supported EdgeOS 3.0.1 iproute2 path does not
-exhibit this in the available evidence. This is a portability issue for the N6-R test environment
-and potentially for a future unsupported userland.
+line (`info: Using default fan map value (33)`) and, with the newer kernel exposing
+`IFLA_VXLAN_FAN_MAP` to iproute2 6.1.0, a malformed `fan-map ` token inside the JSON
+(`"remote6":"..."fan-map ,"local6":...`). The real `src/vyatta-vxlan` reconciler pipes that output
+to `vyatta-vxlan-addr parse-live`; the parser correctly rejects it, so an otherwise valid
+interface cannot be re-read. The supported EdgeOS 3.0.1 iproute2 path does not exhibit this in the
+available evidence. This is a portability issue for the N6-R test environment and potentially for
+a future unsupported userland.
 
 **Technical significance.** The product's supported platform is EdgeOS 3.0.1, not Ubuntu 24.04.
 The N6-R harness filters only the known diagnostic so it can exercise the real reconciler on the
@@ -454,4 +456,5 @@ matrix.
 * The supported EdgeOS behavior is demonstrated or explicitly stated.
 * The modern-iproute2 behavior is either tolerated by the product or documented as unsupported.
 * The N6-R shim is documented as a test-environment compatibility layer, not a product fix.
-* The test suite distinguishes a filtered diagnostic from a real reconciler failure.
+* The test suite distinguishes a normalized environment artifact from a real reconciler failure and
+  records an explicit skip when normalization occurs.

@@ -196,10 +196,11 @@ The following are test doubles and are **not** evidence for those product layers
 * `vyatta-vxlan-bridge` (a no-op for routed interfaces);
 * `vyatta-address` (a thin `ip addr add/del` wrapper);
 * `id`, `sudo` and `modprobe` wrappers;
-* a test-only `ip` shim that drops the known `info: Using default fan map value` diagnostic from
-  `ip -j -d` output on modern iproute2. All other `ip` calls and the real exit status are
-  preserved. This is an environment compatibility layer, **not** a product fix; the supported
-  EdgeOS behavior is unchanged. See ENG-IPV6-10.
+* a test-only `ip` shim that drops the known `info: Using default fan map value` diagnostic and
+  the malformed `fan-map ` token that newer kernels/iproute2 6.1.0 can insert into `ip -j -d`
+  JSON. All other `ip` calls and the real exit status are preserved. This is an environment
+  compatibility layer, **not** a product fix; the supported EdgeOS behavior is unchanged. See
+  ENG-IPV6-10.
 
 Consequently the N6-R result is classified **partial**: it exercises the VXLAN reconciler, not
 EdgeOS firewall dispatch, the vendor configuration engine, or bridge-port reconciliation. Those
@@ -348,8 +349,9 @@ delete arbitrary names by prefix. It does not flush host firewall rules, routes 
 9. **No production router access.** The maintainer's ER-X was not accessed, modified or used as a
    fixture for this work.
 10. **Modern iproute2 diagnostic.** The hosted runner's `ip -j -d` emits a non-JSON `info:` line
-    that the real reconciler parser rejects. The N6-R harness filters only that line and records a
-    skip; the supported EdgeOS path is unchanged. Tracked as
+    and a malformed `fan-map ` token that the real reconciler parser rejects. The N6-R harness
+    normalizes only those known environment artifacts and records a skip; the supported EdgeOS
+    path is unchanged. Tracked as
     [ENG-IPV6-10](engineering-backlog.md#eng-ipv6-10-modern-iproute2-json-diagnostic-tolerance).
 
 ## 9. Related documents

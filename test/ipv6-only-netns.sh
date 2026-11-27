@@ -1236,10 +1236,13 @@ if [ "\$1" = "-j" ] && [ "\$2" = "-d" ]; then
     "$ip_bin" "\$@" >"\$tmp"
     rc=\$?
     if [ "\$rc" -eq 0 ]; then
-        if grep -q '^info: ' "\$tmp"; then
-            echo "iproute2-info-diagnostic-filtered" >>"\${HARNESS_LOG:-/dev/null}"
+        if grep -q '^info: ' "\$tmp" || grep -q 'fan-map ' "\$tmp"; then
+            echo "iproute2-json-normalized" >>"\${HARNESS_LOG:-/dev/null}"
         fi
-        sed '/^info: /d' "\$tmp"
+        # Kernel 7.x exposes IFLA_VXLAN_FAN_MAP; iproute2 6.1.0 writes the
+        # literal text "fan-map " into the JSON instead of a comma-separated
+        # field.  Remove only that known artifact, plus the info diagnostic.
+        sed -e 's/fan-map //g' -e '/^info: /d' "\$tmp"
     fi
     rm -f "\$tmp"
     exit "\$rc"
@@ -1482,8 +1485,8 @@ test_reconciler_integration()
         bad "actual reconciler failed to delete vxlan900 on vtep-b"
     fi
 
-    if grep -q 'iproute2-info-diagnostic-filtered' "$HARNESS/log"/*.log 2>/dev/null; then
-        skip "reconciler integration: filtered a modern iproute2 JSON info diagnostic"
+    if grep -q 'iproute2-json-normalized' "$HARNESS/log"/*.log 2>/dev/null; then
+        skip "reconciler integration: normalized a modern iproute2 JSON diagnostic"
     fi
     cp "$HARNESS/log"/*.log "$EVIDENCE_DIR/" 2>/dev/null || true
     if [ "$FAIL" -gt "$fail_before" ]; then
@@ -1810,6 +1813,7 @@ payload = {
         "The generic bridge section is not ENG-IPV6-04 hardware qualification.",
         "The host and CI runner are dual-stack; Level D is not achieved.",
         "No PMTUD/ICMPv6 Packet Too Big test across a real routed path is included.",
+        "Modern iproute2/kernel combinations can add a non-JSON fan-map token; the N6-R harness normalizes only that known environment artifact.",
     ],
 }
 (evidence / "summary.json").write_text(
