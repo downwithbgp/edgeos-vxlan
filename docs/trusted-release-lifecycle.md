@@ -2,7 +2,7 @@
 
 Status: Phase III implementation on `ci/trusted-release-lifecycle`, draft PR
 #8, unmerged. Final branch head covered by this report:
-`d6a5d4f5b776fb8131d77d5d9d19a22bf15788b2`.
+`79a2ebc953d8ed94ed7f07f2ce5d0cd363181f0a` (Phase III closure).
 
 No production release, container-image publication, immutable-release
 activation, signing key, tag move, historical asset change or repository
@@ -267,7 +267,7 @@ Final branch head for every result below:
 | `test/unit-image-qualification.sh` | 8/8 | OCI index/manifest/config selection, tampered and missing blobs, ambiguity, traversal |
 | `test/unit-release-contracts.sh` | 39/39 | schema/semantic separation, candidate-ID substitution, artifact substitution, modified SBOM and predicate, wrong subject name and wrong subject bytes, malformed bundle and malformed SBOM, missing evidence, failed qualification check, duplicate artifacts, wrong workflow ref, historical reuse, canonical-to-legacy downgrade, the full publication-gate matrix, attestation identity semantics, concurrent candidates |
 | `test/unit-release-policy.sh` | 21/21 | policy surface equals the implemented set, every key has a consumer, gates enforce policy variable names, no key implies tag signing, removed controls stay removed, no empty-container keys |
-| `test/unit-release-version.sh` | 21/21 | publication eligibility: regression, Debian ordering, drafts/prereleases/bare tags not raising the floor, interrupted resume, reuse rejection, unparseable payloads failing closed |
+| `test/unit-release-version.sh` | 28/28 | publication eligibility: regression, Debian ordering, drafts/prereleases/bare tags not raising the floor, interrupted resume, reuse rejection, unparseable payloads failing closed |
 | `test/unit-release-image-publish.sh` | 30/30 | staged image publication: verified-before-promote, conflicting tag never replaced, lookup error fails closed, no manifest deletion, dry run inert |
 | `test/unit-release-publication.sh` | 9/9 | publication path against an isolated mocked API: expired artifact, digest mismatch, conflicting draft asset, unexpected draft assets, resume without mutation, interrupted draft completion, tampered tag-side `install.sh` |
 
@@ -318,6 +318,12 @@ After the security fixes, head `d6a5d4f` re-ran cleanly: trusted release
 <https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46050666946> and CI
 <https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46050667701>, all
 jobs successful.
+
+The closure head `79a2ebc` re-ran cleanly after the final review fixes:
+CI 46056267623 and 46056261503, Build environment 46056261708, and Trusted
+release 46056261496 (resolve, image qualification, candidate build and
+qualification dry-run all successful; publication, preflight and
+post-publication verification correctly skipped on a non-release push).
 
 ### 9.3 What remains unexercised
 
@@ -544,7 +550,13 @@ running.
 ## 15. Maintainer activation summary
 
 The trusted release infrastructure now works and fails safely in
-non-production. Nothing in this branch grants it operational authority. The
-branch remains a draft PR and must not be merged, tagged or released until the
-decisions in section 11 are made and the limitations in section 10 are accepted
-or closed.
+non-production. Nothing in this branch grants it operational authority.
+
+Phase III is closed as **implemented but not operationally activated**. The
+closure exercise removed the remaining ineffective controls, corrected the
+version-eligibility contract, separated post-publication verification into a
+read-only job, added a staged and digest-verified image publication boundary
+that remains disabled, recorded the maintainer decisions, and wrote the
+activation runbook. Publication and registry publication stay disabled, no
+release or tag was created or moved, and stages 4-6 of section 11.1 remain
+unexercised until activation.
