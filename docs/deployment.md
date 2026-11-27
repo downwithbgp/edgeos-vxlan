@@ -682,16 +682,21 @@ changing underlay addressing, firewall policy, or MTU.
 ## 9. IPv6-only deployability
 
 The VXLAN dataplane has been validated with IPv6-only addresses: IPv6 underlay with IPv6 overlay,
-and IPv6 underlay with a dual-stack overlay. This does not mean an entirely IPv4-free environment
-was validated: the hardware runs did not remove IPv4 from router management, the peer host, the
-test tooling or CI. "IPv6-only dataplane" therefore means the tunnel dataplane used only IPv6
-addresses.
+and IPv6 underlay with a dual-stack overlay. The isolated Level B namespace environment additionally
+removes usable external IPv4 connectivity from the workload and asserts that removal with negative
+controls; see [`ipv6-only-qualification.md`](ipv6-only-qualification.md). This still does not mean an
+entirely IPv4-free operational environment was validated: the hardware runs did not remove IPv4
+from router management, the peer host, the test tooling or CI, and the CI runner remains
+dual-stack. "IPv6-only dataplane" therefore means the tunnel dataplane used only IPv6 addresses;
+Level B is a property of the isolated workload environment.
 
 The per-area status, evidence classes and gaps are recorded in the
 [IPv6-only deployment matrix](address-family-support-matrix.md#4-ipv6-only-deployment-matrix).
-In summary: the dataplane is validated; router management, package acquisition and CI are not;
-diagnostics are available with the `ip -j -d` caveat. Complete IPv6-only installation, management
-and CI remain engineering gaps, not validated features.
+In summary: the dataplane is validated; the Level B isolated namespace environment is validated at
+the general-Linux evidence class; Level C (installation and management over IPv6 only) and Level D
+(an IPv6-only runner and CI control plane) are not validated. Diagnostics are available with the
+`ip -j -d` caveat. Complete IPv6-only installation, management and CI infrastructure remain
+engineering gaps, not validated features.
 
 ## 10. Verification and troubleshooting
 

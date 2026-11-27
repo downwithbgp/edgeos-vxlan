@@ -21,6 +21,14 @@ At this review, **no open documentation merge blocker remains**. The entries bel
 priorities or future opportunities. The documentation explicitly does not claim their acceptance
 criteria as met.
 
+## IPv4 dependency audit (2026-11-27)
+
+The repository-wide inventory is in [`ipv4-dependency-inventory.md`](ipv4-dependency-inventory.md).
+Its findings map to ENG-IPV6-01 (installer/acquisition), ENG-IPV6-02 (management), ENG-IPV6-03
+(CI/test execution), ENG-IPV6-06 (endpoint validation) and ENG-IPV6-08 (firewall state capture).
+The audit also fixed the incidental CI dependency on unrelated third-party APT repositories; it did
+not change product runtime semantics, installer behavior or release assets.
+
 ## Priority summary
 
 | ID | Item | Priority | Gates a current claim? |
@@ -32,6 +40,7 @@ criteria as met.
 | ENG-IPV6-05 | Remaining address-family hardware qualification | P0 | No, provided the matrix gaps remain explicit |
 | ENG-IPV6-06 | Consistent IPv4 and IPv6 endpoint validation | P1 | No, the asymmetry is documented |
 | ENG-IPV6-07 | External VTEP qualification over real routed networks | P1 | No, external acceptance is not claimed |
+| ENG-IPV6-08 | Family-selective firewall state capture | P1 | No, provided the current limitation remains stated |
 
 ---
 
@@ -108,13 +117,14 @@ monitoring endpoints; documented recovery procedure.
 
 ## ENG-IPV6-03: Native IPv6-only CI and test execution
 
-**Problem.** The CI workflow runs on GitHub-hosted Ubuntu and the current tests configure both
-address families on the same interfaces. There is no job that disables IPv4 and proves the toolchain,
-test suite and package build work in an IPv6-only environment.
+**Problem.** The CI workflow runs on GitHub-hosted Ubuntu and the original tests configure both
+address families on the same interfaces. There was no job that establishes an isolated IPv6-only
+workload and proves the dataplane, helpers and qualification assertions work without usable IPv4
+connectivity.
 
-**Technical significance.** Without an IPv4-free test environment, an implicit IPv4 dependency can
-enter the installer, scripts, test fixtures or package build. The dataplane tests alone do not prove
-an IPv6-only environment.
+**Technical significance.** Without an IPv4-free execution environment, an implicit IPv4 dependency
+can enter the test fixtures or CI wiring. The dataplane tests alone do not prove an IPv6-only
+environment, and a successful IPv6 ping is not sufficient evidence.
 
 **Proposed validation methodology.**
 
@@ -129,13 +139,59 @@ an IPv6-only environment.
 **Dependencies.** IPv6-only runner or network namespace; IPv6 package mirror or pre-baked image;
 GitHub Actions policy/approval; CI secrets must not be committed.
 
+### Current state (2026-11-27)
+
+**Level B implemented at the Linux network-namespace evidence class.**
+
+* `test/ipv6-only-netns.sh` builds a deterministic topology with two independent VTEPs, a routed
+  IPv6 underlay through a transit namespace, separate VNIs, host endpoints, explicit MTUs and
+  negative controls. See [`ipv6-only-qualification.md`](ipv6-only-qualification.md).
+* `test/lib/ipv6-isolation.sh` implements the Level B assertions: no global IPv4 addresses, no
+  IPv4 routes (including policy tables), default IPv4 rules only, empty `/proc/net/route`, IPv4
+  forwarding off, no NAT64/CLAT interfaces or routes, expected interface kinds, distinct namespace
+  boundaries, no host-side veth, and an `AF_INET` external-send negative control.
+* The suite includes an N6-R section that runs the actual `src/vyatta-vxlan` reconciler inside the
+  VTEP namespaces. The EdgeOS configuration API, firewall dispatch, bridge helper and
+  `vyatta-address` wrapper are test doubles; the kernel, `ip`, sysfs, MTU, address, recreation and
+  rollback paths are real. This is explicitly partial, not hardware or EdgeOS-engine evidence.
+* `.github/workflows/release-validation.yml` has an `ipv6-only` job on trusted events only. It
+  performs no package acquisition, requires the reconciler path, uploads evidence on every outcome,
+  and has an `always()` cleanup step. No `pull_request_target` and no additional permissions are
+  used.
+* `scripts/apt-update-ubuntu-only.sh` scopes CI dependency refresh to the distribution's own source
+  file. The dataplane job checks for tools before acquiring them; the IPv6-only job uses the runner
+  image.
+* The existing off-device suite remains green at 360 checks (11 build + 64 helper + 122 firewall +
+  93 templates + 70 mock). The new namespace suite is separate and reports its own pass/fail/skip
+  counts.
+
+**Level C and Level D are not achieved.** Installer/management over IPv6 only is deferred to
+ENG-IPV6-01/02. The CI runner and control plane remain dual-stack; GitHub Release endpoints returned
+no AAAA records in the audit environment. A GitHub-hosted dual-stack runner with IPv6-only
+namespaces is Level B, not Level D.
+
 **Acceptance criteria.**
 
-* An IPv6-only CI job runs on every relevant change and passes.
-* The job builds the packages and runs the 349-check suite plus the namespace test.
-* A deliberately introduced IPv4-only dependency fails the job with a clear error.
-* The existing dual-stack and IPv4 regression jobs remain in place.
-* The CI documentation states which checks run in which environment.
+* [x] An isolated IPv6-only workload job runs on trusted push, tag, release and manual-dispatch
+  events; pull requests are excluded because the job needs `CAP_NET_ADMIN`.
+* [x] The isolated environment is established reproducibly and the absence of usable external IPv4
+  connectivity is asserted.
+* [x] Negative controls demonstrate that the assertions detect an introduced IPv4 address, route
+  and policy route, and that overlay connectivity fails when the VXLAN dataplane is interrupted.
+* [x] IPv6 VXLAN dataplane functionality is demonstrated (ICMPv6, NDP, TCP, UDP, routed underlay,
+  encapsulation counters, MTU boundary, recreation).
+* [x] The degree to which project integration code is exercised is documented (N6-R partial).
+* [x] Existing dual-stack and IPv4 regression jobs remain in place.
+* [x] CI dependency acquisition is scoped and does not depend on unrelated third-party repositories
+  for the namespace jobs.
+* [ ] Level C: installer, package acquisition and management over IPv6 only. Deferred to
+  ENG-IPV6-01/02.
+* [ ] Level D: IPv6-only runner/control plane/source and artifact acquisition. Not achievable with
+  the current GitHub-hosted infrastructure.
+* [ ] Hardware qualification of the new isolation model. Not part of Level B; no production router
+  was accessed.
+
+**Evidence record:** [`ipv6-only-qualification-evidence.md`](ipv6-only-qualification-evidence.md).
 
 ---
 
@@ -261,3 +317,39 @@ coordination with the infrastructure owner.
 * Failure modes and limitations are documented.
 * No operational addresses, credentials or third-party identifiers are committed.
 * The docs distinguish external evidence from local VTEP and router-originated evidence.
+
+---
+
+## ENG-IPV6-08: Family-selective firewall state capture
+
+**Problem.** `src/vyatta-vxlan-firewall` `capture_state()` reads the IPv4 `iptables -S` table and
+the IPv6 `ip6tables -S` table for every capture, even when only an IPv6 attachment is configured.
+The supported EdgeOS platform supplies both tools, so this is not a current deployment failure. On
+a kernel or userland without IPv4 firewall tooling it would be a hard dependency for an IPv6-only
+attachment, and therefore for a fully IPv4-free lifecycle.
+
+**Technical significance.** The project claims IPv6-only dataplane operation, not IPv6-only
+firewall-tool availability. The distinction matters for Level C/D and for any future IPv4-less
+platform. The behavior is also a performance and failure-domain consideration: an unrelated missing
+IPv4 table can prevent an IPv6-only commit from capturing its pre-change state.
+
+**Proposed validation methodology.**
+
+1. Confirm whether the vendor engine requires both tables even for a single-family attachment.
+2. Capture only the families that have configured or live attachments, while preserving the
+   fail-closed semantics for an unreadable table that is actually required.
+3. Add unit and mock cases for IPv6-only, IPv4-only and dual-family configurations, including a
+   missing/unreadable table on the non-configured family.
+4. Re-run the helper, firewall, template, mock and namespace suites.
+5. Treat a behavior change as a product runtime change requiring separate approval and a release
+   note.
+
+**Dependencies.** Firewall helper ownership, vendor-engine confirmation, regression matrix.
+
+**Acceptance criteria.**
+
+* An IPv6-only attachment captures and restores state without requiring IPv4 firewall tooling, or
+  the residual requirement is documented and justified.
+* A missing table for an actually required family still fails closed.
+* Dual-family behavior is unchanged.
+* Tests cover the three family configurations and the failure modes.

@@ -476,7 +476,10 @@ and package build instructions are in
 │   ├── unit-firewall.sh
 │   ├── unit-templates.sh
 │   ├── mock.sh
-│   └── integration-netns.sh
+│   ├── integration-netns.sh
+│   ├── ipv6-only-netns.sh
+│   └── lib/
+│       └── ipv6-isolation.sh
 ├── upstream/
 │   └── libvyatta-cfg1/
 │       └── Interface.pm
@@ -494,8 +497,10 @@ Hardware qualification and off-device evidence are recorded by address-family co
 [support matrix](docs/address-family-support-matrix.md). In summary: RC5 was hardware-qualified on
 the ER-X for the native firewall matrix, lifecycle, `vxlan41913` migration and reboot; the
 v0.2.1/v0.2.2 line validated the IPv4 dataplane and the IPv6-underlay IPv4, IPv6 and dual-stack
-dataplane; the off-device suite currently has 349 checks. Independent external OCI probes remain
-deferred. The matrix distinguishes demonstrated, partially demonstrated and inferred behavior.
+dataplane; the off-device suite currently has 360 checks (11 build + 64 helper + 122 firewall +
+93 templates + 70 mock). An additional isolated IPv6-only namespace suite (Level B) exercises a
+routed IPv6 underlay, host-to-host TCP/UDP, NDP, MTU boundaries and explicit IPv4-isolation
+assertions; it is not hardware evidence. Independent external OCI probes remain deferred. The matrix distinguishes demonstrated, partially demonstrated and inferred behavior.
 
 ## Known limitations
 
@@ -509,7 +514,7 @@ Version `0.3.0` remains intentionally small in scope.
 * **`modify` and `ipv6-modify` (mangle) attachments are not exposed** for VXLAN in this release. `in`, `out` and `local` are the supported directions.
 * **`firewall out` follows native EdgeOS semantics**: it matches forwarded traffic leaving the interface, not traffic originated by the router.
 * **No continuous out-of-band firewall monitor.** If a dispatch is removed outside a configuration commit, the next VXLAN lifecycle commit detects and repairs it; there is no daemon watching the dataplane.
-* **IPv6-only management, package acquisition and CI are not validated.** The VXLAN dataplane can run with IPv6 only; the rest of the operational stack must be assessed separately.
+* **IPv6-only management, package acquisition and CI infrastructure are not validated.** The VXLAN dataplane and the isolated Level B namespace environment can run with IPv6 only. Level C (installation and management over IPv6 only) and Level D (an IPv6-only runner and CI control plane) remain gaps; see [`docs/ipv6-only-qualification.md`](docs/ipv6-only-qualification.md).
 * **Bridged VXLAN dataplane over an IPv6 underlay is not fully validated.** Bridge membership, path cost and priority are verified; packets over the bridged tunnel are not part of the published hardware record.
 * **Hardware qualification is complete for the RC5 scope, not for every combination.** The RC5 qualification covers the isolated firewall matrix, lifecycle, the `vxlan41913` migration and reboot. Independent external OCI probes and the combinations listed as gaps in the [support matrix](docs/address-family-support-matrix.md) remain unverified.
 * **The vendor `ip -d` human output is defective** on EdgeOS 3.0.1; use `ip -j -d`. The reconciler does.

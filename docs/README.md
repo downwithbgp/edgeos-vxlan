@@ -21,6 +21,9 @@ deployments, not because IPv4 is unsupported.
 | [`kernel-provenance.md`](kernel-provenance.md) | Kernel module provenance, CVE-2022-50405 backport, compatibility evidence, package build |
 | [`address-family-support-matrix.md`](address-family-support-matrix.md) | Implementation, inferred, automated, simulated, namespace and hardware evidence by combination |
 | [`engineering-backlog.md`](engineering-backlog.md) | Repository-local engineering proposals and acceptance criteria; no remote issues created |
+| [`ipv6-only-qualification.md`](ipv6-only-qualification.md) | Level A–D qualification model, Level B isolation contract, threat model and CI integration |
+| [`ipv4-dependency-inventory.md`](ipv4-dependency-inventory.md) | Repository-wide IPv4 dependency audit and external service limitations |
+| [`ipv6-only-qualification-evidence.md`](ipv6-only-qualification-evidence.md) | Validation record for the Level B suite and the current CI status |
 
 ## Current release records
 
@@ -64,6 +67,9 @@ The repository uses these labels consistently:
 * **Automated off-device** — the `test/` suites; no router required.
 * **Simulated EdgeOS** — the vendor configuration engine under qemu, or the emulated-engine records.
 * **Linux network namespace** — general-Linux dataplane semantics; not EdgeOS validation.
+* **N6** — the isolated IPv6-only Linux namespace topology; no usable external IPv4 connectivity
+  in the workload. **N6-R** is the same topology with the actual reconciler and test doubles for the
+  EdgeOS configuration API and firewall dispatch. Neither is hardware evidence.
 * **Physical hardware** — demonstrated on the supported ER-X; the record is cited.
 * **Inferred** — expected from Linux VXLAN behaviour or the implementation, but not directly
   demonstrated on the supported platform. It is not a hardware result.
@@ -83,4 +89,5 @@ The authoritative combination-by-combination view is
    support matrix for validation status.
 4. Use `2001:db8::/32` for IPv6 examples and RFC 5737 prefixes for IPv4 examples.
 5. Do not claim a combination, IPv6-only environment, or external probe result without citing the
-   evidence class.
+   evidence class. State the Level A–D boundary when discussing "IPv6-only"; a dual-stack runner
+   with IPv6-only namespaces is Level B, not Level D.

@@ -172,8 +172,11 @@ Big messages; see [`deployment.md`](deployment.md#8-ipv6-operational-considerati
 * Hardware VXLAN offload.
 * Bridged Layer 2 firewall enforcement; bridged VXLAN interfaces reject firewall attachments.
 * Authenticated or encrypted VXLAN. Use IPsec or another authenticated transport where required.
-* IPv6-only router management, package acquisition, or CI as validated project capabilities. The
-  dataplane can be IPv6-only; the rest is recorded as an engineering gap, not as a supported claim.
+* IPv6-only router management or package acquisition as validated project capabilities. The
+  dataplane can be IPv6-only, and the isolated Level B namespace environment is qualified; those
+  do not make installation, management or an IPv6-only CI runner/control plane (Level D)
+  validated capabilities. The distinction is defined in
+  [`ipv6-only-qualification.md`](ipv6-only-qualification.md).
 * Dynamic underlay addressing (SLAAC/DHCPv6) at boot. Static endpoints are the validated model.
 
 ## 8. Platform constraints
@@ -231,5 +234,7 @@ and tests actually demonstrate.
   design assumption.
 * **Dual-stack** — an overlay carrying both IPv4 and IPv6 addressing; it does not describe the
   underlay.
-* **IPv6-only** — a deployment with no IPv4 transport or overlay dependency. The dataplane has been
-  validated in this mode; management, acquisition, and CI are assessed separately.
+* **IPv6-only** — a deployment with no IPv4 transport or overlay dependency. The dataplane and the
+  isolated Level B namespace environment have been validated in this mode; installation,
+  management and an IPv6-only CI runner/control plane are assessed separately. See
+  [`ipv6-only-qualification.md`](ipv6-only-qualification.md) for the Level A–D model.
