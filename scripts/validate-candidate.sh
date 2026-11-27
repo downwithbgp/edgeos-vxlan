@@ -89,6 +89,9 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$DIR" ] || { usage >&2; exit 2; }
+if [ "$PUBLISHED_ASSETS" = "yes" ] && [ "$RELEASE" != "yes" ]; then
+    fail "--published-assets is only valid with --release"
+fi
 require_cmd jq sha256sum find sort awk sed cmp
 require_dir "$DIR"
 MANIFEST=$DIR/release-candidate.json
@@ -330,6 +333,9 @@ printf '%s' "$RUN_ATTEMPT" | grep -Eq '^[0-9]+$' ||
   "qualification/ipv6-only" ] ||
     fail "IPv6 qualification evidence directory is not qualification/ipv6-only"
 IPV6_EVIDENCE=$DIR/qualification/ipv6-only
+if [ "$PUBLISHED_ASSETS" = "yes" ] && [ -e "$IPV6_EVIDENCE" ]; then
+    fail "--published-assets is not valid when the raw evidence directory is present"
+fi
 if [ "$PUBLISHED_ASSETS" = "no" ]; then
     require_dir "$IPV6_EVIDENCE"
     require_file "$IPV6_EVIDENCE/summary.json"

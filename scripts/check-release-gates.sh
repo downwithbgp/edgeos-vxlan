@@ -118,7 +118,8 @@ note "immutable state is confirmed by the maintainer variable; post-publish veri
 [ -n "$CANDIDATE_DIR" ] ||
     fail "publication requires --candidate-dir; the gate re-validates qualification evidence"
 require_dir "$CANDIDATE_DIR"
-"$ROOT/scripts/validate-candidate.sh" --candidate-dir "$CANDIDATE_DIR" >/dev/null ||
+"$ROOT/scripts/validate-candidate.sh" --candidate-dir "$CANDIDATE_DIR" \
+    --release >/dev/null ||
     fail "candidate does not satisfy the publication qualification contract"
 note "candidate validation (including IPv6-only qualification) passed"
 

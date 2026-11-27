@@ -106,6 +106,14 @@ no latest-successful-run lookup. A rerun produces a new attempt and therefore ne
 different run identity; the gate compares the attempt, so evidence from an earlier attempt is
 rejected even when the package is unchanged.
 
+**Trust limitation (explicit).** The qualification job both executes the candidate `.deb` as root
+and writes/validates/uploads its own summary. A package that tampers with the runner could
+therefore fabricate a "passed" summary. Finalize's independent binding prevents replay and
+substitution across runs, candidates and artifacts, but it cannot prove a summary written by the
+job that executed the package. The job holds no OIDC token, no secret and no publication
+credential, and a source-level attacker already controls the workflow, so this does not widen the
+release trust boundary; it is recorded here so the guarantee is not overstated.
+
 ## 4. Gate semantics
 
 - `validate-candidate.sh` rejects: missing `build.identity`; a build identity that does not

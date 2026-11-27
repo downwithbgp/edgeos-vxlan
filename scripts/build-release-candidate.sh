@@ -291,6 +291,7 @@ finalize_candidate()
     # Each retained evidence file must hash to the summary's recorded value.
     while IFS=$'\t' read -r check_id file sha; do
         [ -n "$file" ] || fail "check $check_id has no evidence file"
+        validate_relative_path "$file"
         require_file "$EVIDENCE_DIR/$file"
         [ "$(sha256_file "$EVIDENCE_DIR/$file")" = "$sha" ] ||
             fail "retained evidence for $check_id does not match the summary"
