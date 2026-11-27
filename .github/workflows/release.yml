@@ -616,12 +616,54 @@ jobs:
             --expected-tag-commit "$TAG_COMMIT" \
             --expected-source-commit "$SOURCE_COMMIT" \
             --expected-workflow-commit "$WORKFLOW_COMMIT"
-      - name: Explicitly verify the published release
+
+  post-publish-verify:
+    name: Post-publication verification
+    # Runs only after a successful publication, in its own job with no write
+    # permission, so a publication failure and a verification failure are
+    # independently visible and a parser bug in the verification tooling cannot
+    # reach a contents: write token.
+    needs: [resolve, preflight, publish]
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.mode == 'promote' &&
+      !inputs.dry_run &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.trusted_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Check out tagged source as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.release_tag }}
+          path: tagged-source
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install pinned release tools
+        run: ./scripts/install-supply-chain-tools.sh "$RUNNER_TEMP/release-tools"
+      - name: Add release tools to PATH
+        run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+      - name: Install pinned schema validator
+        run: ./scripts/install-schema-validator.sh
+      - name: Verify published release
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           TAG_INPUT: ${{ inputs.release_tag }}
+          EXPECTED_TAG_COMMIT: ${{ needs.preflight.outputs.tag_commit }}
         run: |
+          set -eu
+          actual=$(git -C tagged-source rev-parse "$TAG_INPUT^{commit}")
+          [ "$actual" = "$EXPECTED_TAG_COMMIT" ] ||
+            { echo "ERROR: tag $TAG_INPUT moved after preflight" >&2; exit 1; }
           mkdir -p published
           gh release download "$TAG_INPUT" --repo "$REPO" --dir published
           ./scripts/verify-release.sh \

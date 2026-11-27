@@ -61,6 +61,17 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      # Trusted-input note: `gh` (the attestation verifier) and `syft` come
+      # from the pinned release-tools set below. The remaining tools are
+      # deliberately platform-provided and are treated as trusted runner
+      # inputs: git, jq, dpkg/dpkg-deb, readelf, modinfo, python3, tar, gzip,
+      # coreutils (sha256sum, stat, cmp, find, sort, awk, sed). They are listed
+      # here so the trust assumption is explicit rather than implied.
+      - name: Install pinned release tools
+        run: ./scripts/install-supply-chain-tools.sh "$RUNNER_TEMP/release-tools"
+      - name: Add release tools to PATH
+        run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+
       - name: Install pinned schema validator
         run: ./scripts/install-schema-validator.sh
 

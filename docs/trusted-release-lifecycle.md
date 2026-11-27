@@ -189,6 +189,16 @@ bytes only.
 | `verify-release.yml` | reusable, dispatch, `release: published` | `contents: read`, `attestations: read` | Independent downloaded-release verification |
 | `security-audit.yml` | schedule, dispatch | `contents: read` | Online zizmor and actionlint |
 
+Post-publication verification runs as its own `post-publish-verify` job with
+`contents: read` and `attestations: read`, after a successful `publish`. It
+therefore cannot reach a write token, and a publication failure and a
+verification failure are reported independently. Both this job and the
+standalone `verify-release.yml` install the pinned `gh`/`syft` release-tools
+set; the remaining tools (`git`, `jq`, `dpkg`/`dpkg-deb`, `readelf`,
+`modinfo`, `python3`, `tar`, `gzip`, coreutils) are deliberately
+platform-provided and are listed explicitly in `verify-release.yml` so that
+trust assumption is stated rather than implied.
+
 PR jobs are read-only. The new-workflow dispatch limitation is documented:
 before this branch is merged, the branch-push qualification trigger is the
 entry point; manual dispatch becomes available once the workflow exists on
