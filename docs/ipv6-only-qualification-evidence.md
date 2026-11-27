@@ -63,7 +63,8 @@ docker run --rm --privileged \
   ipv6-qual:local bash test/ipv6-only-netns.sh
 ```
 
-Result: **exit 0**, `pass=80 fail=0 skip=1 capture=executed reconciler=executed`.
+Result: **exit 0**, `pass=80 fail=0 skip=1 capture=executed reconciler=executed`. A final run at
+the final harness commit `3fba5d6` also returned 80/0/1 with capture and reconciler executed.
 
 The single skip is the host-global-IPv6 escape control: the container had no global IPv6 address
 to use as a destination. The host-IPv4 escape control ran and passed; the namespace-boundary and
