@@ -214,22 +214,24 @@ EdgeOS bridged-dataplane qualification.
 
 ## 5. CI integration
 
-The new job is `ipv6-only` in `.github/workflows/release-validation.yml`, named
-**IPv6-only qualification**.
+The new job is `ipv6-only` in `.github/workflows/ci.yml`, named **IPv6-only qualification**. It
+depends on the `package` job, fetches the same-run package artifact by immutable ID/digest, and
+runs the N6-R-P suite against the exact integration `.deb`. It is not a release-candidate or
+publication job.
 
 | Property | Value |
 |---|---|
-| Events | `push` to `main` and `ci/**`, tags `v*`, `release: published`, `workflow_dispatch` |
+| Events | `push` to `main` and `ci/**`, tags `v*`; not `pull_request` |
 | Pull requests | **Not executed.** The job is guarded by `if: github.event_name != 'pull_request'`, like the existing privileged namespace job. |
 | Runner | `ubuntu-24.04`, GitHub-hosted |
 | Permissions | Workflow-level `contents: read`; no additional permissions are granted |
-| Privileges | `sudo` for network namespaces and `modprobe`; no repository secrets |
+| Privileges | `sudo` for network namespaces and `modprobe`; `contents: read`, `actions: read`; no repository secrets |
 | Dependency preparation | Tool-presence check; `iproute2`, `iputils-ping`, Python 3 and coreutils come from the runner image. If tcpdump is absent, a separate step refreshes only the distribution APT source and installs tcpdump; no package is installed inside the isolated workload. |
 | Authoritative capture | `REQUIRE_CAPTURE=1`; tcpdump availability, startup, completion and analysis are required. An absent or failed capture fails the job. Raw captures and `analysis.txt` are uploaded. |
 | VXLAN modules | Explicit `modprobe vxlan udp_tunnel ip6_udp_tunnel`; a failure fails the job. |
 | Isolation assertions | Inside `test/ipv6-only-netns.sh` before and after functional traffic. |
 | Dataplane | Same script; IPv6 ICMP/TCP/UDP, NDP, MTU, recreation, capture when available. |
-| Evidence | `$RUNNER_TEMP/ipv6-only-evidence` uploaded as `ipv6-only-qualification-evidence` on every outcome. |
+| Evidence | Same-run package artifact fetched by ID/digest; `$RUNNER_TEMP/ipv6-only-evidence` uploaded as `ipv6-only-qualification-evidence` on every outcome. |
 | Cleanup | The script's `EXIT`/`INT`/`TERM` trap, plus an `always()` cleanup step that reconstructs the exact namespace/link names from the recorded suffix. |
 | Required reconciler | `REQUIRE_RECONCILER=1`; a missing Perl `JSON::PP` or harness failure fails the job instead of silently skipping the integration path. |
 | Packet capture | Authoritative CI requires capture (`REQUIRE_CAPTURE=1`). The script verifies tcpdump startup, capture completion, non-empty captures and the expected VXLAN/IPv6/TCP/UDP/ND counts, and rejects IPv4/ARP at both capture points. Local developer runs may leave capture optional. |
@@ -372,7 +374,8 @@ delete arbitrary names by prefix. It does not flush host firewall rules, routes 
 * [`engineering-backlog.md`](engineering-backlog.md) — ENG-IPV6-03 status and remaining work.
 * [`ipv6-only-qualification-evidence.md`](ipv6-only-qualification-evidence.md) — exact commands,
   environment, counts and limitations from the validation run.
-* [`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md) — proposed
-  integration contract with the trusted release lifecycle (PR #8).
+* [`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md) — actual
+  integration into the merged trusted release lifecycle, plus the proposed candidate-manifest
+  contract.
 * [`architecture.md`](architecture.md) — layer model and endpoint rules.
 * [`deployment.md`](deployment.md) — deployment scenarios and operational guidance.

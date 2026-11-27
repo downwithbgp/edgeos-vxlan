@@ -44,7 +44,7 @@ not a mock. It is **not** hosted-CI evidence and not hardware evidence.
 |---|---:|---|
 | `bash test/run.sh` | 0 | **376 checks passed**: 11 build + 64 helper + 122 firewall + 93 templates + 70 mock + 16 qualification-evidence contract |
 | `shellcheck install.sh scripts/*.sh test/*.sh test/lib/*.sh debian/*.preinst debian/*.postinst debian/*.prerm debian/*.postrm src/vyatta-vxlan src/vyatta-vxlan-bridge src/vyatta-vxlan-firewall` | 0 | No findings |
-| `actionlint .github/workflows/release-validation.yml` | 0 | No findings |
+| `actionlint .github/workflows/*.yml` | 0 | No findings |
 | `zizmor --offline --collect all --format plain .github` | 0 | No findings |
 
 The off-device count is 376, not the historical 349. The 11 `unit-build` checks were added by the
@@ -196,8 +196,8 @@ JSON. `test/unit-ipv6-evidence.sh` runs **16** positive/negative fixtures coveri
 * modified evidence, unrelated workflow run, unexpected skip, missing required check;
 * missing candidate-package execution, unreported workaround, malformed JSON.
 
-This validator is integration-ready but is **not yet called by PR #8's candidate builder or release
-gate**. See [`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md).
+This validator is called by the `ci.yml` IPv6-only job against the same-run package. It is not yet
+called by the Phase III candidate builder or publication gate. See [`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md).
 
 ## 5. Package and reproducibility validation
 
@@ -304,7 +304,7 @@ Findings fixed before this record was finalised:
 * preflight covers the tools the suite actually invokes;
 * duplicate TCP/UDP assertions during capture are suppressed;
 * the rollback failure reason is asserted;
-* the support-matrix CI row is marked locally validated/hosted CI pending;
+* the support-matrix CI row reflects the hosted trusted run;
 * the open toolchain-dependency acceptance criterion is restored in the backlog.
 
 The security review found no blocking issue. It noted the existing `push: ci/**` privileged-job
@@ -345,9 +345,9 @@ The new job is guarded by `if: github.event_name != 'pull_request'`. It grants n
 does not use `pull_request_target`, performs no package acquisition inside the isolated workload,
 requires the reconciler path and packet capture, uploads evidence on every outcome, and has an
 `always()` cleanup step. A dual-stack GitHub-hosted runner that creates IPv6-only namespaces is
-Level B, not Level D. The job currently lives in `release-validation.yml`; PR #8 deletes that file
-and splits CI into `ci.yml`/`release.yml`. The proposed porting and candidate-manifest contract is
-in [`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md).
+Level B, not Level D. The job lives in `ci.yml`, depends on the `package` job, and fetches the
+same-run package by immutable ID/digest. The candidate-manifest/publication-gate contract remains
+future work in [`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md).
 
 ## 7. Qualification levels
 
@@ -386,8 +386,8 @@ checksums. The new APT helper is test/CI-only and does not alter the package pay
    as such and is not hosted CI.
 9. Hosted CI has run and passed for this branch (run 46041828240 at the final accepted code commit);
    the candidate-bound port into PR #8's `ci.yml`/release gate is still pending.
-10. The current `ipv6-only` job lives in the workflow that PR #8 deletes; porting to `ci.yml` and
-    wiring the candidate manifest/release gate is a coordination item, not yet implemented.
+10. The `ipv6-only` job is in `ci.yml`; wiring its evidence into the release candidate manifest and
+    publication gate is a separate Phase III change, not yet implemented.
 11. Candidate-package execution is local integration-ready evidence; it is not yet part of the
     hosted candidate build or release gate.
 12. `lintian` passed locally in a container and in the hosted package job.

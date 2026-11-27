@@ -159,10 +159,11 @@ GitHub Actions policy/approval; CI secrets must not be committed.
   VTEP namespaces. The EdgeOS configuration API, firewall dispatch, bridge helper and
   `vyatta-address` wrapper are test doubles; the kernel, `ip`, sysfs, MTU, address, recreation and
   rollback paths are real. This is explicitly partial, not hardware or EdgeOS-engine evidence.
-* `.github/workflows/release-validation.yml` has an `ipv6-only` job on trusted events only. It
-  performs no package acquisition, requires the reconciler path, uploads evidence on every outcome,
-  and has an `always()` cleanup step. No `pull_request_target` and no additional permissions are
-  used.
+* `.github/workflows/ci.yml` has an `ipv6-only` job on trusted events only. It depends on the
+  `package` job, fetches the same-run package artifact by immutable ID/digest, runs N6-R-P against
+  the exact integration `.deb`, validates the candidate-bound summary, uploads evidence on every
+  outcome, and has an `always()` cleanup step. The job grants only `contents: read` and
+  `actions: read`; no `pull_request_target` or publication path is used.
 * `scripts/apt-update-ubuntu-only.sh` scopes CI dependency refresh to the distribution's own source
   file. The dataplane job checks for tools before acquiring them; the IPv6-only job uses the runner
   image and installs only tcpdump when capture tooling is absent.
@@ -213,12 +214,14 @@ namespaces is Level B, not Level D.
 * [x] `scripts/validate-ipv6-qualification-evidence.py` and 16 positive/negative fixtures validate
   candidate-bound identity, evidence hashes, required checks, permitted skips/workarounds and
   malformed or substituted evidence.
-* [ ] The job is ported into the trusted-release-lifecycle `ci.yml` and wired into the candidate
-  manifest/release gate. This is a coordination item with PR #8; see
+* [x] The job is ported into the trusted-release-lifecycle `ci.yml` and binds its evidence to the
+  same-run package artifact, source commit, workflow identity and packaged reconciler hashes.
+* [ ] The evidence is wired into the release candidate manifest and publication gate. This remains
+  a separate focused Phase III change; see
   [`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md).
 * [ ] The candidate builder supplies the validated IPv6 evidence before candidate ID/attestation;
   `validate-candidate.sh`/`check-release-gates.sh` reject missing/failed/unpermitted IPv6 checks.
-  A candidate-gate fixture suite is pending the PR #8 merge.
+  A candidate-gate fixture suite is pending the separate Phase III change.
 * [x] The hosted run itself exposed a modern-iproute2 JSON diagnostic (`info: Using default fan map
   value`) on stdout. The N6-R harness filters only that non-JSON line and records a skip; the real
   reconciler, kernel and exit statuses are unchanged. This is a test-environment compatibility shim,

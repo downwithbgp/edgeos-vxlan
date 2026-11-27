@@ -132,10 +132,12 @@ The v0.3.0 reconciliation is recorded in
 * A test that could not execute must be reported as skipped/unsupported/blocked, not passed. A
   required capture that fails is a failure, not a skip.
 * Keep development, qualification and publication separate. A qualification job does not publish;
-  publication gates consume qualification evidence. If the trusted release lifecycle (PR #8)
-  replaces `release-validation.yml`, port the `ipv6-only` job into `ci.yml` and wire
-  `summary.json` into the candidate manifest; do not merge a change that silently drops the job.
-  See [`docs/ipv6-only-qualification-ci-integration.md`](docs/ipv6-only-qualification-ci-integration.md).
+  publication gates consume qualification evidence. The trusted release lifecycle owns `ci.yml`
+  and `release.yml`; the `ipv6-only` job lives in `ci.yml` and qualifies the same-run package
+  artifact by ID/digest. Its `summary.json` is not yet wired into the release candidate manifest
+  or publication gate; that is a separate focused change. Do not modify publication policy as part
+  of a qualification change. See
+  [`docs/ipv6-only-qualification-ci-integration.md`](docs/ipv6-only-qualification-ci-integration.md).
 
 ## 6. Production infrastructure safety
 

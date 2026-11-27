@@ -72,7 +72,7 @@ The N6 suite establishes the workload environment without usable external IPv4 c
 [`ipv6-only-qualification.md`](ipv6-only-qualification.md). The N6-R row is the actual reconciler
 path with the EdgeOS configuration API and firewall dispatch replaced by test doubles. The
 authoritative CI job requires packet capture; local developer runs may leave it optional. The
-proposed candidate-manifest integration is in
+future candidate-manifest integration is in
 [`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md).
 
 | Area | N6 | N6-R | Claim |
@@ -126,7 +126,7 @@ separate policy on the physical/VLAN interface and must use the family of the ou
 | VXLAN dataplane with IPv6 underlay and IPv6 overlay | yes | yes | partial | yes | Validated with static endpoints; N6 adds isolated IPv6-only namespace evidence |
 | Isolated IPv6-only namespace dataplane (Level B) | yes | yes (N6) | — | — | Level B achieved at N6; not hardware |
 | Actual reconciler in the isolated topology (N6-R) | yes | partial (N6-R) | — | — | Reconciler lifecycle, endpoint rejection, and reconciler-created TCP/UDP exercised; config API/firewall/bridge are test doubles |
-| Candidate-packaged userspace (N6-R-P) | yes | partial (N6-R-P; local) | — | — | Exact integration `.deb` hash-checked, extracted and exercised; hosted candidate wiring pending PR #8 |
+| Candidate-packaged userspace (N6-R-P) | yes | yes (N6-R-P, same-run CI package) | — | — | Exact integration `.deb` hash-checked, extracted and exercised in `ci.yml`; release candidate manifest/gate wiring remains future |
 | IPv6-only CI runner and control plane (Level D) | — | — | — | — | Not achieved; GitHub-hosted runner and control plane are dual-stack |
 | IPv6-only CI job with isolated namespaces | yes | yes (N6; hosted run 46044226321) | — | — | Hosted trusted run 46044226321 passed with 113/0/2; capture and reconciler executed. CI requires packet capture and installs tcpdump separately if absent. |
 | VXLAN dataplane with IPv6 underlay and IPv4 overlay | yes | yes | — | yes | Validated on RC1/RC2 |

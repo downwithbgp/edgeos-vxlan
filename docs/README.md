@@ -21,6 +21,8 @@ deployments, not because IPv4 is unsupported.
 | [`kernel-provenance.md`](kernel-provenance.md) | Kernel module provenance, CVE-2022-50405 backport, compatibility evidence, package build |
 | [`address-family-support-matrix.md`](address-family-support-matrix.md) | Implementation, inferred, automated, simulated, namespace and hardware evidence by combination |
 | [`engineering-backlog.md`](engineering-backlog.md) | Repository-local engineering proposals and acceptance criteria; no remote issues created |
+| [`trusted-release-lifecycle.md`](trusted-release-lifecycle.md) | Phase III trusted release lifecycle: architecture, candidate identity, provenance/SBOM, publication authorization and verification |
+| [`release-activation-runbook.md`](release-activation-runbook.md) | Activation procedure: unverifiable settings, enablement variables, sequence, emergency disable, recovery and first-release acceptance criteria |
 | [`ipv6-only-qualification.md`](ipv6-only-qualification.md) | Level A–D qualification model, Level B isolation contract, threat model and CI integration |
 | [`ipv4-dependency-inventory.md`](ipv4-dependency-inventory.md) | Repository-wide IPv4 dependency audit and external service limitations |
 | [`ipv6-only-qualification-evidence.md`](ipv6-only-qualification-evidence.md) | Validation record for the Level B suite, package-integrity reconciliation and the current CI status |

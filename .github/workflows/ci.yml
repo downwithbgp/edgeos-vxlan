@@ -1,0 +1,315 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'ci/**'
+    tags:
+      - 'v*'
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: Static analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install pinned analysis tools
+        run: ./scripts/install-ci-tools.sh "$RUNNER_TEMP/ci-tools"
+      - name: Add analysis tools to PATH
+        run: printf '%s\n' "$RUNNER_TEMP/ci-tools" >> "$GITHUB_PATH"
+      - name: Validate workflow definitions
+        run: actionlint -color
+      - name: Audit workflow security offline
+        run: zizmor --offline --collect all --format plain .github
+      - name: Check shell scripts
+        run: shellcheck -x -e SC1091,SC2015 install.sh scripts/*.sh test/*.sh debian/*.preinst debian/*.postinst debian/*.prerm debian/*.postrm src/vyatta-vxlan src/vyatta-vxlan-bridge src/vyatta-vxlan-firewall
+      - name: Check Perl syntax
+        run: perl -c src/vyatta-vxlan-addr >/dev/null
+      - name: Release contract tests
+        run: |
+          ./scripts/install-schema-validator.sh
+          bash test/unit-release-primitives.sh
+          bash test/unit-image-qualification.sh
+          bash test/unit-artifact-archive.sh
+          bash test/unit-candidate-schema.sh
+          bash test/unit-release-contracts.sh
+          bash test/unit-release-publication.sh
+          bash test/unit-release-policy.sh
+          bash test/unit-release-version.sh
+          bash test/unit-release-image-publish.sh
+
+  package:
+    name: Build and validate packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Check changed lines for whitespace errors
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: ./scripts/check-whitespace.sh
+      - name: Install build and validation dependencies
+        run: |
+          ./scripts/apt-update-ubuntu-only.sh
+          sudo apt-get install -y --no-install-recommends \
+            build-essential debhelper dpkg-dev fakeroot kmod lintian python3
+      - name: Run off-device test suite
+        run: bash test/run.sh
+      - name: Build Debian packages (canonical)
+        run: ./scripts/build-reproducible.sh --output-dir ci-artifacts
+      - name: Capture build environment
+        run: ./scripts/capture-build-environment.sh ci-artifacts/provenance/build-environment.txt
+      - name: Validate build artifacts
+        run: ./scripts/validate-release.sh ci-artifacts
+      - name: Validate Debian build metadata
+        run: python3 scripts/validate-build-metadata.py ci-artifacts .
+      - name: Run negative artifact-validation tests
+        run: bash test/validate-release-negative.sh ci-artifacts
+      - name: Run lintian
+        run: |
+          VERSION=$(dpkg-parsechangelog -S Version)
+          lintian --suppress-tags-from-file .github/lintian-suppressions.txt \
+            --fail-on error --tag-display-limit 0 \
+            "ci-artifacts/edgeos-vxlan-kmod_${VERSION}_mipsel.deb" \
+            "ci-artifacts/edgeos-vxlan_${VERSION}_all.deb"
+      - name: Upload non-release packages and provenance
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: edgeos-vxlan-ci-packages-nonrelease
+          path: ci-artifacts/
+          if-no-files-found: error
+          compression-level: 0
+
+  reproducibility:
+    name: Reproducibility verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install build dependencies
+        run: |
+          ./scripts/apt-update-ubuntu-only.sh
+          sudo apt-get install -y --no-install-recommends \
+            build-essential debhelper dpkg-dev fakeroot
+      - name: Build twice and compare
+        run: ./scripts/verify-reproducible-build.sh --source-rev HEAD --work-dir "$RUNNER_TEMP/reproducibility"
+      - name: Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reproducibility-diagnostics
+          path: ${{ runner.temp }}/reproducibility
+          if-no-files-found: warn
+          compression-level: 0
+
+  published-fixtures:
+    name: Published-release fixtures
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify published-release fixtures
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash test/published-release-fixtures.sh
+      - name: Verify historical release classification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag=v0.3.0
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/assets" "$tmp/tagged"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$tmp/assets"
+          git archive "$tag" | tar -xf - -C "$tmp/tagged"
+          ./scripts/verify-release.sh --asset-dir "$tmp/assets" --source-dir "$tmp/tagged" --tag "$tag"
+
+  dataplane:
+    name: Network-namespace dataplane
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install dataplane test tools
+        run: |
+          ./scripts/apt-update-ubuntu-only.sh
+          sudo apt-get install -y --no-install-recommends \
+            iproute2 iptables iputils-ping python3
+      - name: Enable VXLAN modules
+        run: sudo modprobe vxlan udp_tunnel ip6_udp_tunnel || true
+      - name: Linux network-namespace dataplane test
+        env:
+          REQUIRE_NETNS_TEST: "1"
+        run: sudo -E bash test/integration-netns.sh
+
+  # Level B candidate-bound qualification against the package built by the
+  # package job in this same workflow run.  The artifact is fetched by
+  # immutable ID/digest and verified against the run, head SHA and workflow
+  # path before extraction.  This is not a release candidate and does not
+  # authorize publication.
+  ipv6-only:
+    name: IPv6-only qualification
+    needs: package
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify IPv6-only test tooling
+        run: |
+          missing=0
+          for cmd in ip ping python3 timeout awk sed grep gh jq; do
+            if ! command -v "$cmd" >/dev/null 2>&1; then
+              echo "ERROR: required tool missing from the runner image: $cmd" >&2
+              missing=1
+            fi
+          done
+          if command -v tcpdump >/dev/null 2>&1; then
+            echo "Packet capture: tcpdump is available."
+          else
+            echo "Packet capture: tcpdump is absent; the dependency-preparation step will install it."
+          fi
+          exit "$missing"
+
+      - name: Fetch same-run package artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.package.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.package.outputs.artifact_digest }}
+        run: |
+          set -eu
+          [ -n "$ARTIFACT_ID" ] || { echo "ERROR: package artifact ID is empty" >&2; exit 1; }
+          [ -n "$ARTIFACT_DIGEST" ] || { echo "ERROR: package artifact digest is empty" >&2; exit 1; }
+          ./scripts/fetch-github-artifact.sh \
+            --repo "$GITHUB_REPOSITORY" \
+            --artifact-id "$ARTIFACT_ID" \
+            --expected-digest "$ARTIFACT_DIGEST" \
+            --destination "$RUNNER_TEMP/ci-packages" \
+            --expected-run-id "$GITHUB_RUN_ID" \
+            --expected-head-sha "$GITHUB_SHA" \
+            --expected-workflow-path .github/workflows/ci.yml \
+            --expected-name edgeos-vxlan-ci-packages-nonrelease \
+            --allow-run-in-progress
+
+      - name: Verify package artifact and select the integration package
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP/ci-packages"
+          sha256sum --strict --quiet -c SHA256SUMS
+          INTEGRATION=$(awk '$2 ~ /_all\.deb$/ {print $2; exit}' SHA256SUMS)
+          [ -n "$INTEGRATION" ] || { echo "ERROR: no integration package in SHA256SUMS" >&2; exit 1; }
+          [ -f "$INTEGRATION" ] || { echo "ERROR: integration package is missing: $INTEGRATION" >&2; exit 1; }
+          PKG_SHA=$(awk -v name="$INTEGRATION" '$2 == name {print $1; exit}' SHA256SUMS)
+          [ -n "$PKG_SHA" ] || { echo "ERROR: integration package hash is missing" >&2; exit 1; }
+          printf 'INTEGRATION=%s\n' "$INTEGRATION" >> "$GITHUB_ENV"
+          printf 'INTEGRATION_SHA256=%s\n' "$PKG_SHA" >> "$GITHUB_ENV"
+
+      - name: Prepare packet-capture tooling
+        run: |
+          if command -v tcpdump >/dev/null 2>&1; then
+            echo "tcpdump is already present; no package acquisition."
+            exit 0
+          fi
+          ./scripts/apt-update-ubuntu-only.sh
+          sudo apt-get install -y --no-install-recommends tcpdump
+
+      - name: Verify required packet-capture tooling
+        run: command -v tcpdump
+
+      - name: Enable VXLAN modules
+        run: |
+          sudo modprobe vxlan udp_tunnel ip6_udp_tunnel
+
+      - name: Qualify the same-run package in the isolated IPv6-only topology
+        env:
+          REQUIRE_NETNS_TEST: "1"
+          REQUIRE_CAPTURE: "1"
+          REQUIRE_RECONCILER: "1"
+          EVIDENCE_DIR: ${{ runner.temp }}/ipv6-only-evidence
+        run: |
+          set -eu
+          PKG="$RUNNER_TEMP/ci-packages/$INTEGRATION"
+          [ -f "$PKG" ] || { echo "ERROR: package not found: $PKG" >&2; exit 1; }
+          sudo -E env \
+            IPV6_ONLY_CANDIDATE_PACKAGE="$PKG" \
+            IPV6_ONLY_CANDIDATE_PACKAGE_SHA256="$INTEGRATION_SHA256" \
+            IPV6_ONLY_SOURCE_COMMIT="$GITHUB_SHA" \
+            REQUIRE_NETNS_TEST=1 \
+            REQUIRE_CAPTURE=1 \
+            REQUIRE_RECONCILER=1 \
+            EVIDENCE_DIR="$EVIDENCE_DIR" \
+            bash test/ipv6-only-netns.sh
+          python3 scripts/validate-ipv6-qualification-evidence.py \
+            --summary "$EVIDENCE_DIR/summary.json" \
+            --expected-source-commit "$GITHUB_SHA" \
+            --expected-package-sha256 "$INTEGRATION_SHA256" \
+            --expected-workflow-run-id "$GITHUB_RUN_ID" \
+            --expected-workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --expected-workflow-path "$GITHUB_WORKFLOW_REF" \
+            --expected-workflow-ref "$GITHUB_REF" \
+            --expected-workflow-commit "$GITHUB_SHA" \
+            --expected-harness-commit "$GITHUB_SHA" \
+            --require-workflow-binding \
+            --require-package-execution \
+            --allow-skip host-global-ipv6-escape-unavailable \
+            --allow-skip iproute2-json-normalization \
+            --allow-workaround iproute2-json-normalization
+
+      - name: Upload IPv6-only evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ipv6-only-qualification-evidence
+          path: ${{ runner.temp }}/ipv6-only-evidence
+          if-no-files-found: warn
+          compression-level: 0
+
+      - name: Clean up isolated namespaces
+        if: always()
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/ipv6-only-evidence
+        run: |
+          sudo -E bash test/ipv6-only-netns.sh --cleanup

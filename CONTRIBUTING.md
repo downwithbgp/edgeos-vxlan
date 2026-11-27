@@ -109,7 +109,8 @@ make a validation pass.
 
 ## 4. CI
 
-The workflow is `.github/workflows/release-validation.yml`.
+The CI workflow is `.github/workflows/ci.yml`; `.github/workflows/release.yml` owns the Phase III
+candidate/publication lifecycle.
 
 * Pull requests run static analysis, the off-device suite, the package build and validation, and
   reproducibility verification.
@@ -132,10 +133,11 @@ not normalized; compare member contents and record the distinction between publi
 canonical reproducibility and payload equivalence. The current reconciliation is in
 `docs/ipv6-only-qualification-evidence.md`.
 
-PR #8 splits the current workflow into `ci.yml` and the release lifecycle. Do not merge this branch
-without porting the `ipv6-only` job into `ci.yml` and wiring its `summary.json` evidence into the
-candidate manifest; see `docs/ipv6-only-qualification-ci-integration.md`. Do not modify another
-agent's branch to force the integration.
+PR #8 is merged. The `ipv6-only` job is in `ci.yml` and binds its evidence to the same-run package
+artifact by artifact ID/digest, source commit, workflow run/attempt/path/ref/commit and packaged
+reconciler hashes. Its `summary.json` is not yet wired into the Phase III candidate manifest or
+publication gate; that is a separate focused change. Do not modify publication policy as part of a
+qualification change. See `docs/ipv6-only-qualification-ci-integration.md`.
 
 ## 5. Documentation
 
