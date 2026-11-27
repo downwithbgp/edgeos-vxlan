@@ -229,3 +229,66 @@ resolve_loaded_image_ref()
     fi
     return 1
 }
+
+# Verify that the tagged installer differs from the qualified source commit's
+# installer only in the four pin assignments.
+#
+# install.sh is excluded from the packaging-input digest because it is not
+# packaged, and it is not covered by the package contract. It is nevertheless
+# distributed and executed by users (`curl .../install.sh | sh`), so its whole
+# content must remain bound to commit A -- the source that was built, attested
+# and reviewed. Only the four pins may change in the tag commit B.
+check_installer_pins_only()
+{
+    _pins_repo=$1
+    _pins_base=$2
+    _pins_tag=$3
+    _pins_manifest=$4
+
+    require_dir "$_pins_repo"
+    require_file "$_pins_manifest"
+    _pins_tmp=$(mktemp -d "${TMPDIR:-/tmp}/edgeos-vxlan-pins-only.XXXXXX") ||
+        fail "cannot create temporary directory"
+
+    _pins_version=$(manifest_get "$_pins_manifest" '.project.releaseTag')
+    _pins_version=${_pins_version#v}
+    _pins_pkg=$(manifest_get "$_pins_manifest" '.project.packageVersion')
+    kmod_sha=$(jq -er --arg n "edgeos-vxlan-kmod_${_pins_pkg}_mipsel.deb" '
+        [.artifacts[] | select(.name == $n) | .sha256]
+        | if length == 1 then .[0] else error("no unique kernel-module artifact") end
+    ' "$_pins_manifest") || {
+        rm -rf "$_pins_tmp"
+        fail "candidate manifest has no unique kernel-module artifact"
+    }
+    int_sha=$(jq -er --arg n "edgeos-vxlan_${_pins_pkg}_all.deb" '
+        [.artifacts[] | select(.name == $n) | .sha256]
+        | if length == 1 then .[0] else error("no unique integration artifact") end
+    ' "$_pins_manifest") || {
+        rm -rf "$_pins_tmp"
+        fail "candidate manifest has no unique integration artifact"
+    }
+
+    if ! git -C "$_pins_repo" show "${_pins_base}:install.sh" > "$_pins_tmp/base" 2>/dev/null; then
+        rm -rf "$_pins_tmp"
+        fail "cannot read install.sh at $_pins_base"
+    fi
+    sed \
+        -e "s|^VERSION=\".*\"$|VERSION=\"$_pins_version\"|" \
+        -e "s|^PKG_VERSION=\".*\"$|PKG_VERSION=\"$_pins_pkg\"|" \
+        -e "s|^KMOD_SHA256=\".*\"$|KMOD_SHA256=\"$kmod_sha\"|" \
+        -e "s|^INTEGRATION_SHA256=\".*\"$|INTEGRATION_SHA256=\"$int_sha\"|" \
+        "$_pins_tmp/base" > "$_pins_tmp/expected"
+    if ! git -C "$_pins_repo" show "${_pins_tag}:install.sh" > "$_pins_tmp/tagged" 2>/dev/null; then
+        rm -rf "$_pins_tmp"
+        fail "cannot read install.sh at $_pins_tag"
+    fi
+
+    if ! cmp -s "$_pins_tmp/expected" "$_pins_tmp/tagged"; then
+        set +e
+        diff -u "$_pins_tmp/expected" "$_pins_tmp/tagged" >&2
+        set -e
+        rm -rf "$_pins_tmp"
+        fail "tagged install.sh changes content other than the four installer pins"
+    fi
+    rm -rf "$_pins_tmp"
+}

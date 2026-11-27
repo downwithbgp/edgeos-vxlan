@@ -207,6 +207,10 @@ fi
 require_dir "$SOURCE_ROOT"
 is_release_tag "$TAG" || fail "invalid release tag: $TAG"
 is_sha256 "$MANIFEST_SHA" || fail "invalid manifest SHA-256"
+# Bind the requested tag to the candidate before any draft is created.
+MANIFEST_TAG=$(manifest_get "$MANIFEST" '.project.releaseTag')
+[ "$MANIFEST_TAG" = "$TAG" ] ||
+    fail "candidate release tag $MANIFEST_TAG != requested tag $TAG"
 if [ "$FIXTURE" = "no" ]; then
     [ "$NON_RELEASE" = "false" ] ||
         fail "refusing to promote a nonRelease candidate"
@@ -234,6 +238,8 @@ B_PACKAGING=$("$ROOT/scripts/packaging-inputs.sh" --repo "$SOURCE_ROOT" --rev "$
 "$ROOT/scripts/update-release-pins.sh" --candidate "$MANIFEST" \
     --repo "$SOURCE_ROOT" --check >/dev/null ||
     fail "tagged install.sh/SHA256SUMS do not match the candidate"
+# The distributed installer must differ from the built source only in its pins.
+check_installer_pins_only "$SOURCE_ROOT" "$SOURCE_COMMIT" "$TAG_COMMIT" "$MANIFEST"
 
 verify_bundle
 
@@ -312,7 +318,10 @@ find_release()
 
 release_json=$(find_release)
 if [ -z "$release_json" ]; then
+    # --target pins the release to the verified tag commit; without it GitHub
+    # would create the tag at the default branch HEAD if it did not exist.
     "$GH_BIN" release create "$TAG" --repo "$REPO" --draft \
+        --target "$TAG_COMMIT" \
         --title "$TAG" --notes "Release candidate $CANDIDATE_ID" >/dev/null ||
         fail "cannot create draft release $TAG"
     release_json=$(find_release)
@@ -368,6 +377,13 @@ done < <(jq -r '.assets[] | [.id, .name] | @tsv' <<<"$release_json")
     --bundle "$DRAFT/release-attestation.jsonl" \
     ${TRUSTED_ROOT:+--trusted-root "$TRUSTED_ROOT"} ||
     fail "draft verification failed; refusing publication"
+
+# The local checkout cannot prove the tag still points where preflight saw it.
+# Re-resolve the tag remotely immediately before publishing.
+REMOTE_TAG=$("$GH_BIN" api "repos/$REPO/commits/$TAG" --jq '.sha' 2>/dev/null) ||
+    fail "cannot re-resolve remote tag $TAG"
+[ "$REMOTE_TAG" = "$TAG_COMMIT" ] ||
+    fail "tag $TAG moved after preflight: $REMOTE_TAG != $TAG_COMMIT"
 
 "$GH_BIN" api -X PATCH "repos/$REPO/releases/$release_id" -f draft=false >/dev/null ||
     fail "cannot publish draft release $TAG"

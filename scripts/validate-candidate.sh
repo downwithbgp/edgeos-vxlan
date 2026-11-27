@@ -165,6 +165,8 @@ done
 
 [ "$(manifest_get "$MANIFEST" '.build.reproducibility.status')" = "passed" ] ||
     fail "candidate reproducibility status is not passed"
+[ "$(jq '.build.reproducibility.comparedArtifacts | length' "$MANIFEST")" -gt 0 ] ||
+    fail "candidate reproducibility records no compared artifacts"
 [ "$(manifest_get "$MANIFEST" '.qualification.hardware.required')" = "true" ] &&
     [ "$(manifest_get "$MANIFEST" '.qualification.hardware.status')" = "qualified" ] ||
     [ "$(manifest_get "$MANIFEST" '.qualification.hardware.required')" = "false" ] ||
@@ -186,7 +188,9 @@ if [ -f "$DIR/source.tar" ]; then
         fail "source archive hash does not match the manifest"
 fi
 
-# Every qualification check must have passed.
+# Every qualification check must have passed; an empty list proves nothing.
+[ "$(jq '.qualification.checks | length' "$MANIFEST")" -gt 0 ] ||
+    fail "candidate records no qualification checks"
 if jq -e '.qualification.checks[] | select(.status != "passed")' "$MANIFEST" >/dev/null; then
     fail "one or more qualification checks did not pass"
 fi

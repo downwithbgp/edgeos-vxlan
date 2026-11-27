@@ -25,7 +25,10 @@
       "required": ["id", "createdAt", "status", "nonRelease"],
       "properties": {
         "id": { "$ref": "#/$defs/candidateId" },
-        "createdAt": { "type": "string", "format": "date-time" },
+        "createdAt": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
         "status": { "enum": ["built", "qualified", "rejected"] },
         "nonRelease": { "type": "boolean" }
       }

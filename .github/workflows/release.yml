@@ -567,6 +567,10 @@ jobs:
           ARTIFACT_ID: ${{ needs.preflight.outputs.artifact_id }}
           ARTIFACT_DIGEST: ${{ needs.preflight.outputs.artifact_digest }}
         run: |
+          # This artifact is produced by the preflight job in this same run, so
+          # the run is still in progress here. Identity is still fully bound:
+          # artifact ID and digest come from the preflight job outputs, and the
+          # run ID, head SHA, workflow path, name and digest are all verified.
           ./scripts/fetch-github-artifact.sh \
             --repo "$REPO" --artifact-id "$ARTIFACT_ID" \
             --expected-digest "$ARTIFACT_DIGEST" \
@@ -574,7 +578,8 @@ jobs:
             --expected-run-id "$GITHUB_RUN_ID" \
             --expected-head-sha "$GITHUB_SHA" \
             --expected-workflow-path .github/workflows/release.yml \
-            --expected-name promotion-verification
+            --expected-name promotion-verification \
+            --allow-run-in-progress
       - name: Assert tag did not move after preflight
         env:
           TAG_INPUT: ${{ inputs.release_tag }}

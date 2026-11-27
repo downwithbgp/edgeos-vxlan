@@ -222,7 +222,19 @@ expect_fail_with "does not match" \
     --bundle "$TMP/bundle-int.jsonl" --package "$SBOM_PKG" \
     --sbom "$TMP/tampered.spdx.json"
 
-# The predicate must be bound to the package subject digest.
+# The predicate must be bound to the package subject digest. A file with the
+# same name but different bytes must not satisfy it (a byte-identical copy
+# under another name would only exercise the name check).
+mkdir -p "$TMP/same-name"
+cp "$SBOM_PKG" "$TMP/same-name/$(basename "$SBOM_PKG")"
+printf 'appended\n' >> "$TMP/same-name/$(basename "$SBOM_PKG")"
+expect_fail_with "expected exactly one" \
+    "$ROOT/scripts/verify-sbom-predicate.sh" \
+    --bundle "$TMP/bundle-int.jsonl" \
+    --package "$TMP/same-name/$(basename "$SBOM_PKG")" --sbom "$SBOM_FILE"
+
+# A different name with identical bytes must also fail: the subject name is
+# part of the binding.
 cp "$SBOM_PKG" "$TMP/other.deb"
 expect_fail_with "expected exactly one" \
     "$ROOT/scripts/verify-sbom-predicate.sh" \

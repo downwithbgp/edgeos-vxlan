@@ -109,8 +109,12 @@ jobs:
 
   publish:
     name: Publish image to GHCR (gated)
+    # Dispatch from main only: this job holds packages: write and id-token:
+    # write and executes the checkout's tooling, so it must never run on a
+    # branch ref. The protected environment is the second barrier, not the only.
     if: >-
       github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
       inputs.publish_image == true &&
       vars.BUILD_IMAGE_PUBLICATION_ENABLED == 'true'
     needs: [build, qualify]
@@ -127,8 +131,18 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
           fetch-depth: 1
+
+      - name: Confirm the dispatch revision
+        env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -eu
+          actual=$(git rev-parse HEAD)
+          [ "$actual" = "$WORKFLOW_SHA" ] ||
+            { echo "ERROR: tooling checkout $actual != workflow SHA $WORKFLOW_SHA" >&2; exit 1; }
 
       - name: Install pinned release tools
         run: ./scripts/install-supply-chain-tools.sh "$RUNNER_TEMP/release-tools"

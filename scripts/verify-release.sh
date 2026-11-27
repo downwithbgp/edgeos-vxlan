@@ -170,6 +170,8 @@ B_PACKAGING=$("$ROOT/scripts/packaging-inputs.sh" --repo "$SOURCE_DIR" --rev "$T
 "$ROOT/scripts/update-release-pins.sh" \
     --candidate "$MANIFEST" --repo "$SOURCE_DIR" --check >/dev/null ||
     fail "tagged source pins do not match the candidate manifest"
+# The distributed installer must differ from the built source only in its pins.
+check_installer_pins_only "$SOURCE_DIR" "$SOURCE_COMMIT" "$TAG_COMMIT" "$MANIFEST"
 
 "$ROOT/scripts/validate-candidate.sh" \
     --candidate-dir "$ASSET_DIR" \

@@ -33,6 +33,21 @@ def reject_duplicate_keys(pairs):
     return result
 
 
+def schema_formats(node: object) -> set:
+    """Every distinct "format" keyword declared anywhere in the schema."""
+    found = set()
+    if isinstance(node, dict):
+        value = node.get("format")
+        if isinstance(value, str):
+            found.add(value)
+        for item in node.values():
+            found |= schema_formats(item)
+    elif isinstance(node, list):
+        for item in node:
+            found |= schema_formats(item)
+    return found
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True)
@@ -57,7 +72,19 @@ def main() -> int:
         print(f"ERROR: invalid candidate schema: {exc}", file=sys.stderr)
         return 1
 
-    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    # A format the installed checker does not know is silently decorative, so
+    # fail closed instead of claiming an enforcement that does not happen.
+    checker = FormatChecker()
+    unenforced = sorted(schema_formats(schema) - set(checker.checkers))
+    if unenforced:
+        print(
+            "ERROR: schema declares format(s) the validator cannot enforce: "
+            + ", ".join(unenforced),
+            file=sys.stderr,
+        )
+        return 1
+
+    validator = Draft202012Validator(schema, format_checker=checker)
     errors = sorted(validator.iter_errors(manifest), key=lambda e: list(e.path))
     if errors:
         for error in errors[:10]:
