@@ -1222,7 +1222,7 @@ if [ "${1:-}" = "interfaces" ] && [ "${2:-}" = "vxlan" ]; then
 fi
 exit 1
 EOF
-    ip_bin=$(command -v ip) || return 1
+    ip_bin=${IPV6_ONLY_RECONCILER_IP:-$(command -v ip)} || return 1
     cat >"$HARNESS/bin/ip" <<EOF
 #!/bin/sh
 # Test-environment shim: some modern iproute2 builds write
@@ -1230,6 +1230,7 @@ EOF
 # \`ip -j -d link show\`, which is not JSON.  Drop only that diagnostic
 # line from JSON output; every other call and the real exit status are
 # preserved.  The supported EdgeOS iproute2 is not replaced by this shim.
+printf 'ip-wrapper %s\n' "\$*" >>"\${HARNESS_LOG:-/dev/null}"
 if [ "\$1" = "-j" ] && [ "\$2" = "-d" ]; then
     tmp=\$(mktemp) || exit 1
     "$ip_bin" "\$@" >"\$tmp"
@@ -1266,6 +1267,12 @@ run_reconciler()
 {
     local ns=$1 conf=$2 action=$3
     local log="$HARNESS/log/$ns-$action.log"
+    {
+        echo "diagnostic: reconciler environment"
+        # shellcheck disable=SC2016 # the inner shell must resolve these
+        nsrun "$ns" env PATH="$HARNESS/bin:$PATH" sh -c \
+            'printf "ip_command=%s\n" "$(command -v ip)"; ls -l '"$HARNESS"'/bin/ip 2>&1'
+    } >>"$log" 2>&1
     nsrun "$ns" env \
         PATH="$HARNESS/bin:$PATH" \
         HARNESS_LOG="$log" \
@@ -1327,6 +1334,18 @@ test_reconciler_integration()
         bad "actual reconciler failed to create vxlan900 on vtep-b"
     fi
     sleep 2
+
+    nsrun "$NS_A" ip -j -d link show dev vxlan900 \
+        >"$EVIDENCE_DIR/reconciler-ip-json-vtep-a.txt" 2>&1 || true
+    if nsrun "$NS_A" "$HARNESS/sbin/vyatta-vxlan-addr" parse-live \
+        <"$EVIDENCE_DIR/reconciler-ip-json-vtep-a.txt" \
+        >"$EVIDENCE_DIR/reconciler-ip-parse-vtep-a.txt" 2>&1; then
+        echo "parse-live accepted the raw ip JSON" \
+            >>"$EVIDENCE_DIR/reconciler-ip-parse-vtep-a.txt"
+    else
+        echo "parse-live rejected the raw ip JSON" \
+            >>"$EVIDENCE_DIR/reconciler-ip-parse-vtep-a.txt"
+    fi
 
     if reconciler_identity_ok "$NS_A" 900 1430 '2001:db8:900::a/64'; then
         ok "reconciler produced the requested IPv6 VXLAN identity on vtep-a"
