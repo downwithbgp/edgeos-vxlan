@@ -104,7 +104,7 @@ sha256_file()
 
 manifest_get()
 {
-    jq -er "$2" "$1"
+    jq -r "$2" "$1"
 }
 
 manifest_get_optional()

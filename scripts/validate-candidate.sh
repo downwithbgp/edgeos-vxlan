@@ -191,7 +191,8 @@ if jq -e '.qualification.checks[] | select(.status != "passed")' "$MANIFEST" >/d
     fail "one or more qualification checks did not pass"
 fi
 
-NAMES=$DIR/.artifact-names.$$
+NAMES=$(mktemp "${TMPDIR:-/tmp}/edgeos-vxlan-artifact-names.XXXXXX") ||
+    fail "cannot create temporary artifact-name list"
 trap 'rm -f "$NAMES"' EXIT HUP INT TERM
 jq -r '.artifacts[].name' "$MANIFEST" | LC_ALL=C sort > "$NAMES"
 duplicates=$(LC_ALL=C uniq -d "$NAMES")
@@ -259,10 +260,18 @@ grep -Fx "$(sha256_file "$DIR/$KMOD")  $KMOD" "$SUMS" >/dev/null ||
 
 # No unexpected top-level files. qualification/ holds logs and reproducibility
 # evidence; source.tar is the exact materialized input.
-ALLOWED="release-candidate.json SHA256SUMS source.tar release-attestation.jsonl
-$INTEGRATION $KMOD $BUILDINFO $CHANGES
-sbom-edgeos-vxlan.spdx.json sbom-edgeos-vxlan-kmod.spdx.json
-build-environment-qualification.json build-environment-image.spdx.json"
+ALLOWED="release-candidate.json
+SHA256SUMS
+source.tar
+release-attestation.jsonl
+$INTEGRATION
+$KMOD
+$BUILDINFO
+$CHANGES
+sbom-edgeos-vxlan.spdx.json
+sbom-edgeos-vxlan-kmod.spdx.json
+build-environment-qualification.json
+build-environment-image.spdx.json"
 while IFS= read -r entry; do
     case "$entry" in
         qualification) continue ;;
