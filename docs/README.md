@@ -69,8 +69,10 @@ The repository uses these labels consistently:
 * **Simulated EdgeOS** — the vendor configuration engine under qemu, or the emulated-engine records.
 * **Linux network namespace** — general-Linux dataplane semantics; not EdgeOS validation.
 * **N6** — the isolated IPv6-only Linux namespace topology; no usable external IPv4 connectivity
-  in the workload. **N6-R** is the same topology with the actual reconciler and test doubles for the
-  EdgeOS configuration API and firewall dispatch. Neither is hardware evidence.
+  in the workload. **N6-R** is the same topology with the actual source reconciler and test doubles
+  for the EdgeOS configuration API and firewall dispatch. **N6-R-P** executes the hash-checked
+  packaged reconciler/address helper from a candidate `.deb`. None is hardware or MIPS-kernel
+  evidence.
 * **Physical hardware** — demonstrated on the supported ER-X; the record is cited.
 * **Inferred** — expected from Linux VXLAN behaviour or the implementation, but not directly
   demonstrated on the supported platform. It is not a hardware result.

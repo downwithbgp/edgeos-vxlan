@@ -44,8 +44,8 @@ Off-device suite (no root, no network, no real `/sys`):
 bash test/run.sh
 ```
 
-Expected current result: **360 checks** — 11 build + 64 helper + 122 firewall + 93 templates +
-70 mock — all passing.
+Expected current result: **376 checks** — 11 build + 64 helper + 122 firewall + 93 templates +
+70 mock + 16 qualification-evidence contract — all passing.
 
 Static validation:
 
@@ -72,8 +72,27 @@ sudo REQUIRE_NETNS_TEST=1 REQUIRE_CAPTURE=1 REQUIRE_RECONCILER=1 \
   bash test/ipv6-only-netns.sh
 ```
 
-The suite prints `PASS`/`FAIL`/`SKIP` and a summary. The evidence directory contains the topology,
-environment, raw captures, `captures/analysis.txt`, `summary.txt` and `summary.json`. A capture skip
+Candidate-package mode executes the packaged reconciler and address helper from a hash-checked
+integration `.deb` (N6-R-P):
+
+```bash
+IPV6_ONLY_CANDIDATE_PACKAGE=/path/edgeos-vxlan_<version>_all.deb \
+IPV6_ONLY_CANDIDATE_PACKAGE_SHA256=<expected-sha256> \
+IPV6_ONLY_CANDIDATE_ID=sha256:<candidate-id> \
+IPV6_ONLY_SOURCE_COMMIT=<source-commit> \
+GITHUB_RUN_ID=<run> GITHUB_RUN_ATTEMPT=<attempt> \
+GITHUB_WORKFLOW_REF=<owner/repo/.github/workflows/ci.yml@refs/...> \
+GITHUB_REF=<ref> GITHUB_SHA=<workflow-commit> \
+sudo -E REQUIRE_NETNS_TEST=1 REQUIRE_CAPTURE=1 REQUIRE_RECONCILER=1 \
+  EVIDENCE_DIR=/tmp/ipv6-only-candidate-evidence \
+  bash test/ipv6-only-netns.sh
+```
+
+`python3 scripts/validate-ipv6-qualification-evidence.py` verifies the resulting summary against
+expected source/candidate/package/workflow/harness identities and recomputes every evidence hash.
+`test/unit-ipv6-evidence.sh` covers the positive and negative binding cases. The suite prints
+`PASS`/`FAIL`/`SKIP` and a summary. The evidence directory contains the topology, environment, raw
+captures, `captures/analysis.txt`, `summary.txt` and `summary.json`. A capture skip
 is not capture evidence. The authoritative CI job requires capture and installs tcpdump from the
 distribution source in a separate step when needed; local developer runs may leave it optional.
 See `docs/ipv6-only-qualification.md` for the Level A–D model and the isolation contract.

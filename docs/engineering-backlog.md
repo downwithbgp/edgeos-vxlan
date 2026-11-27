@@ -165,10 +165,10 @@ GitHub Actions policy/approval; CI secrets must not be committed.
   used.
 * `scripts/apt-update-ubuntu-only.sh` scopes CI dependency refresh to the distribution's own source
   file. The dataplane job checks for tools before acquiring them; the IPv6-only job uses the runner
-  image.
-* The existing off-device suite remains green at 360 checks (11 build + 64 helper + 122 firewall +
-  93 templates + 70 mock). The new namespace suite is separate and reports its own pass/fail/skip
-  counts.
+  image and installs only tcpdump when capture tooling is absent.
+* The existing off-device suite remains green at 376 checks (11 build + 64 helper + 122 firewall +
+  93 templates + 70 mock + 16 qualification-evidence contract). The new namespace suite is separate
+  and reports its own pass/fail/skip counts.
 
 **Level C and Level D are not achieved.** Installer/management over IPv6 only is deferred to
 ENG-IPV6-01/02. The CI runner and control plane remain dual-stack; GitHub Release endpoints returned
@@ -207,9 +207,18 @@ namespaces is Level B, not Level D.
   canonical rebuild (`7ffe10f6…`/`6afa3f25…`) because historical mtimes were not normalized; every
   payload/control member is content-identical. See
   [`ipv6-only-qualification-evidence.md`](ipv6-only-qualification-evidence.md#51-package-integrity-reconciliation).
+* [x] Candidate-package mode (N6-R-P) verifies and extracts the exact integration `.deb`, executes
+  the packaged reconciler/address helper, and records candidate/package identity and exercised-file
+  hashes.
+* [x] `scripts/validate-ipv6-qualification-evidence.py` and 16 positive/negative fixtures validate
+  candidate-bound identity, evidence hashes, required checks, permitted skips/workarounds and
+  malformed or substituted evidence.
 * [ ] The job is ported into the trusted-release-lifecycle `ci.yml` and wired into the candidate
   manifest/release gate. This is a coordination item with PR #8; see
   [`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md).
+* [ ] The candidate builder supplies the validated IPv6 evidence before candidate ID/attestation;
+  `validate-candidate.sh`/`check-release-gates.sh` reject missing/failed/unpermitted IPv6 checks.
+  A candidate-gate fixture suite is pending the PR #8 merge.
 * [x] The hosted run itself exposed a modern-iproute2 JSON diagnostic (`info: Using default fan map
   value`) on stdout. The N6-R harness filters only that non-JSON line and records a skip; the real
   reconciler, kernel and exit statuses are unchanged. This is a test-environment compatibility shim,

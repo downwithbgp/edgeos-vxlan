@@ -42,13 +42,14 @@ not a mock. It is **not** hosted-CI evidence and not hardware evidence.
 
 | Command | Exit | Result |
 |---|---:|---|
-| `bash test/run.sh` | 0 | **360 checks passed**: 11 build + 64 helper + 122 firewall + 93 templates + 70 mock |
+| `bash test/run.sh` | 0 | **376 checks passed**: 11 build + 64 helper + 122 firewall + 93 templates + 70 mock + 16 qualification-evidence contract |
 | `shellcheck install.sh scripts/*.sh test/*.sh test/lib/*.sh debian/*.preinst debian/*.postinst debian/*.prerm debian/*.postrm src/vyatta-vxlan src/vyatta-vxlan-bridge src/vyatta-vxlan-firewall` | 0 | No findings |
 | `actionlint .github/workflows/release-validation.yml` | 0 | No findings |
 | `zizmor --offline --collect all --format plain .github` | 0 | No findings |
 
-The off-device count is 360, not the historical 349. The 11 `unit-build` checks were added by the
-reproducible-build work in PR #6; historical release records retain their original 349 count.
+The off-device count is 376, not the historical 349. The 11 `unit-build` checks were added by the
+reproducible-build work in PR #6, and the 16 qualification-evidence contract checks are new in this
+branch; historical release records retain their original 349 count.
 
 ## 4. Isolated IPv6-only suite
 
@@ -125,10 +126,20 @@ delete arbitrary names by prefix.
 | Capture startup and completion verified; capture failure fails the suite | Passed |
 | Pre-existing same-name namespace refused, not deleted | Passed |
 | Hosted-run modern-iproute2 diagnostic/fan-map artifact normalized by the N6-R test shim | Passed, with an explicit reconciler skip on the hosted runner |
+| Candidate-packaged userspace (N6-R-P; local) | Passed: integration `.deb` SHA-256 `6afa3f25…`, packaged reconciler `814bf807…`, packaged address helper `a484717a…` |
 
 The reconciler test used the real `src/vyatta-vxlan`, `ip`, sysfs and kernel state. The EdgeOS
 configuration API, `vyatta-vxlan-firewall`, `vyatta-vxlan-bridge` and `vyatta-address` were test
-doubles. The firewall-dispatch and vendor-engine layers are therefore **not** evidence from this
+doubles.
+
+The candidate-package mode (N6-R-P) was exercised locally against
+`edgeos-vxlan_0.3.0+edgeos3.0.1.e50_all.deb` (SHA-256 `6afa3f25…`, built from source commit
+`ca90f3683ea15c0859ccd0619fa78536c9e63fc9`). The suite verified the package hash before
+extraction, executed the packaged `vyatta-vxlan` (`814bf807…`) and `vyatta-vxlan-addr`
+(`a484717a…`), and recorded `candidate.packageExecuted=true` and evidence class `N6-R-P`. The x86
+kernel does not qualify the candidate MIPS kernel module. The candidate-bound validator accepted
+the resulting summary with the expected source commit, package SHA-256, workflow run/attempt/path/
+ref/commit and harness commit, plus the permitted host-global-IPv6 skip. The firewall-dispatch and vendor-engine layers are therefore **not** evidence from this
 section; they remain covered by the off-device mock/unit suites and (for hardware) the cited ER-X
 records.
 
@@ -170,6 +181,23 @@ evidence.
 A missing privilege is never converted into a pass. In authoritative mode (`REQUIRE_CAPTURE=1`),
 an unavailable tcpdump or a failed capture is a failure; in local mode, the absence of tcpdump is
 reported as a skip and is not counted as capture evidence.
+
+### 4.6 Candidate-bound evidence contract
+
+`scripts/validate-ipv6-qualification-evidence.py` validates a summary against expected source,
+candidate, package, workflow and harness identities, recomputes every retained evidence hash, and
+rejects missing/failed/unperformed checks, unpermitted skips, unreported workarounds and malformed
+JSON. `test/unit-ipv6-evidence.sh` runs **16** positive/negative fixtures covering:
+
+* valid candidate-bound evidence with the permitted host-global-IPv6 skip and the documented
+  iproute2 normalisation workaround;
+* missing summary, failed isolation, missing capture, missing reconciler execution;
+* wrong source commit, candidate ID, package digest and harness commit;
+* modified evidence, unrelated workflow run, unexpected skip, missing required check;
+* missing candidate-package execution, unreported workaround, malformed JSON.
+
+This validator is integration-ready but is **not yet called by PR #8's candidate builder or release
+gate**. See [`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md).
 
 ## 5. Package and reproducibility validation
 
@@ -345,7 +373,7 @@ checksums. The new APT helper is test/CI-only and does not alter the package pay
 
 ## 9. Remaining risks and limitations
 
-1. N6/N6-R are general-Linux namespace evidence, not ER-X hardware evidence.
+1. N6/N6-R/N6-R-P are general-Linux namespace evidence, not ER-X hardware evidence.
 2. The reconciler section uses test doubles for the EdgeOS config API, firewall dispatch, bridge
    helper and `vyatta-address`; those layers are not qualified by this record.
 3. The generic bridge section is not ENG-IPV6-04 hardware qualification.
@@ -356,11 +384,13 @@ checksums. The new APT helper is test/CI-only and does not alter the package pay
 7. No PMTUD/PTB test across a real routed path; the MTU boundary is local to the VXLAN interface.
 8. The local host cannot create network namespaces; the privileged-container execution is recorded
    as such and is not hosted CI.
-9. Hosted CI has run and passed for this branch (run 46041331249); the PR #8 porting/candidate-gate
-   integration is still pending.
+9. Hosted CI has run and passed for this branch (run 46041828240 at the final accepted code commit);
+   the candidate-bound port into PR #8's `ci.yml`/release gate is still pending.
 10. The current `ipv6-only` job lives in the workflow that PR #8 deletes; porting to `ci.yml` and
     wiring the candidate manifest/release gate is a coordination item, not yet implemented.
-11. `lintian` passed locally in a container and in the hosted package job.
+11. Candidate-package execution is local integration-ready evidence; it is not yet part of the
+    hosted candidate build or release gate.
+12. `lintian` passed locally in a container and in the hosted package job.
 
 ## 10. Reproduction
 

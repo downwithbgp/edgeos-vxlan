@@ -497,8 +497,8 @@ Hardware qualification and off-device evidence are recorded by address-family co
 [support matrix](docs/address-family-support-matrix.md). In summary: RC5 was hardware-qualified on
 the ER-X for the native firewall matrix, lifecycle, `vxlan41913` migration and reboot; the
 v0.2.1/v0.2.2 line validated the IPv4 dataplane and the IPv6-underlay IPv4, IPv6 and dual-stack
-dataplane; the off-device suite currently has 360 checks (11 build + 64 helper + 122 firewall +
-93 templates + 70 mock). An additional isolated IPv6-only namespace suite (Level B) exercises a
+dataplane; the off-device suite currently has 376 checks (11 build + 64 helper + 122 firewall +
+93 templates + 70 mock + 16 qualification-evidence contract). An additional isolated IPv6-only namespace suite (Level B) exercises a
 routed IPv6 underlay, host-to-host TCP/UDP, NDP, MTU boundaries and explicit IPv4-isolation
 assertions; it is not hardware evidence. Independent external OCI probes remain deferred. The matrix distinguishes demonstrated, partially demonstrated and inferred behavior.
 

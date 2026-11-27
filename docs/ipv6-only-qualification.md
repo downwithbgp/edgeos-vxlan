@@ -31,6 +31,7 @@ The runner's own management and the workflow's control plane still use the host 
 |---|---|
 | **N6** | Isolated IPv6-only Linux network-namespace topology. General-Linux dataplane semantics; not EdgeOS, not hardware. |
 | **N6-R** | The same topology, but the VXLAN lifecycle is driven by the actual `src/vyatta-vxlan` reconciler. The EdgeOS configuration API and firewall dispatch are test doubles; the kernel, `ip`, sysfs, MTU, addresses, recreation and rollback are real. |
+| **N6-R-P** | Candidate-packaged userspace: the reconciler and address helper are extracted from the exact integration `.deb` after a SHA-256 check; the same test doubles and kernel context apply. This qualifies packaged portable userspace, not the MIPS kernel module or EdgeOS hardware. |
 | **H** | Physical ER-X hardware; only the records cited in the support matrix. |
 
 The N6 topology does not replace the existing N (dual-stack namespace) test. It is an additional
@@ -172,6 +173,7 @@ IPv4 dependency inventory records the rest.
 | MTU boundary | 1430-byte VXLAN MTU; 1382-byte payload passes, 1383 is rejected with `-M do` | N6 |
 | Generic Linux bridge | `vxlan300` enslaved to `br300`; IPv6 ping and ND work | N6 (generic Linux only) |
 | Actual reconciler lifecycle | Real `src/vyatta-vxlan` creates, updates idempotently, recreates, rolls back on an invalid MTU, restores and deletes | N6-R (partial) |
+| Candidate-packaged userspace | The exact integration `.deb` is hash-checked, extracted, and its packaged reconciler/address helper are exercised; hashes are recorded | N6-R-P |
 | Reconciler-created TCP/UDP | IPv6 TCP and UDP through the `vxlan900` interface created by the actual reconciler | N6-R (partial) |
 | Reconciler endpoint validation | Mixed-family and IPv6-multicast endpoints are rejected before mutation; the live interface is unchanged | N6-R (partial) |
 | Repeated execution and cleanup | Two consecutive runs leave no namespaces or host-side links; SIGTERM exits 130 and cleans up | N6 |
@@ -187,7 +189,9 @@ following components are real:
 * live-state capture, idempotent comparison, recreation, rollback and deletion;
 * IPv6 TCP and UDP through the reconciler-created `vxlan900` interface;
 * rejection of mixed-family and IPv6-multicast endpoints before any mutation;
-* the real `ip` binary, sysfs device state and kernel VXLAN/NDP behaviour.
+* the real `ip` binary, sysfs device state and kernel VXLAN/NDP behaviour;
+* when `IPV6_ONLY_CANDIDATE_PACKAGE` is supplied, the hash-checked, extracted packaged reconciler
+  and address helper from that `.deb` (N6-R-P).
 
 The following are test doubles and are **not** evidence for those product layers:
 

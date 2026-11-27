@@ -69,8 +69,8 @@ perl -c src/vyatta-vxlan-addr
 git diff --check
 ```
 
-The off-device baseline is **360 checks** (11 build + 64 helper + 122 firewall + 93 templates +
-70 mock). Keep it green. If you add or remove checks, update the count in the current docs, not in
+The off-device baseline is **376 checks** (11 build + 64 helper + 122 firewall + 93 templates +
+70 mock + 16 qualification-evidence contract). Keep it green. If you add or remove checks, update the count in the current docs, not in
 historical release records.
 
 Privileged namespace suites:
@@ -84,6 +84,11 @@ sudo REQUIRE_NETNS_TEST=1 REQUIRE_CAPTURE=1 REQUIRE_RECONCILER=1 \
 The authoritative CI job requires packet capture (`REQUIRE_CAPTURE=1`) and installs tcpdump from
 the distribution source in a separate dependency-preparation step when it is absent. Local
 developer runs may leave capture optional, but must not report a skip as capture evidence.
+
+Candidate-package mode checks the exact integration `.deb` hash, extracts it, and executes the
+packaged reconciler/address helper (N6-R-P). It does not qualify the MIPS kernel module or hardware.
+`scripts/validate-ipv6-qualification-evidence.py` is the candidate-bound evidence validator;
+`test/unit-ipv6-evidence.sh` provides its positive/negative fixtures.
 
 If the local host cannot grant `CAP_NET_ADMIN`, use a privileged container or record the validation
 as pending. A missing privilege must not be reported as a pass.
