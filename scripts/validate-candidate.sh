@@ -85,6 +85,10 @@ require_dir "$DIR"
 MANIFEST=$DIR/release-candidate.json
 require_file "$MANIFEST"
 require_file "$ROOT/release/release-policy.json"
+python3 "$ROOT/scripts/validate-candidate-schema.py" \
+    --manifest "$MANIFEST" \
+    --schema "$ROOT/release/candidate-schema.json" >/dev/null ||
+    fail "candidate manifest does not satisfy the schema"
 
 POLICY=$ROOT/release/release-policy.json
 check_candidate_id "$MANIFEST"

@@ -40,8 +40,11 @@ jobs:
         run: perl -c src/vyatta-vxlan-addr >/dev/null
       - name: Release contract tests
         run: |
+          ./scripts/install-schema-validator.sh
           bash test/unit-release-primitives.sh
           bash test/unit-image-qualification.sh
+          bash test/unit-artifact-archive.sh
+          bash test/unit-candidate-schema.sh
 
   package:
     name: Build and validate packages
