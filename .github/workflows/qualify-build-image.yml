@@ -41,9 +41,12 @@ jobs:
       - name: Build image directly from final Dockerfile
         run: |
           IMAGE=edgeos-vxlan-reproducible:qualification
+          SNAPSHOT=$(sed -n 's/^ARG UBUNTU_SNAPSHOT=//p' containers/reproducible-build/Dockerfile)
+          [ -n "$SNAPSHOT" ] || { echo "ERROR: missing Dockerfile snapshot" >&2; exit 1; }
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "SNAPSHOT=$SNAPSHOT" >> "$GITHUB_ENV"
           docker build \
-            --build-arg UBUNTU_SNAPSHOT=20261127T000000Z \
+            --build-arg "UBUNTU_SNAPSHOT=$SNAPSHOT" \
             --tag "$IMAGE" \
             containers/reproducible-build \
             2>&1 | tee qualification/image-build.log
@@ -60,6 +63,8 @@ jobs:
             > qualification/dependency-snapshot.txt
           sha256sum containers/reproducible-build/Dockerfile \
             > qualification/Dockerfile.sha256
+          sha256sum containers/reproducible-build/ca-certificates.crt \
+            > qualification/ca-certificates.sha256
           # shellcheck disable=SC2016
           docker run --rm "$IMAGE" \
             dpkg-query -W -f='${Package} ${Version}\n' |
@@ -109,6 +114,7 @@ jobs:
 
           cp "$RUNNER_TEMP/build-a"/*.deb qualification/
           cp "$RUNNER_TEMP/build b"/*.deb qualification/
+          cp "$RUNNER_TEMP/build-a"/*.buildinfo "$RUNNER_TEMP/build-a"/*.changes qualification/
           sha256sum qualification/*.deb > qualification/package-sha256.txt
 
       - name: Export image archive and checksum

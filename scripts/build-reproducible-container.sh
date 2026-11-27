@@ -137,13 +137,14 @@ docker run --rm \
     --user "$(id -u):$(id -g)" \
     --tmpfs /tmp:rw,mode=1777 \
     -e HOME=/tmp \
-    -v "$ROOT:/src:ro" \
+    --read-only \
+    -v "$ROOT/scripts/build-reproducible.sh:/usr/local/bin/build-reproducible.sh:ro" \
     -v "$ARCHIVE:/input/source.tar:ro" \
     -v "$OUTPUT_DIR:/out" \
-    -w /src \
     "$IMAGE" \
-    /src/scripts/build-reproducible.sh \
+    /usr/local/bin/build-reproducible.sh \
         --source-archive /input/source.tar \
+        --source-archive-sha256 "$ARCHIVE_SHA" \
         --source-commit "$COMMIT" \
         --source-rev "$SOURCE_REV" \
         --output-dir /out

@@ -60,6 +60,19 @@ else
     bad "non-empty output error is diagnostic"
 fi
 
+archive=$TMP/empty.tar
+: >"$archive"
+run_expect 1 "archive without commit is rejected" \
+    "$BUILD" --source-archive "$archive" --output-dir "$TMP/archive-no-commit"
+run_expect 1 "archive without hash is rejected" \
+    "$BUILD" --source-archive "$archive" --source-commit 0123456789abcdef0123456789abcdef01234567 \
+    --output-dir "$TMP/archive-no-hash"
+run_expect 1 "archive hash mismatch is rejected" \
+    "$BUILD" --source-archive "$archive" \
+    --source-commit 0123456789abcdef0123456789abcdef01234567 \
+    --source-archive-sha256 0000000000000000000000000000000000000000000000000000000000000000 \
+    --output-dir "$TMP/archive-bad-hash"
+
 printf 'dirty\n' >>"$REPO/file.txt"
 run_expect 1 "dirty HEAD build is rejected" \
     "$REPO/scripts/build-reproducible.sh" --output-dir "$TMP/dirty-out"

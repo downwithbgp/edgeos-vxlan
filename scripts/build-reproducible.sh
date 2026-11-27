@@ -16,6 +16,7 @@ set -eu
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 SOURCE_REV=HEAD
 SOURCE_ARCHIVE=
+SOURCE_ARCHIVE_SHA256=
 SOURCE_COMMIT=
 OUTPUT_DIR=${BUILD_OUTPUT_DIR:-"$ROOT/../edgeos-vxlan-reproducible-build"}
 KEEP_SOURCE=no
@@ -28,6 +29,7 @@ Usage: build-reproducible.sh [options]
 Options:
   --source-rev REV    Git revision to archive (default: HEAD)
   --source-archive TAR  Pre-materialized source archive (container mode)
+  --source-archive-sha256 SHA  Required SHA-256 of --source-archive
   --source-commit SHA   Exact commit represented by --source-archive
   --output-dir DIR    Empty/absent output directory
   --keep-source       Keep the materialized and normalized source tree
@@ -56,6 +58,11 @@ while [ $# -gt 0 ]; do
         --source-archive)
             [ $# -ge 2 ] || { usage >&2; exit 2; }
             SOURCE_ARCHIVE=$2
+            shift 2
+            ;;
+        --source-archive-sha256)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            SOURCE_ARCHIVE_SHA256=$2
             shift 2
             ;;
         --source-commit)
@@ -94,6 +101,11 @@ if [ -n "$SOURCE_ARCHIVE" ]; then
         fail "source archive not found: $SOURCE_ARCHIVE"
     [ -n "$SOURCE_COMMIT" ] ||
         fail "--source-archive requires --source-commit"
+    [ -n "$SOURCE_ARCHIVE_SHA256" ] ||
+        fail "--source-archive requires --source-archive-sha256"
+    actual_archive_sha=$(sha256sum "$SOURCE_ARCHIVE" | cut -d ' ' -f1)
+    [ "$actual_archive_sha" = "$SOURCE_ARCHIVE_SHA256" ] ||
+        fail "source archive hash $actual_archive_sha != $SOURCE_ARCHIVE_SHA256"
     case "$SOURCE_COMMIT" in
         *[!0-9a-f]*) fail "invalid source commit: $SOURCE_COMMIT" ;;
     esac

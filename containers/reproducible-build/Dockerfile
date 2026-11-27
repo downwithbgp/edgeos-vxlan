@@ -17,18 +17,13 @@ ENV TZ=UTC
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 
-# snapshot.ubuntu.com redirects HTTP to HTTPS; install ca-certificates in the
-# base layer first so the snapshot repository can be used.
-# Bootstrap trust only: exact versions from the signed Ubuntu archive.  No
-# repository signature verification is disabled.  All later packages come from
-# the frozen snapshot below.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates=20260816ubuntu0.24.04.2 \
-        openssl=3.0.13-0ubuntu3.16 \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/* \
+# Bootstrap trust: a pinned CA bundle committed with this Dockerfile (its
+# SHA-256 is recorded in docs/reproducible-builds.md).  This avoids a live
+# archive.ubuntu.com fetch while still using APT's normal TLS verification.
+COPY ca-certificates.crt /usr/local/share/ca-certificates/edgeos-bootstrap.crt
+RUN printf 'Acquire::https::CaInfo "/usr/local/share/ca-certificates/edgeos-bootstrap.crt";\n' \
+        > /etc/apt/apt.conf.d/99bootstrap-ca \
+    && rm -f /etc/apt/sources.list /etc/apt/sources.list.d/* \
     && printf '%s\n' \
         "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT} noble main universe" \
         "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT} noble-updates main universe" \
@@ -37,11 +32,14 @@ RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/* \
     && printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99snapshot \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        openssl \
         build-essential \
         debhelper \
         dpkg-dev \
         fakeroot \
         git \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /etc/apt/apt.conf.d/99bootstrap-ca /etc/apt/apt.conf.d/99snapshot
 
 WORKDIR /workspace

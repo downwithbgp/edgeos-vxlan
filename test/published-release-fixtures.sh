@@ -124,5 +124,9 @@ expect_fail "published tag/version mismatch" "does not match install.sh VERSION"
     env RELEASE_TAG=v9.9.9 \
     "$ROOT/scripts/validate-published-release.sh" "$TMP/assets" "$TMP/source"
 
+expect_fail "tag/checked-out-ref mismatch" "requested tag" \
+    env RELEASE_TAG="$RELEASE_TAG" GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v9.9.9 \
+    "$ROOT/scripts/validate-published-release.sh" "$TMP/assets" "$TMP/source"
+
 echo "published-release-fixtures: pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]
