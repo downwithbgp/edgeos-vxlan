@@ -89,13 +89,26 @@ and supports `diffoscope` when available.
   `--network none`, a read-only repository mount, writable output/tmpfs,
   dropped capabilities and `no-new-privileges`.
 
-**Verification limitation:** the snapshot dependency layer completed
-successfully, but Docker image export remained hung on the local host (>14
-minutes, disk near 90%) and produced no image tag. No container build hash is
-claimed. The CI reproducibility job currently uses the GitHub
-`ubuntu-24.04` runner, not a prebuilt digest-pinned image. A retained,
-digest-identified build image/registry is the next controlled-environment
-step.
+**Qualified local image:** BuildKit export stalled on the local Docker host
+for >14 minutes with the disk near 90%; the image layer completed and a
+local image eventually appeared. A derived image was qualified by installing
+`build-essential` from the frozen snapshot into the minimal snapshot image:
+image ID `sha256:dd56fabdc1d5038ddc661fe2e97e92ed0fae10a41e33072c6555c0922cd469fe`.
+The complete 200-package inventory has SHA-256
+`1c27838283a8c4a3f28eee279281519570f578e893513dd87ab30e50c7079184`.
+The Dockerfile now pins the bootstrap CA/OpenSSL versions and includes
+`build-essential`; a fresh rebuild directly from the final Dockerfile has not
+been performed, so this is a qualified derived image, not a published/rebuilt
+OCI identity. The package build in that image used `--network none`, a
+read-only source archive, host UID/GID (non-root), dropped capabilities and
+read-only repository scripts. It produced exactly the host canonical hashes
+`6afa3f25…`/`7ffe10f6…`.
+
+Source resolution/materialization happens on the host; a verified `git
+archive` is passed into the container. This makes the container independent of
+host Git metadata and supports linked worktrees. Linked-worktree execution was
+tested; the dirty/untracked/path-with-whitespace and differing-UID matrix
+remains partially tested and is documented below.
 
 ## 4. Verification evidence
 
@@ -185,12 +198,29 @@ The SADR repository was not modified. Proposed reusable interface:
 This should be extracted only after both projects have independent
 requirements; no shared framework was created prematurely.
 
+## 7a. Kernel module source-to-binary reproducibility proposal
+
+This work establishes Debian packaging reproducibility, not independent
+kernel-module compilation. A future separate workstream must identify and
+preserve: the exact Ubiquiti GPL archive/source revision and hash; vendor
+patches including CVE-2022-50405; the target 4.14.54-UBNT configuration;
+generated headers; `Module.symvers`/symbol-version data; the MIPS cross
+compiler and binutils versions; vermagic/ABI requirements; and the existing
+prebuilt module hashes. The GPL archive and source name/hash are recorded in
+README; the cross toolchain is not part of this package build. Licensing and
+corresponding-source obligations must be reviewed before any recompilation.
+No module was recompiled or changed in Phase II.
+
 ## 8. Remaining limitations and risks
 
 * v0.3.0 published bytes remain unreproducible; accepted and not modified.
 * Canonical artifacts differ from historical published bytes.
-* Local Docker image export did not complete; no digest-pinned CI image is in
-  use yet.
+* Docker export stalled locally; a qualified derived image was built, but a
+  fresh rebuild directly from the final Dockerfile and a retained OCI digest
+  are still pending.
+* Ordinary-checkout, dirty/untracked, whitespace-path and differing-UID/GID
+  container tests are not all executed; linked-worktree archive handoff is
+  verified.
 * Snapshot retention/availability and apt metadata trust still depend on the
   Ubuntu snapshot service.
 * Build user variation was not demonstrated end-to-end in a retained container.

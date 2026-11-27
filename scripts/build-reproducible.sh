@@ -15,6 +15,8 @@ set -eu
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 SOURCE_REV=HEAD
+SOURCE_ARCHIVE=
+SOURCE_COMMIT=
 OUTPUT_DIR=${BUILD_OUTPUT_DIR:-"$ROOT/../edgeos-vxlan-reproducible-build"}
 KEEP_SOURCE=no
 
@@ -25,6 +27,8 @@ Usage: build-reproducible.sh [options]
 
 Options:
   --source-rev REV    Git revision to archive (default: HEAD)
+  --source-archive TAR  Pre-materialized source archive (container mode)
+  --source-commit SHA   Exact commit represented by --source-archive
   --output-dir DIR    Empty/absent output directory
   --keep-source       Keep the materialized and normalized source tree
   -h, --help          Show this help
@@ -47,6 +51,16 @@ while [ $# -gt 0 ]; do
         --source-rev)
             [ $# -ge 2 ] || { usage >&2; exit 2; }
             SOURCE_REV=$2
+            shift 2
+            ;;
+        --source-archive)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            SOURCE_ARCHIVE=$2
+            shift 2
+            ;;
+        --source-commit)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            SOURCE_COMMIT=$2
             shift 2
             ;;
         --output-dir)
@@ -75,23 +89,36 @@ for cmd in git tar find touch dpkg-parsechangelog dpkg-buildpackage \
         fail "required command not found: $cmd"
 done
 
-git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 ||
-    fail "not a Git checkout: $ROOT"
+if [ -n "$SOURCE_ARCHIVE" ]; then
+    [ -f "$SOURCE_ARCHIVE" ] ||
+        fail "source archive not found: $SOURCE_ARCHIVE"
+    [ -n "$SOURCE_COMMIT" ] ||
+        fail "--source-archive requires --source-commit"
+    case "$SOURCE_COMMIT" in
+        *[!0-9a-f]*) fail "invalid source commit: $SOURCE_COMMIT" ;;
+    esac
+    [ "${#SOURCE_COMMIT}" -eq 40 ] || [ "${#SOURCE_COMMIT}" -eq 64 ] ||
+        fail "invalid source commit length: $SOURCE_COMMIT"
+    COMMIT=$SOURCE_COMMIT
+else
+    git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 ||
+        fail "not a Git checkout: $ROOT"
 
-COMMIT=$(git -C "$ROOT" rev-parse --verify --quiet "${SOURCE_REV}^{commit}") ||
-    fail "cannot resolve source revision: $SOURCE_REV"
+    COMMIT=$(git -C "$ROOT" rev-parse --verify --quiet "${SOURCE_REV}^{commit}") ||
+        fail "cannot resolve source revision: $SOURCE_REV"
 
-DIRTY=$(GIT_OPTIONAL_LOCKS=0 git -C "$ROOT" status --porcelain --untracked-files=no)
-if [ -n "$DIRTY" ]; then
-    if [ "$SOURCE_REV" = "HEAD" ]; then
-        printf '%s\n' "$DIRTY" >&2
-        fail "working tree has tracked changes; commit/stash them or pass --source-rev"
+    DIRTY=$(GIT_OPTIONAL_LOCKS=0 git -C "$ROOT" status --porcelain --untracked-files=no)
+    if [ -n "$DIRTY" ]; then
+        if [ "$SOURCE_REV" = "HEAD" ]; then
+            printf '%s\n' "$DIRTY" >&2
+            fail "working tree has tracked changes; commit/stash them or pass --source-rev"
+        fi
+        note "working tree is dirty; building archived revision $SOURCE_REV, not the working tree"
     fi
-    note "working tree is dirty; building archived revision $SOURCE_REV, not the working tree"
-fi
 
-[ -z "$(git -C "$ROOT" submodule status 2>/dev/null)" ] ||
-    fail "submodules are not supported by the canonical build"
+    [ -z "$(git -C "$ROOT" submodule status 2>/dev/null)" ] ||
+        fail "submodules are not supported by the canonical build"
+fi
 
 if [ -e "$OUTPUT_DIR" ]; then
     [ -d "$OUTPUT_DIR" ] || fail "output path is not a directory: $OUTPUT_DIR"
@@ -105,18 +132,22 @@ OUTPUT_DIR=$(CDPATH='' cd -- "$OUTPUT_DIR" && pwd) ||
 
 SRC=$OUTPUT_DIR/source
 mkdir -p "$SRC" || fail "cannot create source directory: $SRC"
-ARCHIVE=$OUTPUT_DIR/source.tar
 
-cleanup_archive()
-{
-    rm -f "$ARCHIVE"
-}
-
-git -C "$ROOT" archive --format=tar "$COMMIT" > "$ARCHIVE" ||
-    { cleanup_archive; fail "git archive failed for $COMMIT"; }
-tar -xf "$ARCHIVE" -C "$SRC" ||
-    { cleanup_archive; fail "cannot extract source archive"; }
-cleanup_archive
+if [ -n "$SOURCE_ARCHIVE" ]; then
+    tar -xf "$SOURCE_ARCHIVE" -C "$SRC" ||
+        fail "cannot extract provided source archive"
+else
+    ARCHIVE=$OUTPUT_DIR/source.tar
+    cleanup_archive()
+    {
+        rm -f "$ARCHIVE"
+    }
+    git -C "$ROOT" archive --format=tar "$COMMIT" > "$ARCHIVE" ||
+        { cleanup_archive; fail "git archive failed for $COMMIT"; }
+    tar -xf "$ARCHIVE" -C "$SRC" ||
+        { cleanup_archive; fail "cannot extract source archive"; }
+    cleanup_archive
+fi
 
 [ -f "$SRC/debian/changelog" ] ||
     fail "archived source has no debian/changelog"

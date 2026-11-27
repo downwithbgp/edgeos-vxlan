@@ -19,8 +19,13 @@ ENV LC_ALL=C.UTF-8
 
 # snapshot.ubuntu.com redirects HTTP to HTTPS; install ca-certificates in the
 # base layer first so the snapshot repository can be used.
+# Bootstrap trust only: exact versions from the signed Ubuntu archive.  No
+# repository signature verification is disabled.  All later packages come from
+# the frozen snapshot below.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates=20260816ubuntu0.24.04.2 \
+        openssl=3.0.13-0ubuntu3.16 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/* \
@@ -32,6 +37,7 @@ RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/* \
     && printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99snapshot \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
+        build-essential \
         debhelper \
         dpkg-dev \
         fakeroot \

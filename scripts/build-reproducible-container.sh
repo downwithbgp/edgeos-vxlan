@@ -78,7 +78,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-for cmd in docker git id; do
+for cmd in docker git id sha256sum mktemp; do
     command -v "$cmd" >/dev/null 2>&1 ||
         fail "required command not found: $cmd"
 done
@@ -92,6 +92,31 @@ else
 fi
 OUTPUT_DIR=$(CDPATH='' cd -- "$OUTPUT_DIR" && pwd) ||
     fail "cannot resolve output directory"
+
+COMMIT=$(git -C "$ROOT" rev-parse --verify --quiet "${SOURCE_REV}^{commit}") ||
+    fail "cannot resolve source revision: $SOURCE_REV"
+DIRTY=$(GIT_OPTIONAL_LOCKS=0 git -C "$ROOT" status --porcelain --untracked-files=no)
+if [ -n "$DIRTY" ]; then
+    if [ "$SOURCE_REV" = "HEAD" ]; then
+        printf '%s\n' "$DIRTY" >&2
+        fail "working tree has tracked changes; commit/stash them or pass --source-rev"
+    fi
+    echo "NOTE: dirty working tree ignored for explicit source revision $SOURCE_REV" >&2
+fi
+
+ARCHIVE=$(mktemp "${TMPDIR:-/tmp}/edgeos-vxlan-source.XXXXXX.tar") ||
+    fail "cannot create source archive path"
+cleanup_archive()
+{
+    rm -f "$ARCHIVE"
+}
+trap cleanup_archive EXIT HUP INT TERM
+git -C "$ROOT" archive --format=tar "$COMMIT" > "$ARCHIVE" ||
+    fail "cannot archive source commit $COMMIT"
+ARCHIVE_SHA=$(sha256sum "$ARCHIVE" | cut -d ' ' -f1)
+echo "Source revision: $SOURCE_REV"
+echo "Source commit:   $COMMIT"
+echo "Source archive:  $ARCHIVE_SHA"
 
 if [ "$BUILD_IMAGE" = "yes" ]; then
     echo "Building controlled image: $IMAGE"
@@ -113,10 +138,13 @@ docker run --rm \
     --tmpfs /tmp:rw,mode=1777 \
     -e HOME=/tmp \
     -v "$ROOT:/src:ro" \
+    -v "$ARCHIVE:/input/source.tar:ro" \
     -v "$OUTPUT_DIR:/out" \
     -w /src \
     "$IMAGE" \
     /src/scripts/build-reproducible.sh \
+        --source-archive /input/source.tar \
+        --source-commit "$COMMIT" \
         --source-rev "$SOURCE_REV" \
         --output-dir /out
 
