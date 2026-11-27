@@ -11,6 +11,7 @@ what has actually been exercised.
 | Code | Evidence class | What it means |
 |---|---|---|
 | **I** | Implementation | Code, templates, or configuration grammar supports the combination. |
+| **L** | Inferred from Linux VXLAN | Expected from the Linux VXLAN dataplane where no direct hardware dataplane result exists. It is not a substitute for **H**; use it only with the corresponding note. |
 | **A** | Automated off-device | Unit, template, or mocked-reconciler tests in `test/` (349 checks on the current suite). |
 | **S** | Simulated EdgeOS | The vendor EdgeOS 3.0.1 configuration engine under qemu, or the documented emulated-engine scenarios. Not hardware. |
 | **N** | Linux network namespace | General-Linux dataplane semantics in `test/integration-netns.sh`. Not EdgeOS. |
@@ -23,15 +24,15 @@ missing part.
 
 ## 2. Underlay × overlay matrix
 
-| # | Underlay | Overlay Layer 3 | I | A | S | N | H | Documentation status |
-|---:|---|---|---|---|---|---|---|---|
-| 1 | IPv6 | IPv6 | yes | yes | partial | yes | **yes** | Primary; scenario 1 |
-| 2 | IPv6 | Bridged Ethernet (IPv6 on bridge) | yes | yes | — | — | partial | Primary bridged model; scenario 2 |
-| 3 | IPv6 | Dual-stack IPv6 + IPv4 | yes | yes | partial | partial | **yes** | First-class; scenario 3 |
-| 4 | IPv4 | IPv6 | yes | partial | partial | — | — | Interoperability; scenario 4; not separately hardware-qualified |
-| 5 | IPv6 | IPv4 | yes | yes | — | — | **yes** | Interoperability; scenario 5 |
-| 6 | IPv4 | IPv4 | yes | yes | yes | yes | **yes** | Legacy compatibility; scenario 6 |
-| 7 | IPv4 | Dual-stack IPv6 + IPv4 | yes | yes | partial | — | partial | Interoperability; not separately hardware-qualified |
+| # | Underlay | Overlay Layer 3 | I | L | A | S | N | H | Documentation status |
+|---:|---|---|---|---|---|---|---|---|---|
+| 1 | IPv6 | IPv6 | yes | — | yes | partial | yes | **yes** | Primary; scenario 1 |
+| 2 | IPv6 | Bridged Ethernet (IPv6 on bridge) | yes | yes | yes | — | — | partial | Primary bridged model; scenario 2 |
+| 3 | IPv6 | Dual-stack IPv6 + IPv4 | yes | — | yes | partial | partial | **yes** | Primary dual-stack; scenario 3 |
+| 4 | IPv4 | IPv6 | yes | yes | partial | partial | — | — | Interoperability; scenario 4; inferred, not hardware-qualified |
+| 5 | IPv6 | IPv4 | yes | — | yes | — | — | **yes** | Interoperability; scenario 5 |
+| 6 | IPv4 | IPv4 | yes | — | yes | yes | yes | **yes** | Compatibility; scenario 6 |
+| 7 | IPv4 | Dual-stack IPv6 + IPv4 | yes | yes | yes | partial | — | partial | Interoperability; inferred, not hardware-qualified |
 
 Notes:
 
@@ -95,15 +96,15 @@ separate policy on the physical/VLAN interface and must use the family of the ou
 
 ## 4. IPv6-only deployment matrix
 
-| Area | Implementation | Automated / simulated | Hardware | Claim |
-|---|---|---|---|---|
-| VXLAN dataplane with IPv6 underlay and IPv6 overlay | yes | yes | yes | Validated with static endpoints |
-| VXLAN dataplane with IPv6 underlay and IPv4 overlay | yes | partial | yes | Validated on RC1/RC2 |
-| Dual-stack overlay over IPv6 underlay | yes | partial | yes | Validated on RC2 (20/20) |
-| Router management over IPv6 only | n/a (EdgeOS) | — | — | Not validated by this project |
-| Package acquisition over IPv6 only | installer is family-neutral | — | — | Not validated; HTTPS/DNS dependency |
-| CI and test environment IPv6-only | tests configure both families | — | — | No IPv6-only CI job |
-| Diagnostics over IPv6 only | platform tools exist | — | partial | `ip -j` required; `ip -d` defective |
+| Area | Implementation | Automated | Simulated | Hardware | Claim |
+|---|---|---|---|---|---|
+| VXLAN dataplane with IPv6 underlay and IPv6 overlay | yes | yes | partial | yes | Validated with static endpoints |
+| VXLAN dataplane with IPv6 underlay and IPv4 overlay | yes | yes | — | yes | Validated on RC1/RC2 |
+| Dual-stack overlay over IPv6 underlay | yes | yes | partial | yes | Validated on RC2 (20/20) |
+| Router management over IPv6 only | n/a (EdgeOS) | — | — | — | Not validated by this project |
+| Package acquisition over IPv6 only | installer is family-neutral | — | — | — | Not validated; HTTPS/DNS dependency |
+| CI and test environment IPv6-only | tests configure both families | — | — | — | No IPv6-only CI job |
+| Diagnostics over IPv6 only | platform tools exist | — | — | partial | `ip -j` required; `ip -d` defective |
 
 The supported IPv6-only claim is limited to the VXLAN dataplane with static endpoints. Complete
 IPv6-only installation, management, and CI remain engineering gaps.
@@ -124,7 +125,7 @@ namespace test is general-Linux evidence and is labelled as such; it is not Edge
 
 ## 6. Gaps and unverified behaviour
 
-Ordered by significance for an IPv6-first documentation claim:
+Ordered by significance for the current documentation claims:
 
 1. **IPv4 underlay with IPv6 overlay** is implemented but not separately hardware-qualified in the
    published record. Add a hardware run or label it as an interoperability path with an explicit
@@ -147,6 +148,9 @@ Ordered by significance for an IPv6-first documentation claim:
    qualified scope is the isolated dataplane and the operational migration.
 10. **Package removal and downgrade** were not qualified in the v0.3.0 hardware report; the v0.2.x
     removal record remains the relevant evidence.
+11. **Alternate-source IPv6 underlay filtering** was not separately produced in the published
+    hardware record. The IPv6 underlay was validated with an extension of the existing local IPv6
+    policy in place; the alternate-source drop path for IPv6 is an evidence gap, not a claim.
 
 ## 7. Reproducing the off-device evidence
 
@@ -167,10 +171,11 @@ reconstruct a hardware result from the namespace or emulated-engine output.
 
 ## 8. Related documents
 
-* [`ipv6-first-architecture.md`](ipv6-first-architecture.md) — layer model and scope.
-* [`ipv6-first-deployment.md`](ipv6-first-deployment.md) — six deployment scenarios and operations.
-* [`documentation-audit-2026-11.md`](documentation-audit-2026-11.md) — audit findings, corrections,
-  remaining IPv4 assumptions, and follow-up tasks.
+* [`architecture.md`](architecture.md) — layer model and scope.
+* [`deployment.md`](deployment.md) — six deployment scenarios and operations.
+* [`audit/2026-11-documentation-audit.md`](audit/2026-11-documentation-audit.md) — point-in-time
+  audit and final-review record.
+* [`engineering-backlog.md`](engineering-backlog.md) — repository-local engineering proposals.
 * [`issue-3-hardware-evidence.md`](issue-3-hardware-evidence.md) — IPv6 underlay hardware evidence.
 * [`v0.3.0-hardware-qualification-report.md`](v0.3.0-hardware-qualification-report.md) — RC5
   qualification record.

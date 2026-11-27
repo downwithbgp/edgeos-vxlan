@@ -1,4 +1,4 @@
-# IPv6-first architecture and address-family model
+# Architecture and address-family model
 
 **Status:** current architecture note for `edgeos-vxlan` v0.3.0.
 **Platform:** Ubiquiti EdgeRouter X / ER-e50, EdgeOS 3.0.1, Linux `4.14.54-UBNT`.
@@ -8,10 +8,10 @@ authoritative for product behaviour; this note explains how to read them.
 
 ## 1. Architectural position
 
-IPv6 is the preferred protocol for new deployments. IPv4 remains supported for interoperability and
-for existing deployments. Dual-stack operation is a deployment choice, not a prerequisite for using
-this project. IPv6-only operation is a first-class deployment model where the implementation and
-validation evidence support it; the boundaries of that claim are recorded in
+IPv6 is the primary deployment model for new deployments. IPv4 remains supported for
+interoperability and for existing deployments. Dual-stack operation is a deployment choice, not a
+prerequisite for using this project. IPv6-only operation is supported where the implementation and
+validation evidence allow it; the boundaries of that claim are recorded in
 [`address-family-support-matrix.md`](address-family-support-matrix.md).
 
 The implementation is a Linux VXLAN dataplane integration for EdgeOS. It is not a VXLAN control
@@ -56,23 +56,27 @@ Consequences for this project:
 * The VNI and UDP destination port are family-independent. VNI 42 over IPv6 and VNI 42 over IPv4
   are different tunnel instances because their outer endpoints differ.
 
-## 4. Supported combinations and documentation order
+## 4. Documented scenarios and order
 
 The documentation uses the following order. The first example a new reader encounters is an
 entirely IPv6-based deployment.
 
 | Order | Underlay | Overlay | Purpose | Guide |
 |---:|---|---|---|---|
-| 1 | IPv6 | IPv6 | Primary deployment model | [Scenario 1](ipv6-first-deployment.md#2-scenario-1-ipv6-underlay-with-ipv6-overlay) |
-| 2 | IPv6 | Bridged Ethernet | Primary bridged model; Layer 3 addressing is on the bridge | [Scenario 2](ipv6-first-deployment.md#3-scenario-2-ipv6-underlay-with-bridged-ethernet) |
-| 3 | IPv6 | Dual-stack IPv6 + IPv4 | First-class dual-stack overlay over an IPv6 underlay | [Scenario 3](ipv6-first-deployment.md#4-scenario-3-ipv6-underlay-with-a-dual-stack-overlay) |
-| 4 | IPv4 | IPv6 | Interoperability: IPv6 overlay over an IPv4 underlay | [Scenario 4](ipv6-first-deployment.md#5-scenario-4-ipv4-underlay-with-ipv6-overlay) |
-| 5 | IPv6 | IPv4 | Interoperability: IPv4 overlay over an IPv6 underlay | [Scenario 5](ipv6-first-deployment.md#6-scenario-5-ipv6-underlay-with-ipv4-overlay) |
-| 6 | IPv4 | IPv4 | Legacy compatibility | [Scenario 6](ipv6-first-deployment.md#7-scenario-6-ipv4-underlay-with-ipv4-overlay-legacy) |
+| 1 | IPv6 | IPv6 | Primary deployment model | [Scenario 1](deployment.md#2-scenario-1-ipv6-underlay-with-ipv6-overlay) |
+| 2 | IPv6 | Bridged Ethernet | Primary bridged model; Layer 3 addressing is on the bridge | [Scenario 2](deployment.md#3-scenario-2-ipv6-underlay-with-bridged-ethernet) |
+| 3 | IPv6 | Dual-stack IPv6 + IPv4 | First-class dual-stack overlay over an IPv6 underlay | [Scenario 3](deployment.md#4-scenario-3-ipv6-underlay-with-a-dual-stack-overlay) |
+| 4 | IPv4 | IPv6 | Interoperability: IPv6 overlay over an IPv4 underlay | [Scenario 4](deployment.md#5-scenario-4-ipv4-underlay-with-ipv6-overlay) |
+| 5 | IPv6 | IPv4 | Interoperability: IPv4 overlay over an IPv6 underlay | [Scenario 5](deployment.md#6-scenario-5-ipv6-underlay-with-ipv4-overlay) |
+| 6 | IPv4 | IPv4 | Legacy compatibility | [Scenario 6](deployment.md#7-scenario-6-ipv4-underlay-with-ipv4-overlay-legacy) |
 
 The order is a documentation and design preference, not a restriction. Every combination above is
 implemented by the same fixed-remote VXLAN dataplane; the evidence level differs by combination and
 is recorded in the support matrix.
+
+An IPv4 underlay with a dual-stack overlay is implemented as the scenario 6 underlay with the
+dual-stack addressing from scenario 3. It is matrix row 7 and is not a separate scenario; it is not
+separately hardware-qualified.
 
 ## 5. VTEP endpoint rules
 
@@ -96,10 +100,17 @@ not restricted by the VTEP endpoint validation.
 
 The class checks are implemented for IPv6 only. IPv4 endpoints are still checked for format and
 family consistency, but IPv4 multicast, loopback, and unspecified addresses are not rejected by the
-helper. Do not use the validator as an IPv4 scope filter. This asymmetry is recorded in the
-[documentation audit](documentation-audit-2026-11.md) as a follow-up.
+helper. Do not use the validator as an IPv4 scope filter. This asymmetry is tracked as
+[ENG-IPV6-06](engineering-backlog.md#eng-ipv6-06-consistent-ipv4-and-ipv6-endpoint-validation).
+
+Non-canonical IPv4 literals with leading-zero octets are parsed with the platform's octal semantics,
+matching what the target `ip` binary binds; they are never silently rebound as decimal.
 
 ## 6. Encapsulation overhead and MTU
+
+The VXLAN netdev MTU is the maximum **inner IP packet** size. It does not include the inner
+Ethernet header; that header is part of the encapsulation overhead below. The underlay path MTU is a
+separate value and is usually larger.
 
 The outer packet size for a full-size inner Ethernet frame is:
 
@@ -133,10 +144,10 @@ IPv6 overlay must be large enough to leave at least 1280 bytes after the 70-byte
 calculated overlay MTU is 1210, which is below the IPv6 minimum; do not use such a path for an IPv6
 overlay without a deliberate, documented design that addresses the constraint.
 
-Path MTU Discovery is an end-to-end responsibility. This integration does not fragment oversized
-outer IPv6 packets and does not rely on outer fragmentation for correctness. Size the VXLAN MTU for
-the underlay path and permit ICMPv6 Packet Too Big messages; see
-[`ipv6-first-deployment.md`](ipv6-first-deployment.md#8-ipv6-operational-considerations).
+Path MTU Discovery is an end-to-end responsibility, and underlay PMTUD is distinct from overlay
+PMTUD. This integration does not fragment oversized outer IPv6 packets and does not rely on outer
+fragmentation for correctness. Size the VXLAN MTU for the underlay path and permit ICMPv6 Packet Too
+Big messages; see [`deployment.md`](deployment.md#8-ipv6-operational-considerations).
 
 ## 7. Scope
 

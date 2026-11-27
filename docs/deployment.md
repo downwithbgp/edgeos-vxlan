@@ -1,10 +1,10 @@
-# IPv6-first deployment guide
+# Deployment guide
 
 **Status:** current deployment guidance for `edgeos-vxlan` v0.3.0.
 **Platform:** Ubiquiti EdgeRouter X / ER-e50, EdgeOS 3.0.1, Linux `4.14.54-UBNT`.
-**Scope:** the six supported address-family combinations, IPv6 operational considerations, and the
+**Scope:** the six documented deployment scenarios, IPv6 operational considerations, and the
 boundary of IPv6-only deployability. The architectural model and standards references are in
-[`ipv6-first-architecture.md`](ipv6-first-architecture.md); the evidence level for each combination
+[`architecture.md`](architecture.md); the evidence level for each combination
 is in [`address-family-support-matrix.md`](address-family-support-matrix.md).
 
 The examples below use documentation address ranges and a single fixed remote VTEP. They are
@@ -257,8 +257,8 @@ ping -c 3 198.51.100.2
 ```
 
 The overlay firewall families are independent of the underlay family. Both `firewall in name` and
-`firewall in ipv6-name` can be attached at the same time. See the native firewall section of the
-[README](../README.md#native-interface-firewall).
+`firewall in ipv6-name` can be attached at the same time. See the
+[native firewall guide](native-firewall.md).
 
 ## 5. Scenario 4: IPv4 underlay with IPv6 overlay
 
@@ -318,6 +318,95 @@ Underlay peer filtering uses an IPv4 `firewall name` ruleset on the underlay int
 overlay policy uses `firewall ipv6-name` on the VXLAN interface. The two policies inspect different
 packets: outer UDP/4789 versus decapsulated inner IPv6.
 
+### End-to-end example: routed IPv6 overlay over an IPv4 underlay
+
+This example is deliberately generic. The remote VTEP is managed by the tunnel provider, so only the
+router side is shown. Replace the addresses with the provider's transfer subnet, routed allocation
+and peer address.
+
+Assume:
+
+* IPv4 Internet underlay on `eth1`, router address `192.0.2.10/24`, gateway `192.0.2.1`;
+* provider VTEP `192.0.2.2`, VNI `5002`, UDP port `4789`;
+* IPv6 transfer subnet `2001:db8:5002::/64`, provider transfer address `2001:db8:5002::1`;
+* routed IPv6 allocation `2001:db8:5002:100::/56`, routed via the transfer address;
+* the router provides IPv6-only transit; inner IPv4 is blocked.
+
+Underlay peer filtering for outer UDP/4789 on `eth1`:
+
+```text
+set firewall name VXLAN_UNDERLAY4 default-action accept
+set firewall name VXLAN_UNDERLAY4 description 'Restrict VXLAN underlay peer'
+set firewall name VXLAN_UNDERLAY4 rule 10 action accept
+set firewall name VXLAN_UNDERLAY4 rule 10 protocol udp
+set firewall name VXLAN_UNDERLAY4 rule 10 source address 192.0.2.2
+set firewall name VXLAN_UNDERLAY4 rule 10 destination port 4789
+set firewall name VXLAN_UNDERLAY4 rule 20 action drop
+set firewall name VXLAN_UNDERLAY4 rule 20 protocol udp
+set firewall name VXLAN_UNDERLAY4 rule 20 destination port 4789
+set interfaces ethernet eth1 firewall local name VXLAN_UNDERLAY4
+```
+
+The routed VXLAN interface and overlay address:
+
+```text
+set interfaces vxlan vxlan5002 vni 5002
+set interfaces vxlan vxlan5002 local-ip 192.0.2.10
+set interfaces vxlan vxlan5002 remote-ip 192.0.2.2
+set interfaces vxlan vxlan5002 port 4789
+set interfaces vxlan vxlan5002 mtu 1450
+set interfaces vxlan vxlan5002 address 2001:db8:5002::2/64
+set protocols static route6 2001:db8:5002:100::/56 next-hop 2001:db8:5002::1
+```
+
+IPv6 overlay ingress policy. This example permits all ICMPv6 so Neighbor Discovery, Path MTU
+Discovery and error signalling work; tighten it with type-specific rules if your policy requires
+that. Inner IPv4 is explicitly blocked because this deployment is IPv6-only transit:
+
+```text
+set firewall ipv6-name VXLAN6_IN default-action drop
+set firewall ipv6-name VXLAN6_IN rule 10 action accept
+set firewall ipv6-name VXLAN6_IN rule 10 description 'IPv6 ICMPv6: ND, PMTUD and errors'
+set firewall ipv6-name VXLAN6_IN rule 10 protocol icmpv6
+set firewall ipv6-name VXLAN6_IN rule 20 action accept
+set firewall ipv6-name VXLAN6_IN rule 20 state established enable
+set firewall ipv6-name VXLAN6_IN rule 20 state related enable
+# Add the services this router or its downstream networks may receive here.
+
+set firewall name VXLAN4_IN default-action drop
+set firewall name VXLAN4_IN description 'Inner IPv4 is not part of this transit service'
+
+set interfaces vxlan vxlan5002 firewall in ipv6-name VXLAN6_IN
+set interfaces vxlan vxlan5002 firewall in name VXLAN4_IN
+```
+
+If the router itself terminates IPv6 services over the tunnel, add a separate `local` ruleset with
+the ICMPv6, established/related and management rules that the router needs; do not rely on the
+forwarded-ingress ruleset for router-destined traffic.
+
+The IPv4 underlay adds 50 bytes of overhead, so a 1500-byte underlay path gives a VXLAN MTU of
+1450. One outer 802.1Q tag reduces that by 4 bytes. Clamp TCP MSS if the deployment
+requires it; the MTU setting alone is not an MSS clamp.
+
+Verification:
+
+```bash
+show configuration commands | grep vxlan5002
+show interfaces
+show firewall ipv6-name VXLAN6_IN
+show firewall name VXLAN4_IN
+sudo iptables-save -t filter | grep vxlan5002
+sudo ip6tables-save -t filter | grep vxlan5002
+ip -j -d link show dev vxlan5002
+ip -6 neigh show dev vxlan5002
+ip -6 route show 2001:db8:5002:100::/56
+```
+
+From an external host, verify that the transfer address and an address from the routed /56 are
+reachable, that NDP resolves, that a permitted IPv6 service works, that a denied IPv6 port is
+blocked, that inner IPv4 is blocked, and that an outer UDP/4789 probe from another source is blocked
+by `VXLAN_UNDERLAY4` before decapsulation.
+
 ## 6. Scenario 5: IPv6 underlay with IPv4 overlay
 
 This is the interoperability case for an IPv4 overlay transported over an IPv6 underlay. The VTEP
@@ -376,7 +465,10 @@ Packet Too Big handling.
 
 ## 7. Scenario 6: IPv4 underlay with IPv4 overlay (legacy)
 
-This is the legacy compatibility case. It preserves the behaviour of existing v0.2.x deployments.
+This is the compatibility case for an IPv4 underlay with an IPv4 overlay. It preserves the behaviour
+of existing v0.2.x deployments. To carry both overlay families, add the dual-stack addresses from
+scenario 3; the support matrix records that variant as row 7, implemented but not separately
+hardware-qualified.
 
 ### Router A
 
@@ -424,9 +516,9 @@ ip addr show dev vxlan42
 ping -c 3 198.51.100.2
 ```
 
-Existing IPv4 configurations with canonical literals keep their meaning. The implementation accepts
-non-canonical IPv4 literals with the platform's octal interpretation and never silently rebinds them
-as decimal; see the implementation note in the [documentation audit](documentation-audit-2026-11.md).
+Existing IPv4 configurations with canonical literals keep their meaning. Non-canonical IPv4
+literals follow the platform's octal interpretation and are never silently rebound as decimal; see
+the endpoint rules in [`architecture.md`](architecture.md#5-vtep-endpoint-rules).
 
 ## 8. IPv6 operational considerations
 
@@ -435,6 +527,16 @@ as decimal; see the implementation note in the [documentation audit](documentati
 IPv6 routers do not fragment packets in transit. Path MTU Discovery (RFC 8201) depends on ICMPv6
 Packet Too Big (type 2, RFC 4443) reaching the sender. If an underlay or overlay firewall drops
 Packet Too Big, large packets blackhole while small packets continue to work.
+
+There are two PMTUD scopes, and they must not be conflated:
+
+* **Underlay PMTUD.** The outer IPv6 path between the VTEPs discovers its path MTU. Underlay
+  routers send Packet Too Big to the VTEP; the VTEP must be able to receive it, and the VXLAN MTU
+  must fit inside the resulting path. The integration does not fragment oversized outer packets.
+* **Overlay PMTUD.** Inner IPv6 hosts and routers discover the overlay path MTU end to end. Their
+  Packet Too Big messages travel inside the tunnel, so the overlay firewall must permit them. The
+  VXLAN MTU bounds the inner IP packet; the inner Ethernet header is additional encapsulation
+  overhead, not part of that MTU.
 
 Operational rules:
 
@@ -516,41 +618,32 @@ The endpoint rules are part of the commit validation, not documentation advice. 
 * Accept global unicast and ULA IPv6 addresses.
 * Compare canonical forms so an equivalent re-spelling does not recreate the interface.
 
-See [`ipv6-first-architecture.md`](ipv6-first-architecture.md#5-vtep-endpoint-rules) for the full
-table.
+See [`architecture.md`](architecture.md#5-vtep-endpoint-rules) for the full table.
 
 ### 8.7 UDP checksum behaviour
 
-IPv6 UDP checksums are enabled by default. The integration does not expose `udp6zerocsumtx`,
-`udp6zerocsumrx`, or a “no checksum” option, and it should not be configured to disable them. The
-kernel computes the checksum for the outer UDP header. RFC 6935 and RFC 6936 discuss zero-checksum
-exceptions for tunnel protocols; this implementation does not rely on them.
+IPv6 UDP checksums are enabled by default. The integration passes no `udp6zerocsumtx` or
+`udp6zerocsumrx` option and exposes no zero-checksum control. On the validated target, the IPv6
+VXLAN was reported with the UDP checksum enabled and both zero-checksum options disabled (see
+[`issue-3-hardware-evidence.md`](issue-3-hardware-evidence.md)); that is the target's
+default behaviour, not a new configuration. RFC 6935 and RFC 6936 discuss zero-checksum exceptions
+for tunnel protocols; this implementation does not rely on them.
 
-Local packet captures can show apparently invalid UDP checksums while checksum offload is enabled.
-Treat that as a capture artifact unless there is independent evidence of a dataplane fault. Keep
-offload enabled; see the README's checksum-offload note.
+Local `tcpdump` captures can show apparently invalid UDP checksums while checksum offload is
+enabled. Treat that as a capture artifact unless there is independent evidence of a dataplane
+fault. Keep offload enabled and do not disable checksums to make a capture look clean.
 
 ### 8.8 Firewall policy and VTEP exposure
 
-Keep the two policy layers separate:
+Keep the two policy layers separate: the underlay `firewall local` policy filters outer UDP/4789
+and is where the VTEP source is restricted; the overlay `firewall in`/`out`/`local` attachments see
+decapsulated inner traffic. `remote-ip` is not an ingress allowlist, and VXLAN provides no
+authentication or confidentiality.
 
-* **Underlay peer filtering** — a `firewall local` policy on the physical or VLAN interface carrying
-  outer UDP/4789. Restrict the source to the intended VTEP and permit ICMPv6 Packet Too Big and ND
-  as required.
-* **Overlay policy** — `firewall in`/`out`/`local` on the VXLAN interface. This sees decapsulated
-  inner traffic, not the outer UDP transport.
-
-`remote-ip` is not an ingress allowlist. Hardware testing confirmed that a VXLAN configured with one
-`remote-ip` still accepts VNI-matching packets from another underlay source unless an underlay
-policy blocks them. VXLAN provides no authentication or confidentiality; use IPsec or another
-authenticated transport where those properties are required.
-
-Bridged VXLAN interfaces reject firewall attachments. The package does not enable bridge netfilter
-and does not claim Layer 2 firewall enforcement. Routed VXLAN is the supported enforcement case.
-
-The EdgeOS 3.0.1 scripted-commit firewall limitation applies to IPv4 and IPv6 rulesets alike: make
-firewall ruleset changes interactively, and do not treat a successful scripted ruleset-only commit
-as proof of enforcement. See
+Bridged VXLAN interfaces reject firewall attachments; bridge netfilter is not enabled and Layer 2
+enforcement is not claimed. The EdgeOS 3.0.1 scripted-commit limitation applies to both address
+families, so make firewall ruleset changes interactively. Syntax, lifecycle and verification are in
+[`native-firewall.md`](native-firewall.md); the support boundary is in
 [`v0.3.0-support-boundary.md`](v0.3.0-support-boundary.md).
 
 ### 8.9 Fragmentation
@@ -588,20 +681,17 @@ changing underlay addressing, firewall policy, or MTU.
 
 ## 9. IPv6-only deployability
 
-The following table distinguishes what has been validated from what has not. Do not describe the
-project as fully IPv6-only deployable on the basis of the dataplane result alone.
+The VXLAN dataplane has been validated with IPv6-only addresses: IPv6 underlay with IPv6 overlay,
+and IPv6 underlay with a dual-stack overlay. This does not mean an entirely IPv4-free environment
+was validated: the hardware runs did not remove IPv4 from router management, the peer host, the
+test tooling or CI. "IPv6-only dataplane" therefore means the tunnel dataplane used only IPv6
+addresses.
 
-| Area | Status | Evidence or gap |
-|---|---|---|
-| IPv6-only VXLAN dataplane | **Validated on hardware** | IPv6 underlay with IPv6 overlay; static endpoints. |
-| Dual-stack overlay over IPv6 underlay | **Validated on hardware** | Post-reboot run with both overlay families (20/20 packets); static endpoints. |
-| IPv6-only router management | **Not validated by this project** | EdgeOS management services can be configured independently; no project hardware test removes IPv4 management. Keep an independent path. |
-| IPv6-only package acquisition | **Not validated** | `install.sh` uses HTTPS and DNS to reach GitHub. An IPv6-only path depends on DNS, the network, and the endpoint; pre-stage the `.deb` files and use `dpkg` for an offline install if required. |
-| IPv6-only CI and test environment | **Not provided** | The test suite runs off-device and the network-namespace test configures both families. The GitHub-hosted CI environment is not an IPv6-only test environment. |
-| IPv6-only diagnostics | **Mostly available** | `ip -6`, `ping6`, `ip6tables`, `tcpdump`, and `ss` are available on the platform; the vendor `ip -d` human output is defective. Use `ip -j -d`. |
-
-Consequently, the supported claim is: **the VXLAN dataplane can operate with IPv6 only; complete
-IPv6-only installation, management, and CI are engineering gaps, not validated features.**
+The per-area status, evidence classes and gaps are recorded in the
+[IPv6-only deployment matrix](address-family-support-matrix.md#4-ipv6-only-deployment-matrix).
+In summary: the dataplane is validated; router management, package acquisition and CI are not;
+diagnostics are available with the `ip -j -d` caveat. Complete IPv6-only installation, management
+and CI remain engineering gaps, not validated features.
 
 ## 10. Verification and troubleshooting
 
@@ -659,11 +749,14 @@ qualification report back into an earlier candidate record.
 ## 11. Related documents
 
 * [`../README.md`](../README.md) — installation, feature summary, current limitations.
-* [`ipv6-first-architecture.md`](ipv6-first-architecture.md) — layer model, scope, standards.
+* [`architecture.md`](architecture.md) — layer model, scope, standards.
 * [`address-family-support-matrix.md`](address-family-support-matrix.md) — implementation and
   validation evidence by combination.
-* [`documentation-audit-2026-11.md`](documentation-audit-2026-11.md) — audit findings, corrected
-  inaccuracies, remaining IPv4 assumptions, and follow-up tasks.
+* [`native-firewall.md`](native-firewall.md) — firewall and underlay security semantics.
+* [`interface-lifecycle.md`](interface-lifecycle.md) — reconciliation, rollback and persistence.
+* [`audit/2026-11-documentation-audit.md`](audit/2026-11-documentation-audit.md) — point-in-time
+  audit and final-review record.
+* [`engineering-backlog.md`](engineering-backlog.md) — repository-local engineering proposals.
 * [`v0.3.0-support-boundary.md`](v0.3.0-support-boundary.md) — firewall workflow boundary.
 * [`v0.3.0-hardware-qualification-report.md`](v0.3.0-hardware-qualification-report.md) — RC5
   hardware qualification record.

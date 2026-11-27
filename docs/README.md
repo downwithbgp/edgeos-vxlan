@@ -1,21 +1,28 @@
 # Documentation map
 
-This repository's current documentation is IPv6-first. IPv6 is the preferred protocol for new
-deployments; IPv4 remains supported for interoperability and existing deployments. The documentation
-keeps historical release records separate from current guidance so that an old candidate record is
-not mistaken for the current support statement.
+This is the entry point for the repository's documentation. The current guides describe the
+implementation and its supported deployment models. Historical release records and point-in-time
+audit records are kept separate so that an old candidate result is not mistaken for current
+guidance.
 
-## Start here
+The primary deployment model uses IPv6; IPv4 remains supported for interoperability and existing
+deployments. The documentation starts with IPv6 because that is the primary model for new
+deployments, not because IPv4 is unsupported.
+
+## Current guides
 
 | Document | Purpose |
 |---|---|
-| [`../README.md`](../README.md) | Install, feature summary, configuration scenarios, current limitations |
-| [`ipv6-first-architecture.md`](ipv6-first-architecture.md) | Layer model, VTEP endpoint rules, MTU model, scope, standards and applicability |
-| [`ipv6-first-deployment.md`](ipv6-first-deployment.md) | Six deployment scenarios with both endpoints, IPv6 operations, IPv6-only assessment, troubleshooting |
-| [`address-family-support-matrix.md`](address-family-support-matrix.md) | Implementation, automated, simulated, namespace and hardware evidence by combination |
-| [`documentation-audit-2026-11.md`](documentation-audit-2026-11.md) | Audit report: corrections, remaining IPv4 assumptions, IPv6-only findings, prioritized follow-ups |
+| [`../README.md`](../README.md) | Install, package summary, primary configuration, limitations |
+| [`architecture.md`](architecture.md) | Layer model, VTEP endpoint rules, MTU terminology, scope, standards and applicability |
+| [`deployment.md`](deployment.md) | Six deployment scenarios with both endpoints, IPv6 operations, IPv6-only assessment, troubleshooting |
+| [`native-firewall.md`](native-firewall.md) | Firewall attachments, underlay peer filtering, lifecycle, bridged and routed semantics, verification |
+| [`interface-lifecycle.md`](interface-lifecycle.md) | Reconciliation, rollback, deterministic MACs, EdgeOS integration, boot, removal, diagnostics |
+| [`kernel-provenance.md`](kernel-provenance.md) | Kernel module provenance, CVE-2022-50405 backport, compatibility evidence, package build |
+| [`address-family-support-matrix.md`](address-family-support-matrix.md) | Implementation, inferred, automated, simulated, namespace and hardware evidence by combination |
+| [`engineering-backlog.md`](engineering-backlog.md) | Repository-local engineering proposals and acceptance criteria; no remote issues created |
 
-## Current operational and release records
+## Current release records
 
 | Document | Scope |
 |---|---|
@@ -27,8 +34,14 @@ not mistaken for the current support statement.
 | [`v0.3.0-vxlan41913-migration-record.md`](v0.3.0-vxlan41913-migration-record.md) | Operational `vxlan41913` migration record |
 | [`release-engineering-hardening.md`](release-engineering-hardening.md) | Post-v0.3.0 release engineering hardening record |
 
-The release notes and qualification records are dated records. Where a record says a procedure was
-not executed, that statement remains true for that record; use the current guides for current status.
+These are dated records. Where a record says a procedure was not executed, that statement remains
+true for that record; use the current guides for current status.
+
+## Point-in-time audit records
+
+| Document | Scope |
+|---|---|
+| [`audit/2026-11-documentation-audit.md`](audit/2026-11-documentation-audit.md) | Documentation audit and final maintainer-review record. It records what was reviewed and changed at a point in time; it is not current operational guidance. |
 
 ## Historical records
 
@@ -38,7 +51,7 @@ qualification changes the status.
 
 | Group | Documents |
 |---|---|
-| Issue #3 investigation and planning | [`issue-3-ipv6-assessment.md`](issue-3-ipv6-assessment.md), [`issue-3-implementation-plan.md`](issue-3-implementation-plan.md), [`issue-3-change-inventory.md`](issue-3-change-inventory.md), [`issue-3-risks-and-open-questions.md`](issue-3-risks-and-open-questions.md), [`issue-3-test-plan.md`](issue-3-test-plan.md) |
+| Issue #3 investigation and planning | [`issue-3-ipv6-assessment.md`](issue-3-ipv6-assessment.md), [`issue-3-implementation-plan.md`](issue-3-implementation-plan.md), [`issue-3-change-inventory.md`](issue-3-change-inventory.md), [`issue-3-risks-and-open-questions.md`](issue-3-risks-and-open-questions.md), [`issue-3-test-plan.md`](issue-3-test-plan.md), [`issue-3-pr-draft.md`](issue-3-pr-draft.md) |
 | Issue #3 evidence and acceptance | [`issue-3-hardware-evidence.md`](issue-3-hardware-evidence.md), [`issue-3-acceptance-criteria.md`](issue-3-acceptance-criteria.md), [`issue-3-hardware-validation-runbook.md`](issue-3-hardware-validation-runbook.md), [`issue-3-partial-commit-analysis.md`](issue-3-partial-commit-analysis.md) |
 | Issue #3 release records | [`issue-3-release-candidate.md`](issue-3-release-candidate.md), [`issue-3-release-candidate-rc2.md`](issue-3-release-candidate-rc2.md), [`issue-3-deployment-runbook.md`](issue-3-deployment-runbook.md), [`issue-3-stable-release-readiness.md`](issue-3-stable-release-readiness.md), [`issue-3-v0.2.2-release-gate.md`](issue-3-v0.2.2-release-gate.md), [`release-notes-v0.2.2.md`](release-notes-v0.2.2.md) |
 | v0.3.0 candidate and evidence records | [`v0.3.0-platform-investigation.md`](v0.3.0-platform-investigation.md), [`v0.3.0-implementation-plan.md`](v0.3.0-implementation-plan.md), [`v0.3.0-off-device-evidence.md`](v0.3.0-off-device-evidence.md), [`v0.3.0-rc1-artifacts.md`](v0.3.0-rc1-artifacts.md), [`v0.3.0-rc2-artifacts.md`](v0.3.0-rc2-artifacts.md), [`v0.3.0-rc3-artifacts.md`](v0.3.0-rc3-artifacts.md), [`v0.3.0-rc3-evidence.md`](v0.3.0-rc3-evidence.md), [`v0.3.0-rc4-artifacts.md`](v0.3.0-rc4-artifacts.md), [`v0.3.0-rc5-artifacts.md`](v0.3.0-rc5-artifacts.md), [`v0.3.0-first-hardware-session.md`](v0.3.0-first-hardware-session.md), [`v0.3.0-first-hardware-session-record.md`](v0.3.0-first-hardware-session-record.md), [`v0.3.0-hardware-acceptance.md`](v0.3.0-hardware-acceptance.md), [`v0.3.0-maintainer-review.md`](v0.3.0-maintainer-review.md), [`v0.3.0-release-readiness.md`](v0.3.0-release-readiness.md), [`v0.3.0-security-invariants-review.md`](v0.3.0-security-invariants-review.md) |
@@ -52,6 +65,8 @@ The repository uses these labels consistently:
 * **Simulated EdgeOS** — the vendor configuration engine under qemu, or the emulated-engine records.
 * **Linux network namespace** — general-Linux dataplane semantics; not EdgeOS validation.
 * **Physical hardware** — demonstrated on the supported ER-X; the record is cited.
+* **Inferred** — expected from Linux VXLAN behaviour or the implementation, but not directly
+  demonstrated on the supported platform. It is not a hardware result.
 * **Not exercised** — no evidence at that class. Do not infer a pass from another class.
 
 The authoritative combination-by-combination view is
@@ -59,10 +74,13 @@ The authoritative combination-by-combination view is
 
 ## Maintenance rules
 
-1. Keep the current/historical split. Add a new dated record instead of rewriting an old one.
-2. Put the primary example first: IPv6 underlay with IPv6 overlay.
-3. Keep IPv4 examples complete and technically accurate, but do not make them the default mental
-   model.
+1. Keep current guides, release records, audit records and historical records separate.
+2. Put the primary deployment example first; keep IPv4 examples complete but not as the default
+   mental model.
+3. Keep one canonical source per claim: deployment for configuration examples and operations,
+   architecture for the layer model and MTU, native-firewall for firewall semantics,
+   interface-lifecycle for reconciliation, kernel-provenance for module/build evidence, and the
+   support matrix for validation status.
 4. Use `2001:db8::/32` for IPv6 examples and RFC 5737 prefixes for IPv4 examples.
-5. Do not claim a combination, IPv6-only management path, or external probe result without citing
-   the evidence class.
+5. Do not claim a combination, IPv6-only environment, or external probe result without citing the
+   evidence class.
