@@ -118,5 +118,5 @@ curl -fsSL \
   sudo sh
 ```
 
-For the manual procedure, upgrade notes, security guidance and removal instructions, see
-`README.md`.
+For the manual procedure and upgrade notes, see `README.md`. For security guidance and removal
+instructions, see `native-firewall.md` and `interface-lifecycle.md`.
