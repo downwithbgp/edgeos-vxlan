@@ -54,7 +54,14 @@ printf '%s\n' "$*" >> "$FAKE_CRANE_LOG"
 case "$1" in
     digest)
         tag=${2##*:}
-        [ -f "$FAKE_CRANE_STATE/$tag" ] || exit 1
+        if [ "${FAKE_LOOKUP_ERROR:-}" = "unauthorized" ]; then
+            echo "unauthorized: authentication required" >&2
+            exit 1
+        fi
+        if [ ! -f "$FAKE_CRANE_STATE/$tag" ]; then
+            echo "MANIFEST_UNKNOWN: manifest unknown" >&2
+            exit 1
+        fi
         cat "$FAKE_CRANE_STATE/$tag"
         ;;
     push)
@@ -96,6 +103,7 @@ publish()
         FAKE_COPY_FAIL="${FAKE_COPY_FAIL:-no}" \
         FAKE_COPY_DIGEST="${FAKE_COPY_DIGEST:-}" \
         FAKE_DELETE_FAIL="${FAKE_DELETE_FAIL:-no}" \
+        FAKE_LOOKUP_ERROR="${FAKE_LOOKUP_ERROR:-}" \
         "$ROOT/scripts/publish-image-staged.sh" \
         --oci-archive "$ARCHIVE" --qualification "$QUAL" \
         --image ghcr.io/owner/repo-build \
@@ -114,18 +122,18 @@ reset()
 reset
 expect_pass publish
 [ "$(cat "$STATE/target-1")" = "$QUALIFIED" ] && ok || bad "target not promoted"
-[ ! -e "$STATE/staging-1" ] && ok || bad "staging tag not removed"
+[ -e "$STATE/staging-1" ] && ok || bad "staging tag should be retained"
 [ "$(cat "$TMP/digest.txt")" = "$QUALIFIED" ] && ok || bad "digest output wrong"
 grep -q '^push ' "$LOG" && ok || bad "no push recorded"
 grep -q '^copy ' "$LOG" && ok || bad "no copy recorded"
-grep -q '^delete ' "$LOG" && ok || bad "no cleanup recorded"
+grep -q '^delete ' "$LOG" && bad "manifest deletion must never happen" || ok
 
 # --- never promote an unverified push ------------------------------------
 reset
 FAKE_PUSH_DIGEST="$OTHER" FAKE_INDEX_CONTAINS="$OTHER" \
     expect_fail_with "does not contain the qualified manifest" publish
 grep -q '^copy ' "$LOG" && bad "promoted despite digest mismatch" || ok
-[ ! -e "$STATE/staging-1" ] && ok || bad "staging marker left after failure"
+grep -q '^delete ' "$LOG" && bad "failed run deleted a manifest" || ok
 
 # --- an index containing the qualified manifest is acceptable ------------
 reset
@@ -149,11 +157,16 @@ grep -q "already published" "$TMP/out" && ok || bad "idempotent path not reporte
 # --- promotion failure is surfaced and the marker is cleaned ----------
 reset
 FAKE_COPY_FAIL=yes expect_fail_with "cannot promote" publish
-[ ! -e "$STATE/staging-1" ] && ok || bad "staging marker left after promotion failure"
+grep -q '^delete ' "$LOG" && bad "failed run deleted a manifest" || ok
 
 # --- a promoted digest that does not match is rejected ----------------
 reset
 FAKE_COPY_DIGEST="$OTHER" expect_fail_with "does not match the verified" publish
+
+# --- a lookup error is not "tag absent" ------------------------------
+reset
+FAKE_LOOKUP_ERROR=unauthorized expect_fail_with "authorisation failure" publish
+grep -q '^push ' "$LOG" && bad "pushed after a failed tag lookup" || ok
 
 # --- dry run mutates nothing -----------------------------------------
 reset

@@ -114,7 +114,7 @@ The image is not published by this workstream. When it is approved:
    remotely stored digest against the qualified manifest, refuses to replace an
    existing `<sha>` tag that resolves elsewhere, promotes exactly the verified
    digest to the `<sha>` tag, re-reads it, and deletes the staging tag.
-3. Record the promoted digest. The staging tag must not exist afterwards.
+3. Record the promoted digest. The `staging-<run_id>-<run_attempt>` tag is retained on purpose: `crane delete` removes the shared manifest, which would also remove the promoted tag. Removing it is a registry-side garbage-collection action for a maintainer.
 4. Visibility and retention are repository/registry settings, not workflow
    settings: private visibility is the default assumption; retention follows the
    package settings for the repository.

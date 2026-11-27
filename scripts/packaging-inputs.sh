@@ -77,7 +77,8 @@ COMMIT=$(git -C "$REPO" rev-parse --verify --quiet "${REV}^{commit}") ||
 
 # This pattern list is the enforced packaging-input contract. It is
 # intentionally code, not policy data: release/release-policy.json carries no
-# duplicate copy, so there is no second source to drift.
+# copy. scripts/check-pin-commit.sh keeps one deliberate second copy for the
+# pin-commit allowlist; keep the two aligned by review, not at runtime.
 is_excluded()
 {
     case "$1" in

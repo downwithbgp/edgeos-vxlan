@@ -48,8 +48,8 @@ cat > "$FAKE_GH" <<'EOF'
 set -eu
 [ "${FAKE_FAIL:-}" = "yes" ] && exit 1
 case "$*" in
-    *"/releases"*) cat "$FAKE_RELEASES" ;;
-    *"/tags"*) cat "$FAKE_TAGS" ;;
+    *"/releases"*) if [ "${FAKE_RELEASES_RAW_SET:-}" = "1" ]; then printf '%s' "${FAKE_RELEASES_RAW:-}"; else cat "$FAKE_RELEASES"; fi ;;
+    *"/tags"*) if [ "${FAKE_TAGS_RAW_SET:-}" = "1" ]; then printf '%s' "${FAKE_TAGS_RAW:-}"; else cat "$FAKE_TAGS"; fi ;;
     *) echo "unexpected fake-gh call: $*" >&2; exit 9 ;;
 esac
 EOF
@@ -103,12 +103,14 @@ grep -q 'Latest published:    0.3.0' "$TMP/out" && ok || bad "a draft raised the
 jq -s . "$RELEASES.tmp" > "$RELEASES"
 jq -n '[{name:"v0.3.0"},{name:"v0.5.0"}]' > "$TAGS"
 expect_pass check v0.5.0
+grep -q 'Latest published:    0.3.0' "$TMP/out" && ok || bad "a prerelease raised the published version"
 
 # --- a tag without a release does not raise the published version ----------
 rel v0.4.0 false false > "$RELEASES.tmp"
 jq -s . "$RELEASES.tmp" > "$RELEASES"
 jq -n '[{name:"v0.4.0"},{name:"v0.5.0"}]' > "$TAGS"
 expect_pass check v0.5.0
+grep -q 'Latest published:    0.4.0' "$TMP/out" && ok || bad "a bare tag raised the published version"
 
 # --- interrupted publication: draft of the next version resumes ------------
 { rel v0.3.0 false false; rel v0.3.1 true false; } > "$RELEASES.tmp"
@@ -136,6 +138,25 @@ jq -n '[{name:"v0.3.1"}]' > "$TAGS"
 expect_pass check v0.3.1
 grep -q 'version reuse' "$ROOT/scripts/check-version-eligibility.sh" &&
     ok || bad "reuse guard missing from the eligibility script"
+
+# --- reuse at the baseline floor with only a tag is rejected --------------
+jq -n '[]' > "$RELEASES"
+jq -n '[{name:"v0.3.0"}]' > "$TAGS"
+expect_fail_with "version reuse: 0.3.0 is the newest published stable version" check v0.3.0
+
+# --- unparseable payloads fail closed ------------------------------------
+for raw in 'null' '{}' ''; do
+    FAKE_RELEASES_RAW="$raw" expect_fail_with "releases response" \
+        env FAKE_RELEASES="$RELEASES" FAKE_TAGS="$TAGS" \
+            FAKE_RELEASES_RAW_SET=1 FAKE_RELEASES_RAW="$raw" \
+            "$ROOT/scripts/check-version-eligibility.sh" \
+            --repo owner/repo --tag v0.3.1 --gh "$FAKE_GH"
+done
+FAKE_TAGS_RAW='{}' expect_fail_with "tags response" \
+    env FAKE_RELEASES="$RELEASES" FAKE_TAGS="$TAGS" \
+        FAKE_TAGS_RAW_SET=1 FAKE_TAGS_RAW='{}' \
+        "$ROOT/scripts/check-version-eligibility.sh" \
+        --repo owner/repo --tag v0.3.1 --gh "$FAKE_GH"
 
 # --- no releases at all: fall back to the policy baseline ------------------
 jq -n '[]' > "$RELEASES"

@@ -55,6 +55,16 @@ else
     diff <(printf '%s\n' "$EXPECTED_SURFACE") <(printf '%s\n' "$actual") >&2 || true
 fi
 
+# --- no key may be an empty container ---------------------------------------
+# paths(scalars) cannot see a key whose value is an empty array or object, and
+# that is exactly the shape a decorative control takes (for example
+# "requiredApprovers": []). Reject that shape outright.
+empties=$(jq -r '
+    [ paths((type == "array" or type == "object") and length == 0)
+      | map(tostring) | join(".") ] | .[]
+' "$POLICY")
+[ -z "$empties" ] && ok || bad "policy contains empty container keys: $empties"
+
 # --- removed decorative controls must stay removed ---------------------------
 for path in 'publication.signedTagsVariable' 'pinCommit' 'packagingInputs' \
             'project.integrationPackage' 'project.kernelPackage' \
@@ -79,6 +89,9 @@ fi
 unread=""
 while IFS= read -r path; do
     [ -n "$path" ] || continue
+    # schemaVersion is a structural marker: the candidate validator reads it
+    # from manifests, so the same literal elsewhere is not a policy consumer.
+    [ "$path" = "schemaVersion" ] && continue
     if ! grep -rqF ".$path" "$ROOT/scripts" "$ROOT/.github"; then
         unread="${unread}${unread:+, }$path"
     fi
@@ -90,14 +103,20 @@ EOF
 # --- authorization gates must read their names from policy -------------------
 # The gate must not hardcode the environment or variable names it enforces,
 # otherwise the policy value is decorative and the two can drift.
-for path in publication.environment publication.enableVariable \
-            publication.immutableConfirmedVariable publication.confirmValue; do
+for path in publication.environment publication.confirmValue; do
     if grep -qF ".$path" "$ROOT/scripts/check-release-gates.sh"; then
         ok
     else
         bad "check-release-gates.sh does not read .$path from policy"
     fi
 done
+# The two variable names must be *used*, not merely printed in an error, so the
+# gate relies on indirect expansion of the policy value.
+if [ "$(grep -c '\${!' "$ROOT/scripts/check-release-gates.sh")" -ge 2 ]; then
+    ok
+else
+    bad "check-release-gates.sh does not enforce the policy variable names"
+fi
 
 # --- attestation expectations must come from policy -------------------------
 for path in attestation.provenancePredicate attestation.sbomPredicate \

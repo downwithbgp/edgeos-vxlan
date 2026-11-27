@@ -19,10 +19,14 @@
 #
 # Interrupted publication: the staging tag is the recovery marker. A re-run
 # re-pushes it and continues; a run that fails between push and promote leaves
-# only the staging tag, which the next run overwrites or deletes. If the target
-# tag exists but does not match the qualified digest the run stops and never
-# replaces it, so a partially promoted tag can only be removed deliberately by
-# a maintainer.
+# only the staging tag, which the next run overwrites.
+#
+# The staging tag is deliberately NOT deleted after promotion. `crane delete`
+# removes the manifest behind the reference, not the tag: because staging and
+# target point at the same digest, deleting staging would remove the manifest
+# the promoted tag depends on. Retaining one extra tag that aliases the same
+# verified digest is harmless; removing it is a registry-side garbage-collection
+# action for a maintainer, and is listed as such in the runbook.
 #
 # Usage:
 #   publish-image-staged.sh --oci-archive FILE --qualification FILE \
@@ -137,11 +141,9 @@ fi
 STAGING_REF="$IMAGE:$STAGING_TAG"
 TARGET_REF="$IMAGE:$TARGET_TAG"
 
-# The staging tag must never survive a failure that prevented promotion.
-cleanup_staging()
-{
-    "$CRANE_BIN" delete "$STAGING_REF" >/dev/null 2>&1 || true
-}
+TMPD=$(mktemp -d "${TMPDIR:-/tmp}/edgeos-vxlan-image-publish.XXXXXX") ||
+    fail "cannot create temporary directory"
+trap 'rm -rf "$TMPD"' EXIT HUP INT TERM
 
 if [ "$DRY_RUN" = "yes" ]; then
     echo "Image staging: DRY-RUN"
@@ -149,12 +151,25 @@ if [ "$DRY_RUN" = "yes" ]; then
     echo "Qualified:     $QUALIFIED"
     echo "Staging tag:   $STAGING_TAG"
     echo "Target tag:    $TARGET_TAG"
-    echo "Plan: push -> verify staging -> copy verified digest -> verify target -> delete staging"
+    echo "Plan: push -> verify staging -> copy verified digest -> verify target (staging retained)"
     exit 0
 fi
 
 # 1. Never replace a target tag that points somewhere else.
-EXISTING=$("$CRANE_BIN" digest "$TARGET_REF" 2>/dev/null || true)
+# A transport or authorisation failure is not "absent": treating it as absent
+# would let this script overwrite the very tag it exists to protect.
+EXISTING=
+if "$CRANE_BIN" digest "$TARGET_REF" >"$TMPD/digest" 2>"$TMPD/err"; then
+    EXISTING=$(cat "$TMPD/digest")
+elif grep -qiE 'not found|MANIFEST_UNKNOWN|NAME_UNKNOWN|404' "$TMPD/err"; then
+    EXISTING=
+elif grep -qi 'unauthorized\|denied\|401\|403' "$TMPD/err"; then
+    cat "$TMPD/err" >&2
+    fail "cannot read $TARGET_REF: authorisation failure"
+else
+    cat "$TMPD/err" >&2
+    fail "cannot determine whether $TARGET_REF exists"
+fi
 if [ -n "$EXISTING" ]; then
     if [ "$EXISTING" = "$QUALIFIED" ]; then
         echo "Image staging: PASS (already published)"
@@ -167,7 +182,6 @@ if [ -n "$EXISTING" ]; then
 fi
 
 # 2. Push under the candidate-specific staging tag.
-trap cleanup_staging EXIT HUP INT TERM
 "$CRANE_BIN" push "$ARCHIVE" "$STAGING_REF" >/dev/null ||
     fail "cannot push $ARCHIVE to $STAGING_REF"
 
@@ -190,13 +204,12 @@ PROMOTED=$("$CRANE_BIN" digest "$TARGET_REF" 2>/dev/null) ||
 [ "$PROMOTED" = "$REMOTE" ] ||
     fail "promoted digest $PROMOTED does not match the verified $REMOTE"
 
-# 5. Success: remove the staging marker.
-trap - EXIT HUP INT TERM
-cleanup_staging
+# 5. Success. The staging tag is retained on purpose; see the header.
 
 echo "Image staging: PASS"
 echo "Image:         $IMAGE"
 echo "Qualified:     $QUALIFIED"
+echo "Staging tag:   $STAGING_REF (retained; aliases the published digest)"
 echo "Published as:  $TARGET_REF"
 echo "Digest:        $PROMOTED"
 [ -z "$DIGEST_OUT" ] || printf '%s\n' "$PROMOTED" > "$DIGEST_OUT"

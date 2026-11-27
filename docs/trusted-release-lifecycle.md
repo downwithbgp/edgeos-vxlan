@@ -266,6 +266,9 @@ Final branch head for every result below:
 | `test/unit-candidate-schema.sh` | 7/7 | malformed JSON, duplicate object keys, invalid types, schema version, unexpected properties, digest formats |
 | `test/unit-image-qualification.sh` | 8/8 | OCI index/manifest/config selection, tampered and missing blobs, ambiguity, traversal |
 | `test/unit-release-contracts.sh` | 39/39 | schema/semantic separation, candidate-ID substitution, artifact substitution, modified SBOM and predicate, wrong subject name and wrong subject bytes, malformed bundle and malformed SBOM, missing evidence, failed qualification check, duplicate artifacts, wrong workflow ref, historical reuse, canonical-to-legacy downgrade, the full publication-gate matrix, attestation identity semantics, concurrent candidates |
+| `test/unit-release-policy.sh` | 21/21 | policy surface equals the implemented set, every key has a consumer, gates enforce policy variable names, no key implies tag signing, removed controls stay removed, no empty-container keys |
+| `test/unit-release-version.sh` | 21/21 | publication eligibility: regression, Debian ordering, drafts/prereleases/bare tags not raising the floor, interrupted resume, reuse rejection, unparseable payloads failing closed |
+| `test/unit-release-image-publish.sh` | 30/30 | staged image publication: verified-before-promote, conflicting tag never replaced, lookup error fails closed, no manifest deletion, dry run inert |
 | `test/unit-release-publication.sh` | 9/9 | publication path against an isolated mocked API: expired artifact, digest mismatch, conflicting draft asset, unexpected draft assets, resume without mutation, interrupted draft completion, tampered tag-side `install.sh` |
 
 `shellcheck -x -e SC1091,SC2015` over the canonical file set and
@@ -349,17 +352,25 @@ Recorded code-level limitations:
   (`staging-<run_id>-<run_attempt>`), verifies the remotely stored digest
   against the qualified manifest (accepting an index only when it contains
   that manifest), refuses to replace an existing target tag that resolves
-  elsewhere, promotes exactly the verified digest, re-reads the target digest,
-  and deletes the staging tag. A failure between push and promote leaves only
-  the staging marker, which the next run overwrites or deletes; a conflicting
-  target tag is never replaced, so recovery is a deliberate maintainer action.
+  elsewhere, promotes exactly the verified digest, and re-reads the target
+  digest. The staging tag is deliberately retained: `crane delete` removes the
+  manifest behind a reference, and staging and target share one digest, so
+  deleting it would remove the published manifest. A failure between push and
+  promote leaves only the staging alias, which the next run overwrites; a
+  conflicting target tag is never replaced, and a tag-lookup error aborts
+  rather than being read as "absent".
   `test/unit-release-image-publish.sh` exercises all of this against a
   recording fake `crane`; the real registry has not been contacted.
-- `verify-release.yml` uses the runner's preinstalled `gh`/`jq`/`dpkg`
-  toolchain rather than the pinned release tools; the release workflow pins
-  them. A mutated runner toolchain would weaken independent verification.
-- The post-publication verifier runs inside the `contents: write` publish job.
-  Splitting it into a read-only job is the safer shape.
+- `verify-release.yml` and `post-publish-verify` both install the pinned
+  release-tools set, but the remaining tools are deliberately platform-provided
+  and are trusted inputs: `git`, `jq`, `dpkg`/`dpkg-deb`, `readelf`, `modinfo`,
+  `python3`, `tar`, `gzip` and coreutils. A compromised runner toolchain would
+  weaken verification; the alternative (pinning every one of them) is not done
+  here and is listed as an activation consideration, not a present guarantee.
+- Post-publication verification already runs in its own read-only job
+  (`post-publish-verify`, `contents: read`/`attestations: read`) after a
+  successful publish, so publication and verification failures are independent.
+  What is *not* exercised is that job against a real published release.
 - Decorative policy controls were removed rather than retained: the
   `signedTagsVariable` key, the `pinCommit.allowlist` and the
   `packagingInputs.exclude` copy. None was read by any script, so each implied

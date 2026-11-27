@@ -95,10 +95,19 @@ VERSION=${TAG#v}
 
 # Both endpoints are paginated; gh emits one JSON array per page, so slurp and
 # concatenate. A failure here is a hard stop: eligibility must not be guessed.
+require_json_array()
+{
+    [ -n "$2" ] || fail "empty $1 response for $REPO"
+    printf '%s' "$2" | jq -e -s 'all(.[]; type == "array")' >/dev/null 2>&1 ||
+        fail "unexpected $1 response for $REPO: not a JSON array"
+}
+
 RELEASES=$("$GH_BIN" api --paginate "repos/$REPO/releases?per_page=100" 2>/dev/null) ||
     fail "cannot read published releases for $REPO"
+require_json_array "releases" "$RELEASES"
 TAGS=$("$GH_BIN" api --paginate "repos/$REPO/tags?per_page=100" 2>/dev/null) ||
     fail "cannot read tags for $REPO"
+require_json_array "tags" "$TAGS"
 
 BASELINE=$(jq -r '.release.baselinePublishedVersion' "$POLICY")
 printf '%s' "$BASELINE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' ||
@@ -106,6 +115,15 @@ printf '%s' "$BASELINE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' ||
 
 # Highest published stable version. Debian comparison semantics, not lexical
 # order, so 0.10.0 > 0.9.0.
+IGNORED=$(printf '%s' "$RELEASES" | jq -sr '
+    [ .[] | .[]?
+      | select(.draft == false and .prerelease == false)
+      | .tag_name
+      | select(type == "string" and (test("^v[0-9]+\\.[0-9]+\\.[0-9]+$") | not))
+    ] | .[]' 2>/dev/null || true)
+[ -z "$IGNORED" ] ||
+    note "published releases with non-release tags are not considered: $(printf '%s' "$IGNORED" | tr '\n' ' ')"
+
 LATEST=$BASELINE
 while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
@@ -140,9 +158,11 @@ fi
 
 # V == latest published stable: only a resume of that exact tag is eligible.
 if dpkg --compare-versions "$VERSION" eq "$LATEST"; then
-    if [ "$TARGET_STATE" = "none" ] && [ "$TAG_EXISTS" != "true" ]; then
+    # Only a release that already exists may be resumed. A bare tag is not a
+    # publication, so reusing the newest published version with a tag alone
+    # would be an implicit reuse exception -- reject it.
+    [ "$TARGET_STATE" != "none" ] ||
         fail "version reuse: $VERSION is the newest published stable version and tag $TAG has no release"
-    fi
     note "resuming $TAG at the newest published stable version $LATEST ($TARGET_STATE)"
 fi
 

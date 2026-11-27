@@ -84,15 +84,15 @@ fi
     fail "publication must run from refs/heads/main"
 [ "${RELEASE_ENVIRONMENT:-}" = "$ENVIRONMENT" ] ||
     fail "publication environment is not $ENVIRONMENT"
-[ "${RELEASE_PUBLICATION_ENABLED:-}" = "true" ] ||
-    fail "repository variable $ENABLE_VAR is not true"
+[ "${!ENABLE_VAR:-}" = "true" ] ||
+    fail "variable $ENABLE_VAR is not true (expected in $ENVIRONMENT)"
 [ "$CONFIRM" = "$EXPECTED_CONFIRM" ] ||
     fail "confirmation value does not match the policy"
 
 if [ -n "${IMMUTABLE_RELEASES_ADMIN_TOKEN:-}" ]; then
     fail "administrative immutable-release tokens are not accepted in the publication path"
 fi
-[ "${IMMUTABLE_RELEASES_CONFIRMED:-}" = "true" ] ||
+[ "${!IMMUTABLE_VAR:-}" = "true" ] ||
     fail "set $IMMUTABLE_VAR=true only after enabling immutable releases"
 note "immutable state is confirmed by the maintainer variable; post-publish verification is mandatory"
 
