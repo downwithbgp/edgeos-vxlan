@@ -1,9 +1,9 @@
 # Release engineering hardening
 
 **Branch:** `ci/release-engineering-hardening`
-**Draft PR:** <https://github.com/downwithbgp/edgeos-vxlan/pull/5>
+**PR:** <https://github.com/downwithbgp/edgeos-vxlan/pull/5>
 **Base:** `origin/main` `5ed46fd` (v0.3.0)
-**Status:** review-ready draft; nothing merged, tagged or published.
+**Status:** approved for closure; v0.3.0 published-release verification complete; merge authorized.
 **Last branch commit before this report update:** `8194f7e`.
 
 ## 1. Scope and isolation
@@ -105,6 +105,7 @@ from PR refs because it requires root/network namespaces.
 | Negative suite (merged v0.3.0 tree) | 25/25; published-fixture cases skipped because clean rebuilds do not match release pins |
 | v0.3.0 build contract | PASS |
 | Published v0.3.0 assets | PASS, including `.buildinfo`/`.changes` |
+| v0.3.0 dispatch run 45938803456 | all jobs green; tag ancestry identical to main; published verification PASS; hashes `c555a9…` / `73059b…` unchanged |
 | Published v0.2.2 assets | PASS |
 | shellcheck / actionlint / zizmor | clean (zizmor offline and online) |
 | lintian | clean with the documented suppression |
@@ -112,6 +113,13 @@ from PR refs because it requires root/network namespaces.
 | Final push run 45926157384 | static analysis, build/validate and network-namespace dataplane all green |
 | PR run 45926265802 | all applicable jobs green (static analysis, build/validate); dataplane and published verification skipped by design |
 | PR | <https://github.com/downwithbgp/edgeos-vxlan/pull/5> (draft, mergeable) |
+
+The v0.3.0 dispatch run is
+<https://github.com/downwithbgp/edgeos-vxlan/actions/runs/45938803456>: Build
+and validate packages, Static analysis, Network-namespace dataplane and Verify
+published release all succeeded. The verifier used this branch's current
+validation logic and `refs/tags/v0.3.0`; the published assets still hash to
+`c555a9…` / `73059b…`.
 
 Earlier green runs: 45902676688, 45902842570 (published v0.2.2 verification),
 45903324988, 45905792742, 45906496008.
@@ -160,8 +168,10 @@ input.
 
 **Scope:** byte reproducibility is demonstrated for v0.2.2 across the tested
 contexts and for v0.3.0 only among clean-archive builds. Published v0.3.0 is
-content-identical but not byte-reproducible from the tagged tree. Future
-releases are not guaranteed byte-reproducible until source mtimes are
+content-identical but not byte-reproducible from the tagged tree. The v0.3.0
+byte discrepancy is accepted as a documented limitation because the published
+payload, control metadata, install pins, manifest and tag ancestry all verify.
+Future releases are not guaranteed byte-reproducible until source mtimes are
 normalized and the environment is pinned.
 
 ## 6. Maintainer decisions and policy
@@ -249,10 +259,11 @@ packet captures and hashes. This remains a separate project.
 
 ## 11. PR and merge procedure
 
-* Draft PR #5: problem, changes, security/correctness, verification,
+* PR #5: problem, changes, security/correctness, verification,
   reproducibility scope, run links, limitations, deferred architecture and
   integration notes.
-* Do not mark ready until the PR checks are green and review is complete.
+* Maintainer approval received; merge with a merge commit after the final PR
+  checks are green.
 * Recommended merge: merge commit (preserve the integration history), then
   confirm main CI; do not create a tag/release as a test.
 * After merge, delete the branch only if the maintainer chooses; retain the
