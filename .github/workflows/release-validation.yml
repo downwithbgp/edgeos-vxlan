@@ -6,6 +6,9 @@
 #   * The published-release job downloads assets from a GitHub Release and
 #     inspects them as data.  It does not execute tagged source or downloaded
 #     packages.  Its validation logic comes from the current trusted branch.
+#   * Privileged network-namespace jobs (dataplane and IPv6-only) run only on
+#     trusted refs (push, tag, release, manual dispatch), never on pull
+#     requests, so untrusted code is not executed with CAP_NET_ADMIN.
 #   * A release published with GITHUB_TOKEN does not start another workflow
 #     run (GitHub suppresses recursive token-triggered runs), so the release
 #     event and the manual workflow_dispatch path are both supported.
@@ -66,7 +69,7 @@ jobs:
       - name: Check shell scripts
         run: |
           shellcheck --version
-          shellcheck install.sh scripts/*.sh test/*.sh \
+          shellcheck install.sh scripts/*.sh test/*.sh test/lib/*.sh \
             debian/*.preinst debian/*.postinst debian/*.prerm debian/*.postrm \
             src/vyatta-vxlan src/vyatta-vxlan-bridge src/vyatta-vxlan-firewall
 
@@ -96,7 +99,7 @@ jobs:
 
       - name: Install build and validation dependencies
         run: |
-          sudo apt-get update
+          ./scripts/apt-update-ubuntu-only.sh
           sudo apt-get install -y --no-install-recommends \
             build-essential \
             debhelper \
@@ -153,7 +156,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt-get update
+          ./scripts/apt-update-ubuntu-only.sh
           sudo apt-get install -y --no-install-recommends \
             build-essential debhelper dpkg-dev fakeroot
 
@@ -207,21 +210,93 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Install dataplane test tools
+      - name: Prepare dataplane test tools
         run: |
-          sudo apt-get update
+          missing=0
+          for cmd in ip iptables ip6tables ping python3; do
+            if ! command -v "$cmd" >/dev/null 2>&1; then
+              echo "NOTICE: $cmd is not present in the runner image" >&2
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 0 ]; then
+            echo "All dataplane tools are already present; no package acquisition."
+            exit 0
+          fi
+          ./scripts/apt-update-ubuntu-only.sh
           sudo apt-get install -y --no-install-recommends \
             iproute2 iptables iputils-ping python3
 
       - name: Enable VXLAN modules
         run: |
-          sudo modprobe vxlan udp_tunnel ip6_udp_tunnel || true
+          sudo modprobe vxlan udp_tunnel ip6_udp_tunnel
 
       - name: Linux network-namespace dataplane test
         env:
           REQUIRE_NETNS_TEST: "1"
         run: |
           sudo -E bash test/integration-netns.sh
+
+  # Level B qualification: an isolated IPv6-only network-namespace topology.
+  # This job runs on trusted events only.  The runner and GitHub control plane
+  # remain dual-stack; that is Level D and is explicitly not claimed.
+  ipv6-only:
+    name: IPv6-only qualification
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify IPv6-only test tooling
+        run: |
+          missing=0
+          for cmd in ip ping python3 timeout awk sed grep; do
+            if ! command -v "$cmd" >/dev/null 2>&1; then
+              echo "ERROR: required tool missing from the runner image: $cmd" >&2
+              missing=1
+            fi
+          done
+          if command -v tcpdump >/dev/null 2>&1; then
+            echo "Packet capture: tcpdump is available."
+          else
+            echo "Packet capture: tcpdump is unavailable; capture evidence will be recorded as skipped."
+          fi
+          exit "$missing"
+
+      - name: Enable VXLAN modules
+        run: |
+          sudo modprobe vxlan udp_tunnel ip6_udp_tunnel
+
+      - name: Establish and qualify the isolated IPv6-only topology
+        env:
+          REQUIRE_NETNS_TEST: "1"
+          REQUIRE_CAPTURE: "0"
+          REQUIRE_RECONCILER: "1"
+          EVIDENCE_DIR: ${{ runner.temp }}/ipv6-only-evidence
+        run: |
+          sudo -E bash test/ipv6-only-netns.sh
+
+      - name: Upload IPv6-only evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ipv6-only-qualification-evidence
+          path: ${{ runner.temp }}/ipv6-only-evidence
+          if-no-files-found: warn
+          compression-level: 0
+
+      - name: Clean up isolated namespaces
+        if: always()
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/ipv6-only-evidence
+        run: |
+          sudo -E bash test/ipv6-only-netns.sh --cleanup
 
   published-release:
     name: Verify published release
