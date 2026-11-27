@@ -279,5 +279,159 @@ expect_fail_with "administrative immutable-release tokens are not accepted" \
         IMMUTABLE_RELEASES_CONFIRMED=true IMMUTABLE_RELEASES_ADMIN_TOKEN=x \
         "$ROOT/scripts/check-release-gates.sh" --tag v0.3.1 --confirm PUBLISH
 
+# --- adversarial matrix: qualification evidence, digests, duplication --------
+
+# One failed qualification check must reject the whole candidate.
+QUALFAIL=$TMP/qual-fail
+cp -a "$CAND" "$QUALFAIL"
+jq '.qualification.checks[0].status="failed"' "$CAND/release-candidate.json" \
+    > "$QUALFAIL/release-candidate.json"
+qid=$(candidate_id_from_manifest "$QUALFAIL/release-candidate.json")
+jq --arg id "$qid" '.candidate.id=$id' "$QUALFAIL/release-candidate.json" > "$TMP/q1"
+mv "$TMP/q1" "$QUALFAIL/release-candidate.json"
+expect_fail_with "qualification checks did not pass" \
+    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$QUALFAIL" --release
+
+# A candidate whose qualification status is not passed is rejected.
+# "failed" is schema-valid, so this exercises the semantic layer.
+STATUSFAIL=$TMP/status-fail
+cp -a "$CAND" "$STATUSFAIL"
+jq '.qualification.status="failed"' "$CAND/release-candidate.json" \
+    > "$STATUSFAIL/release-candidate.json"
+sid=$(candidate_id_from_manifest "$STATUSFAIL/release-candidate.json")
+jq --arg id "$sid" '.candidate.id=$id' "$STATUSFAIL/release-candidate.json" > "$TMP/s1"
+mv "$TMP/s1" "$STATUSFAIL/release-candidate.json"
+expect_fail_with "qualification status is not passed" \
+    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$STATUSFAIL" --release
+
+# A malformed (non-digest) manifest digest is rejected by the schema, before
+# the semantic layer is reached. Digests are therefore never merely stringy.
+BADDIGEST=$TMP/bad-digest
+cp -a "$CAND" "$BADDIGEST"
+jq '.buildEnvironment.manifestDigest="not-a-digest"' "$CAND/release-candidate.json" \
+    > "$BADDIGEST/release-candidate.json"
+did=$(candidate_id_from_manifest "$BADDIGEST/release-candidate.json")
+jq --arg id "$did" '.candidate.id=$id' "$BADDIGEST/release-candidate.json" > "$TMP/d1"
+mv "$TMP/d1" "$BADDIGEST/release-candidate.json"
+expect_fail_with "buildEnvironment/manifestDigest" \
+    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$BADDIGEST" --release
+
+# Duplicate artifact names are rejected.
+DUP=$TMP/duplicate
+cp -a "$CAND" "$DUP"
+jq '.artifacts += [.artifacts[0]]' "$CAND/release-candidate.json" \
+    > "$DUP/release-candidate.json"
+dupid=$(candidate_id_from_manifest "$DUP/release-candidate.json")
+jq --arg id "$dupid" '.candidate.id=$id' "$DUP/release-candidate.json" > "$TMP/du1"
+mv "$TMP/du1" "$DUP/release-candidate.json"
+expect_fail_with "duplicate artifact names" \
+    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$DUP" --release
+
+# An unexpected artifact role is rejected by the schema layer.
+BADROLE=$TMP/bad-role
+cp -a "$CAND" "$BADROLE"
+jq '.artifacts[0].role="executable"' "$CAND/release-candidate.json" \
+    > "$BADROLE/release-candidate.json"
+rid=$(candidate_id_from_manifest "$BADROLE/release-candidate.json")
+jq --arg id "$rid" '.candidate.id=$id' "$BADROLE/release-candidate.json" > "$TMP/r1"
+mv "$TMP/r1" "$BADROLE/release-candidate.json"
+expect_fail_with "artifacts/0/role" \
+    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$BADROLE" --release
+
+# --- adversarial matrix: publication authorization ----------------------------
+
+# Publication must come from main.
+expect_fail_with "must run from refs/heads/main" \
+    env GITHUB_ACTIONS=true GITHUB_EVENT_NAME=workflow_dispatch \
+        GITHUB_REF=refs/heads/feature RELEASE_ENVIRONMENT=release-publication \
+        RELEASE_PUBLICATION_ENABLED=true IMMUTABLE_RELEASES_CONFIRMED=true \
+        "$ROOT/scripts/check-release-gates.sh" --tag v0.3.1 --confirm PUBLISH
+
+# Publication must run in the protected environment.
+expect_fail_with "publication environment is not" \
+    env GITHUB_ACTIONS=true GITHUB_EVENT_NAME=workflow_dispatch \
+        GITHUB_REF=refs/heads/main RELEASE_ENVIRONMENT=other \
+        RELEASE_PUBLICATION_ENABLED=true IMMUTABLE_RELEASES_CONFIRMED=true \
+        "$ROOT/scripts/check-release-gates.sh" --tag v0.3.1 --confirm PUBLISH
+
+# Publication requires the enable variable.
+expect_fail_with "is not true" \
+    env GITHUB_ACTIONS=true GITHUB_EVENT_NAME=workflow_dispatch \
+        GITHUB_REF=refs/heads/main RELEASE_ENVIRONMENT=release-publication \
+        RELEASE_PUBLICATION_ENABLED=false IMMUTABLE_RELEASES_CONFIRMED=true \
+        "$ROOT/scripts/check-release-gates.sh" --tag v0.3.1 --confirm PUBLISH
+
+# Immutable confirmation is required.
+expect_fail_with "immutable" \
+    env GITHUB_ACTIONS=true GITHUB_EVENT_NAME=workflow_dispatch \
+        GITHUB_REF=refs/heads/main RELEASE_ENVIRONMENT=release-publication \
+        RELEASE_PUBLICATION_ENABLED=true \
+        "$ROOT/scripts/check-release-gates.sh" --tag v0.3.1 --confirm PUBLISH
+
+# The exact confirmation string is required.
+expect_fail_with "confirmation value does not match" \
+    env GITHUB_ACTIONS=true GITHUB_EVENT_NAME=workflow_dispatch \
+        GITHUB_REF=refs/heads/main RELEASE_ENVIRONMENT=release-publication \
+        RELEASE_PUBLICATION_ENABLED=true IMMUTABLE_RELEASES_CONFIRMED=true \
+        "$ROOT/scripts/check-release-gates.sh" --tag v0.3.1 --confirm publish
+
+# A full set of correct gates passes (the only accepted combination).
+expect_pass env GITHUB_ACTIONS=true GITHUB_EVENT_NAME=workflow_dispatch \
+    GITHUB_REF=refs/heads/main RELEASE_ENVIRONMENT=release-publication \
+    RELEASE_PUBLICATION_ENABLED=true IMMUTABLE_RELEASES_CONFIRMED=true \
+    "$ROOT/scripts/check-release-gates.sh" --tag v0.3.1 --confirm PUBLISH
+
+# --- adversarial matrix: attestation identity ---------------------------------
+
+# Exercises the real verifier against a mocked GitHub CLI. Signature crypto is
+# covered by the live acceptance run; these cases pin the identity semantics.
+FAKE_ATTEST_GH=$TMP/fake-attest-gh
+cat > "$FAKE_ATTEST_GH" <<'EOF'
+#!/bin/sh
+set -eu
+[ "${FAKE_ATTEST_FAIL:-}" = "yes" ] && { echo "no attestations found" >&2; exit 1; }
+cat "$FAKE_ATTEST_OUTPUT"
+EOF
+chmod +x "$FAKE_ATTEST_GH"
+BUNDLE_FILE=$TMP/bundle-identity.jsonl
+: > "$BUNDLE_FILE"
+
+verify_with_identity()
+{
+    GH_BIN=$FAKE_ATTEST_GH FAKE_ATTEST_OUTPUT=$1 \
+        "$ROOT/scripts/verify-attestations.sh" \
+        --candidate-dir "$CAND" --bundle "$BUNDLE_FILE" --no-sbom
+}
+
+# Wrong repository identifier in the signing certificate.
+jq -n '[{verificationResult:{signature:{certificate:{sourceRepositoryIdentifier: 999}}}}]' \
+    > "$TMP/id-wrong.json"
+expect_fail_with "attestation repository ID 999 != expected" \
+    verify_with_identity "$TMP/id-wrong.json"
+
+# Missing repository identifier.
+jq -n '[{verificationResult:{signature:{certificate:{}}}}]' > "$TMP/id-missing.json"
+expect_fail_with "exposes no repository identifier" \
+    verify_with_identity "$TMP/id-missing.json"
+
+# Multiple repository identifiers are ambiguous.
+jq -n '[{verificationResult:{signature:{certificate:{sourceRepositoryIdentifier: 1}}}},
+        {verificationResult:{signature:{certificate:{sourceRepositoryIdentifier: 2}}}}]' \
+    > "$TMP/id-multiple.json"
+expect_fail_with "multiple repository identifiers" \
+    verify_with_identity "$TMP/id-multiple.json"
+
+# A failed gh verification must not be treated as success.
+expect_fail_with "attestation verification failed" \
+    env GH_BIN="$FAKE_ATTEST_GH" FAKE_ATTEST_FAIL=yes \
+        FAKE_ATTEST_OUTPUT="$TMP/id-wrong.json" \
+        "$ROOT/scripts/verify-attestations.sh" \
+        --candidate-dir "$CAND" --bundle "$BUNDLE_FILE" --no-sbom
+
+# The genuine repository identifier is accepted.
+jq -n '[{verificationResult:{signature:{certificate:{sourceRepositoryIdentifier: 1357738281}}}}]' \
+    > "$TMP/id-good.json"
+expect_pass verify_with_identity "$TMP/id-good.json"
+
 echo "unit-release-contracts: pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]
