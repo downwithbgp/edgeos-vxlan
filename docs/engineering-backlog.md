@@ -43,6 +43,7 @@ not change product runtime semantics, installer behavior or release assets.
 | ENG-IPV6-08 | Family-selective firewall state capture | P1 | No, provided the current limitation remains stated |
 | ENG-IPV6-09 | Routed-underlay PMTUD and ICMPv6 Packet Too Big qualification | P1 | No, provided the local-MTU limitation remains stated |
 | ENG-IPV6-10 | Modern iproute2 JSON diagnostic tolerance | P2 | No, provided the supported-platform boundary remains stated |
+| ENG-IPV6-11 | Trusted release-candidate IPv6 qualification integration | P0 | **Yes — must be complete before production release publication is enabled** |
 
 ---
 
@@ -216,12 +217,12 @@ namespaces is Level B, not Level D.
   malformed or substituted evidence.
 * [x] The job is ported into the trusted-release-lifecycle `ci.yml` and binds its evidence to the
   same-run package artifact, source commit, workflow identity and packaged reconciler hashes.
-* [ ] The evidence is wired into the release candidate manifest and publication gate. This remains
-  a separate focused Phase III change; see
-  [`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md).
+* [ ] The evidence is wired into the release candidate manifest and publication gate. Tracked as
+  ENG-IPV6-11; the recommended contract is in
+  [`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md) §4.
 * [ ] The candidate builder supplies the validated IPv6 evidence before candidate ID/attestation;
   `validate-candidate.sh`/`check-release-gates.sh` reject missing/failed/unpermitted IPv6 checks.
-  A candidate-gate fixture suite is pending the separate Phase III change.
+  Candidate-gate fixtures are part of ENG-IPV6-11.
 * [x] The hosted run itself exposed a modern-iproute2 JSON diagnostic (`info: Using default fan map
   value`) on stdout. The N6-R harness filters only that non-JSON line and records a skip; the real
   reconciler, kernel and exit statuses are unchanged. This is a test-environment compatibility shim,
@@ -472,3 +473,97 @@ matrix.
 * The N6-R shim is documented as a test-environment compatibility layer, not a product fix.
 * The test suite distinguishes a normalized environment artifact from a real reconciler failure and
   records an explicit skip when normalization occurs.
+
+---
+
+## ENG-IPV6-11: Trusted release-candidate IPv6 qualification integration
+
+**Priority: P0. This work must be complete before production release publication is enabled.** It is
+a deferred requirement of the accepted ENG-IPV6-03 CI integration, not a completed capability. The
+`ipv6-only` job qualifies a non-release CI package built in the same workflow run; it does not
+qualify a Phase III release candidate and its evidence is not consumed by the candidate manifest or
+the publication gate. Until this entry is complete, IPv6-only qualification is **not** an enforceable
+component of the trusted release lifecycle and release-candidate IPv6 qualification must not be
+described as complete.
+
+**Problem.** `scripts/build-release-candidate.sh` computes the candidate ID and attests
+`release-candidate.json` with `qualification.checks` from `artifact-contract`, `build-metadata`,
+`sbom` and `reproducibility`. `validate-candidate.sh` requires every listed check to pass but does
+not require IPv6 check IDs, and `check-release-gates.sh`/`promote-release.sh` do not consume IPv6
+evidence. A candidate can therefore be qualified and promoted with no isolated IPv6-only
+qualification of its own artifacts.
+
+**Technical significance.** Qualification must bind to the exact immutable artifacts that will be
+published. Evidence produced against a separately rebuilt package, an earlier commit, or a
+non-release CI build is not proof that a later release candidate passed. The candidate identity, the
+qualified build and the published artifact must form a non-circular chain: the manifest identity is
+computed after the qualification checks are attached, and the evidence references that candidate
+identity without being used to derive it. A post-hoc manifest edit would invalidate the candidate
+ID/attestation and is not acceptable.
+
+**Proposed implementation.**
+
+1. **Exact immutable candidate artifacts.** Run the N6-R-P suite against the integration `.deb`
+   built by `build-release-candidate.sh` for that candidate, after build A and before candidate
+   ID/attestation. Do not rebuild after qualification.
+2. **Non-circular identity.** Pass the resulting `summary.json` and its SHA-256 into the candidate
+   builder; append the IPv6 checks to `release/candidate-schema.json` `qualification.checks[]`
+   **before** the candidate ID is computed and the manifest attested. The candidate ID must not be
+   an input to the qualification run in a way that makes the evidence and the identity mutually
+   dependent.
+3. **Trusted workflow provenance.** Record and verify workflow run ID/attempt, workflow path, ref
+   and commit, source commit and harness commit. Production candidates require `refs/heads/main`
+   with the workflow commit equal to the source commit. Evidence from a non-release CI run or a
+   feature branch must not be accepted for a production candidate.
+4. **Mandatory check identifiers.** Require `ipv6-only-isolation`, `ipv6-only-dataplane`,
+   `ipv6-only-capture` and `ipv6-only-reconciler` as named checks. A missing, failed or
+   `not-performed` required check rejects the candidate.
+5. **Candidate manifest integration.** Validate the evidence with
+   `scripts/validate-ipv6-qualification-evidence.py` using the candidate source commit, the
+   candidate package SHA-256, the trusted workflow identity and the harness commit, then attach the
+   four checks with their `evidenceSha256` values to the manifest before attestation.
+6. **Evidence integrity verification.** Recompute each `evidenceSha256` from the retained candidate
+   evidence bytes, not from a mutable working directory and not from a self-reported field.
+7. **Fail-closed release gates.** `validate-candidate.sh` requires the four check IDs and the
+   recomputed hashes; `check-release-gates.sh`/`promote-release.sh` reject a candidate with a
+   missing/failed/not-performed check, a mandatory-capture failure, absent reconciler execution, an
+   identity mismatch, an evidence-hash mismatch or an unpermitted skip.
+8. **Permitted-skip and workaround semantics.** Exactly two exceptions are permitted and must be
+   declared in the manifest: the `host-global-ipv6-escape-unavailable` skip and the
+   `iproute2-json-normalization` skip/workaround. Any other skip rejects the candidate. Mandatory
+   capture and reconciler execution are never skippable.
+9. **Positive and negative release-gate fixtures.** Extend the existing 16 evidence-binding
+   fixtures with release-gate cases covering candidate ID, package digest and workflow identity
+   mismatches, missing/failed/unpermitted checks, evidence tampering, a non-trusted workflow, and
+   publication ordering.
+10. **Non-publication hosted qualification of the combined path.** Exercise the full candidate plus
+    IPv6-qualification path on a hosted run that does **not** publish, and retain the run URL,
+    evidence bundle, `summary.json` hash and candidate manifest hash.
+
+**Relationship to the accepted integration.** The recommended contract is recorded in
+[`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md) §4. That
+document, the `ci.yml` `ipv6-only` job and this entry describe a deferred requirement; none of them
+implements it. Do not modify the publication policy, `release.yml`, `release/candidate-schema.json`,
+`validate-candidate.sh`, `check-release-gates.sh` or `promote-release.sh` as part of a qualification
+change.
+
+**Dependencies.** Maintainer approval of the candidate-manifest and release-gate change; the
+Phase III trusted release lifecycle as merged; a non-publication hosted qualification run.
+
+**Acceptance criteria.**
+
+* [ ] The N6-R-P suite runs against the exact candidate integration `.deb` before candidate
+  ID/attestation, with no rebuild between qualification and publication.
+* [ ] The four mandatory check IDs are present, passed and hash-verified in the candidate manifest.
+* [ ] The manifest identity chain is non-circular: checks are attached before the candidate ID is
+  computed and attested.
+* [ ] Workflow provenance is verified, and non-trusted or non-main evidence is rejected for a
+  production candidate.
+* [ ] `validate-candidate.sh`, `check-release-gates.sh` and `promote-release.sh` fail closed on a
+  missing/failed/not-performed check, a capture or reconciler failure, an identity or hash mismatch,
+  and an unpermitted skip.
+* [ ] Positive and negative release-gate fixtures pass, including the candidate ID, package digest
+  and workflow identity cases.
+* [ ] A non-publication hosted run exercises the combined candidate-plus-qualification path and its
+  evidence is validated independently.
+* [ ] Release publication remains disabled until every criterion above is met.
