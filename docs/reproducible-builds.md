@@ -89,20 +89,28 @@ and supports `diffoscope` when available.
   `--network none`, a read-only repository mount, writable output/tmpfs,
   dropped capabilities and `no-new-privileges`.
 
-**Qualified local image:** BuildKit export stalled on the local Docker host
-for >14 minutes with the disk near 90%; the image layer completed and a
-local image eventually appeared. A derived image was qualified by installing
-`build-essential` from the frozen snapshot into the minimal snapshot image:
-image ID `sha256:dd56fabdc1d5038ddc661fe2e97e92ed0fae10a41e33072c6555c0922cd469fe`.
-The complete 200-package inventory has SHA-256
-`1c27838283a8c4a3f28eee279281519570f578e893513dd87ab30e50c7079184`.
-The Dockerfile now pins the bootstrap CA/OpenSSL versions and includes
-`build-essential`; a fresh rebuild directly from the final Dockerfile has not
-been performed, so this is a qualified derived image, not a published/rebuilt
-OCI identity. The package build in that image used `--network none`, a
-read-only source archive, host UID/GID (non-root), dropped capabilities and
-read-only repository scripts. It produced exactly the host canonical hashes
-`6afa3f25…`/`7ffe10f6…`.
+**Final direct Dockerfile image:** the manually triggered qualification run
+46015099682 built directly from the final version-controlled Dockerfile on
+GitHub `ubuntu-24.04`; no `docker commit` or manual package installation was
+used. Image ID: `sha256:d1a959a87380372dfc3ad3502a6cb5df2937fd5a7c87f24c61bdca85e79b93cf`;
+image-config JSON SHA-256: `5dad18fc9bdccbe59d68f2c92ededb5155bcaca5ba593bb2eeb4946938fef4da`;
+Dockerfile SHA-256: `4b3f71062ff80680c8dbcc901f99543b6337739794de31512d3da8795130e508`;
+CA bundle SHA-256: `2e89522ad15c0874c0833ed8de5a93596acf34e6651eabbe41c5e823f11bc8e9`;
+base: `ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b`;
+snapshot: `20261127T000000Z`. Installed inventory: 200 packages, inventory
+SHA-256 `f7d21de5429e71ffa57ef1c140442437864291cc40aa9b62fc74d1c0df7c050e`.
+Docker archive SHA-256: `8618b4d9f41b83a935a5d95a6d552fea47b0deaf2d4ded3cee8fd6446d3f6229`
+(Docker archive, not an OCI manifest; no registry publication).
+
+The qualification job ran two offline, non-root canonical builds from HEAD and
+from `v0.3.0` with a path containing whitespace. Both produced exactly
+`6afa3f25…` (integration) and `7ffe10f6…` (kmod), matching the host and
+GitHub-hosted canonical builds. Source resolution used an ordinary checkout;
+the source archive is hash-bound to the resolved commit. The dirty tracked
+guard was exercised and rejected the build. Linked-worktree use was tested
+locally; untracked-only and differing-UID/GID container cases remain only
+partially exercised and are recorded below. The image root filesystem is
+read-only during the build; only the output and `/tmp` are writable.
 
 Source resolution/materialization happens on the host; a verified `git
 archive` is passed into the container. This makes the container independent of
@@ -122,6 +130,7 @@ remains partially tested and is documented below.
 | Build-mode negative suite | 25/25 |
 | Independent published-release fixtures | 7/7 |
 | CI run 46009226761 | Static analysis, Reproducibility verification, Build/validate packages, Network-namespace dataplane and Published-release fixtures all green |
+| Qualification run 46015099682 | Image build, identity/inventory, dirty rejection, two offline non-root builds, expected hashes and archive export all green |
 | CI package artifacts | `6afa3f25…` / `7ffe10f6…`, matching local canonical builds |
 | Published v0.3.0 | `c555a99a…` / `73059ba2…` unchanged; published validator PASS |
 
@@ -215,12 +224,13 @@ No module was recompiled or changed in Phase II.
 
 * v0.3.0 published bytes remain unreproducible; accepted and not modified.
 * Canonical artifacts differ from historical published bytes.
-* Docker export stalled locally; a qualified derived image was built, but a
-  fresh rebuild directly from the final Dockerfile and a retained OCI digest
-  are still pending.
-* Ordinary-checkout, dirty/untracked, whitespace-path and differing-UID/GID
-  container tests are not all executed; linked-worktree archive handoff is
-  verified.
+* Local Docker export stalled; the final image was reconstructed directly on
+  GitHub. The retained artifact is a Docker archive, not an OCI manifest, and
+  no registry/digest-pinned retention exists yet.
+* Ordinary checkout, explicit historical revision, spaced output paths and
+  dirty-worktree rejection are qualified. Linked-worktree execution is tested
+  locally. Untracked-only and differing-UID/GID container cases are not fully
+  exercised.
 * Snapshot retention/availability and apt metadata trust still depend on the
   Ubuntu snapshot service.
 * Build user variation was not demonstrated end-to-end in a retained container.
