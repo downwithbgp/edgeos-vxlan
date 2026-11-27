@@ -1,0 +1,16 @@
+# Keep the workflow's pinned action commit SHAs current.  Dependabot updates
+# both the SHA and the human-readable version comment, and opens reviewable
+# pull requests rather than changing the workflow silently.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - '*'

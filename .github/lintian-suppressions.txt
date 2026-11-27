@@ -1,0 +1,7 @@
+# Lintian suppressions for the EdgeOS appliance layout.
+#
+# EdgeOS is a fixed appliance distribution.  /opt/vyatta is the vendor's
+# canonical configuration tree and Debian's FHS policy for /opt does not
+# apply to it.  This is the only intentional packaging exception; every other
+# lintian error remains fatal in CI.
+dir-or-file-in-opt
