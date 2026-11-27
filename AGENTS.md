@@ -133,11 +133,15 @@ The v0.3.0 reconciliation is recorded in
   required capture that fails is a failure, not a skip.
 * Keep development, qualification and publication separate. A qualification job does not publish;
   publication gates consume qualification evidence. The trusted release lifecycle owns `ci.yml`
-  and `release.yml`; the `ipv6-only` job lives in `ci.yml` and qualifies the same-run package
-  artifact by ID/digest. Its `summary.json` is not yet wired into the release candidate manifest
-  or publication gate; that is a separate focused change. Do not modify publication policy as part
-  of a qualification change. See
-  [`docs/ipv6-only-qualification-ci-integration.md`](docs/ipv6-only-qualification-ci-integration.md).
+  and `release.yml`. Two qualification paths exist and must not be conflated:
+  `ci.yml`'s `ipv6-only` job qualifies a non-release CI package by the same-run artifact
+  ID/digest; `release.yml` qualifies the exact release candidate (build → read-only privileged
+  qualification → finalize/attest) and binds the four checks to the candidate manifest and
+  `build.identity`. `validate-candidate.sh` and `check-release-gates.sh --candidate-dir` fail
+  closed on missing, altered or unbound evidence. Do not modify publication policy as part of a
+  qualification change. See
+  [`docs/release-candidate-ipv6-qualification.md`](docs/release-candidate-ipv6-qualification.md)
+  and [`docs/ipv6-only-qualification-ci-integration.md`](docs/ipv6-only-qualification-ci-integration.md).
 
 ## 6. Production infrastructure safety
 

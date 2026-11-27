@@ -217,12 +217,12 @@ namespaces is Level B, not Level D.
   malformed or substituted evidence.
 * [x] The job is ported into the trusted-release-lifecycle `ci.yml` and binds its evidence to the
   same-run package artifact, source commit, workflow identity and packaged reconciler hashes.
-* [ ] The evidence is wired into the release candidate manifest and publication gate. Tracked as
-  ENG-IPV6-11; the recommended contract is in
-  [`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md) §4.
-* [ ] The candidate builder supplies the validated IPv6 evidence before candidate ID/attestation;
+* [x] The evidence is wired into the release candidate manifest and publication gate (ENG-IPV6-11,
+  implemented locally; hosted non-publication demonstration pending). See
+  [`release-candidate-ipv6-qualification.md`](release-candidate-ipv6-qualification.md).
+* [x] The candidate builder supplies the validated IPv6 evidence before candidate ID/attestation;
   `validate-candidate.sh`/`check-release-gates.sh` reject missing/failed/unpermitted IPv6 checks.
-  Candidate-gate fixtures are part of ENG-IPV6-11.
+  Candidate-gate fixtures are in `test/unit-release-ipv6-gate.sh`.
 * [x] The hosted run itself exposed a modern-iproute2 JSON diagnostic (`info: Using default fan map
   value`) on stdout. The N6-R harness filters only that non-JSON line and records a skip; the real
   reconciler, kernel and exit statuses are unchanged. This is a test-environment compatibility shim,
@@ -478,13 +478,21 @@ matrix.
 
 ## ENG-IPV6-11: Trusted release-candidate IPv6 qualification integration
 
-**Priority: P0. This work must be complete before production release publication is enabled.** It is
-a deferred requirement of the accepted ENG-IPV6-03 CI integration, not a completed capability. The
-`ipv6-only` job qualifies a non-release CI package built in the same workflow run; it does not
-qualify a Phase III release candidate and its evidence is not consumed by the candidate manifest or
-the publication gate. Until this entry is complete, IPv6-only qualification is **not** an enforceable
-component of the trusted release lifecycle and release-candidate IPv6 qualification must not be
-described as complete.
+**Priority: P0. This work must be complete before production release publication is enabled.**
+
+**Status (2026-11-27): implemented locally on `ci/ipv6-release-qualification`; hosted
+non-publication demonstration pending branch-publication authorization. Release publication
+remains disabled.**
+
+The implementation is described in
+[`release-candidate-ipv6-qualification.md`](release-candidate-ipv6-qualification.md). The `ci.yml`
+`ipv6-only` job still qualifies a non-release CI package built in the same workflow run; the new
+`release.yml` path qualifies the exact release candidate, attaches the four checks to the candidate
+manifest under an immutable `build.identity`, and is enforced by `validate-candidate.sh` and
+`check-release-gates.sh --candidate-dir`. Local qualification (build identity, packaged N6-R-P,
+candidate finalize, validator, promotion dry-run) is recorded in that document §10. It is **local,
+not hosted** evidence, so production release-candidate IPv6 qualification must not be described as
+fully demonstrated until the hosted run in criterion 7 is recorded.
 
 **Problem.** `scripts/build-release-candidate.sh` computes the candidate ID and attests
 `release-candidate.json` with `qualification.checks` from `artifact-contract`, `build-metadata`,
@@ -540,30 +548,38 @@ ID/attestation and is not acceptable.
     IPv6-qualification path on a hosted run that does **not** publish, and retain the run URL,
     evidence bundle, `summary.json` hash and candidate manifest hash.
 
-**Relationship to the accepted integration.** The recommended contract is recorded in
-[`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md) §4. That
-document, the `ci.yml` `ipv6-only` job and this entry describe a deferred requirement; none of them
-implements it. Do not modify the publication policy, `release.yml`, `release/candidate-schema.json`,
-`validate-candidate.sh`, `check-release-gates.sh` or `promote-release.sh` as part of a qualification
-change.
+**Relationship to the accepted integration.** The recommended contract was recorded in
+[`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md) §4. It is
+now implemented as described above. The implementation changed `release.yml`,
+`release/candidate-schema.json`, `scripts/build-release-candidate.sh`,
+`scripts/validate-candidate.sh`, `scripts/check-release-gates.sh`,
+`scripts/promote-release.sh`, `scripts/verify-release.sh`,
+`scripts/validate-ipv6-qualification-evidence.py`, `test/ipv6-only-netns.sh` and the test suites;
+it did **not** change the publication policy, the `release-publication` environment controls or
+`RELEASE_PUBLICATION_ENABLED` (still unset).
 
 **Dependencies.** Maintainer approval of the candidate-manifest and release-gate change; the
 Phase III trusted release lifecycle as merged; a non-publication hosted qualification run.
 
 **Acceptance criteria.**
 
-* [ ] The N6-R-P suite runs against the exact candidate integration `.deb` before candidate
-  ID/attestation, with no rebuild between qualification and publication.
-* [ ] The four mandatory check IDs are present, passed and hash-verified in the candidate manifest.
-* [ ] The manifest identity chain is non-circular: checks are attached before the candidate ID is
-  computed and attested.
-* [ ] Workflow provenance is verified, and non-trusted or non-main evidence is rejected for a
-  production candidate.
-* [ ] `validate-candidate.sh`, `check-release-gates.sh` and `promote-release.sh` fail closed on a
+* [x] The N6-R-P suite runs against the exact candidate integration `.deb` before candidate
+  ID/attestation, with no rebuild between qualification and publication. (Local, §10 of the
+  contract document.)
+* [x] The four mandatory check IDs are present, passed and hash-verified in the candidate manifest.
+* [x] The manifest identity chain is non-circular: the build identity is established before
+  qualification, and the candidate ID is computed only after the checks are attached.
+* [x] Workflow provenance is verified, and non-trusted or non-main evidence is rejected for a
+  production candidate. (The finalize stage independently supplies expected run/attempt/path/ref/
+  commit and rejects unbound evidence; fixture coverage includes unrelated run/attempt and an
+  unauthorized workflow path.)
+* [x] `validate-candidate.sh`, `check-release-gates.sh` and `promote-release.sh` fail closed on a
   missing/failed/not-performed check, a capture or reconciler failure, an identity or hash mismatch,
   and an unpermitted skip.
-* [ ] Positive and negative release-gate fixtures pass, including the candidate ID, package digest
-  and workflow identity cases.
-* [ ] A non-publication hosted run exercises the combined candidate-plus-qualification path and its
-  evidence is validated independently.
-* [ ] Release publication remains disabled until every criterion above is met.
+* [x] Positive and negative release-gate fixtures pass, including the candidate ID, package digest
+  and workflow identity cases (`test/unit-release-ipv6-gate.sh`, 28 fixtures).
+* [ ] **Pending authorization:** a non-publication *hosted* run exercises the combined
+  candidate-plus-qualification path and its evidence is validated independently. Local
+  qualification is complete; hosted execution requires publishing the branch.
+* [x] Release publication remains disabled: `RELEASE_PUBLICATION_ENABLED` is unset and no release or
+  image was published.

@@ -97,14 +97,19 @@ The `ci.yml` package/reproducibility/dataplane/ipv6 jobs and
 `scripts/install-schema-validator.sh` use this path. The obsolete masking implementation from PR #8
 was not retained.
 
-## 4. Candidate manifest and release-gate contract (recommended, not implemented)
+## 4. Candidate manifest and release-gate contract
 
-The Phase III candidate builder currently creates `qualification.checks` from `artifact-contract`,
-`build-metadata`, `sbom` and `reproducibility`, then computes the candidate ID and attests the
-manifest. `validate-candidate.sh` requires every listed check to pass but does not require IPv6
-check IDs. `release.yml` does not consume IPv6 evidence.
+**Implemented** by ENG-IPV6-11 on `ci/ipv6-release-qualification`; the canonical description is
+[`release-candidate-ipv6-qualification.md`](release-candidate-ipv6-qualification.md). This section
+keeps the original recommended contract and notes where the implementation follows it.
 
-Recommended contract for a future focused change (not part of PR #9):
+When this section was written (PR #9), the Phase III candidate builder created
+`qualification.checks` from `artifact-contract`, `build-metadata`, `sbom` and `reproducibility`,
+then computed the candidate ID and attested the manifest. `validate-candidate.sh` required every
+listed check to pass but did not require IPv6 check IDs, and `release.yml` did not consume IPv6
+evidence.
+
+The recommended contract was:
 
 1. Run the N6-R-P suite against the **exact candidate package** built by
    `build-release-candidate.sh`, after build A and before candidate ID/attestation.
@@ -130,9 +135,14 @@ Recommended contract for a future focused change (not part of PR #9):
 8. Add candidate-gate fixtures for candidate ID/package digest/workflow identity and publication
    ordering.
 
-This is a contract, not a change to Phase III publication policy. PR #9 does not modify
+This was a contract, not a change to Phase III publication policy; PR #9 did not modify
 `release.yml`, `release/candidate-schema.json`, `validate-candidate.sh`,
 `check-release-gates.sh` or `promote-release.sh`.
+
+The later implementation follows steps 1–8 and adds an explicit pre-qualification build identity
+(the four checks are attached before the candidate ID is computed, but qualification binds to
+`build.identity`, not to the not-yet-existing candidate ID). It also wires the four checks into
+`check-release-gates.sh --candidate-dir`, which `promote-release.sh` always supplies.
 
 ## 5. Superseded `qualify-build-image.yml`
 
@@ -159,8 +169,10 @@ cleanup and is **not** part of this integration. No workflow file was deleted in
 
 ## 7. Remaining limitations
 
-1. The IPv6 job qualifies a non-release CI package, not a Phase III release candidate. The
-   candidate-manifest/release-gate contract in §4 is not implemented.
+1. The `ci.yml` IPv6 job still qualifies a non-release CI package; release-candidate
+   qualification is implemented separately by ENG-IPV6-11
+   ([`release-candidate-ipv6-qualification.md`](release-candidate-ipv6-qualification.md)). The
+   hosted non-publication run of that combined path is pending branch-publication authorization.
 2. The x86 hosted kernel does not qualify the candidate MIPS kernel module or physical ER-X
    hardware. Level B remains N6/N6-R-P, not H.
 3. Level C (IPv6-only installation/management) and Level D (IPv6-only runner/control plane)
