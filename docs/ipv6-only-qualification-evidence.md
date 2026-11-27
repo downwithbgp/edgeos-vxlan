@@ -79,9 +79,10 @@ Two consecutive runs in the same container:
 | 2 | exit 0, `pass=80 fail=0 skip=1 capture=executed reconciler=executed` |
 
 After both runs, `ip netns list` was empty and the suite's own "no host-side test veth remains"
-check passed. A separate `--cleanup` test removed a namespace recorded in
-`namespaces.txt` and left no leftover namespace. The cleanup command validates the recorded names
-and deletes only names matching the test's prefix.
+check passed. A separate `--cleanup` test against the final script created a namespace
+`v6aabc123`, wrote `run.env` with the matching suffix, and removed the exact namespace; it left no
+leftover namespace. The cleanup command reconstructs the exact names from `run.env` and does not
+delete arbitrary names by prefix.
 
 ### 4.3 Functional and negative-control results
 
@@ -142,7 +143,7 @@ isolation assertions do not depend on it. CI may record `capture=skipped` if tcp
 |---|---:|---|
 | `bash test/ipv6-only-netns.sh` as a non-root user | 0 | `SKIP: root/CAP_NET_ADMIN required...` |
 | `REQUIRE_NETNS_TEST=1 bash test/ipv6-only-netns.sh` as a non-root user | 1 | Missing privilege is a failure when required |
-| `EVIDENCE_DIR=... bash test/ipv6-only-netns.sh --cleanup` | 0 | Recorded namespace removed |
+| `EVIDENCE_DIR=... bash test/ipv6-only-netns.sh --cleanup` | 0 | Exact recorded namespace removed; missing evidence/run is a no-op |
 
 A missing privilege is never converted into a pass. A capture skip is reported as a skip; it is not
 counted as capture evidence.
@@ -159,8 +160,8 @@ bash test/validate-release-negative.sh "$TMPDIR/edgeos-vxlan-build"
 ```
 
 The build was first run from the committed tree at `28368d4` and re-run from the review-fix
-commit `36494eb`; both builds produced the same package hashes. The review-fix commit changes only
-the test harness and documentation, so the package payload is unchanged.
+commit `36494eb`; both builds produced the same package hashes. Later commits in this record change
+only the test harness and documentation, so the package payload is unchanged.
 
 | Command | Exit | Result |
 |---|---:|---|

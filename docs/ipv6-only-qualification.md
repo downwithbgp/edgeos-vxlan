@@ -205,7 +205,7 @@ The new job is `ipv6-only` in `.github/workflows/release-validation.yml`, named
 | Evidence | `$RUNNER_TEMP/ipv6-only-evidence` uploaded as `ipv6-only-qualification-evidence` on every outcome. |
 | Cleanup | The script's `EXIT`/`INT`/`TERM` trap, plus an `always()` cleanup step that reconstructs the exact namespace/link names from the recorded suffix. |
 | Required reconciler | `REQUIRE_RECONCILER=1`; a missing Perl `JSON::PP` or harness failure fails the job instead of silently skipping the integration path. |
-| Packet capture | `REQUIRE_CAPTURE=0`; if tcpdump is absent, the suite records a capture **skip**. The functional and isolation results are unaffected. |
+| Packet capture | `REQUIRE_CAPTURE=0`; if tcpdump is absent, the suite records a capture **skip**. If tcpdump is present but capture or analysis fails, the suite fails (fail-closed). The functional and isolation results are unaffected by an unavailable tool. |
 
 No `pull_request_target` is used. No workflow permission is added. The job does not execute
 downloaded packages. On a release event the privileged job runs the tagged source; tags require
@@ -217,7 +217,7 @@ write access, so this is the existing trusted-tag boundary, not untrusted pull-r
 |---|---|---|
 | **Passed** | The assertion ran and its expected condition held. | Contributes to the exit status 0. |
 | **Failed** | The assertion ran and its expected condition did not hold, or a required dependency was missing under a `REQUIRE_*` flag. | Non-zero exit; the job fails. |
-| **Skipped** | The optional check could not run (for example, tcpdump is unavailable or the host has no global IPv6 address for the escape control). The reason is printed and recorded in `summary.txt`. | Does not fail the job unless the corresponding `REQUIRE_*` flag is set. Never reported as a pass. |
+| **Skipped** | The optional check could not run (for example, tcpdump is unavailable or the host has no global IPv6 address for the escape control). The reason is printed and recorded in `summary.txt`. A capture that starts but fails is **failed**, not skipped. | Does not fail the job unless the corresponding `REQUIRE_*` flag is set. Never reported as a pass. |
 | **Unsupported** | The kernel or runner lacks a required facility (network namespaces, VXLAN module, root). With `REQUIRE_NETNS_TEST=1`, this is a failure; without it, the script exits 0 with an explicit `SKIP` line. | In CI, `REQUIRE_NETNS_TEST=1` makes this a failure. |
 | **Blocked** | Hosted CI has not run because the branch has not been published. | Not evidence of success; must be reported as pending. |
 

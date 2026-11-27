@@ -40,6 +40,13 @@ REQUIRE_NETNS_TEST=${REQUIRE_NETNS_TEST:-0}
 REQUIRE_CAPTURE=${REQUIRE_CAPTURE:-0}
 REQUIRE_RECONCILER=${REQUIRE_RECONCILER:-0}
 EVIDENCE_DIR=${EVIDENCE_DIR:-}
+if [ -n "$EVIDENCE_DIR" ]; then
+    EVIDENCE_DIR=${EVIDENCE_DIR%/}
+    if [ -z "$EVIDENCE_DIR" ]; then
+        echo "ERROR: EVIDENCE_DIR must not be the filesystem root" >&2
+        exit 2
+    fi
+fi
 SUFFIX=${IPV6_ONLY_SUFFIX:-$$}
 MODE=run
 
@@ -153,6 +160,7 @@ cleanup()
     for ns in "${ALL_NS[@]}"; do
         ip netns del "$ns" 2>/dev/null || true
     done
+    ip netns del "v6probe$SUFFIX" 2>/dev/null || true
     for link in "${ALL_LINKS[@]}"; do
         ip link del "$link" 2>/dev/null || true
     done
@@ -174,10 +182,16 @@ cleanup_from_evidence()
     fi
     [ -n "$EVIDENCE_DIR" ] ||
         { echo "ERROR: EVIDENCE_DIR is required for --cleanup" >&2; exit 2; }
+    if [ ! -d "$EVIDENCE_DIR" ]; then
+        echo "No evidence directory at $EVIDENCE_DIR; nothing to clean."
+        return 0
+    fi
     [ ! -L "$EVIDENCE_DIR" ] ||
         { echo "ERROR: refusing to use a symlinked EVIDENCE_DIR" >&2; exit 2; }
-    [ -f "$EVIDENCE_DIR/run.env" ] ||
-        { echo "ERROR: $EVIDENCE_DIR/run.env is missing" >&2; exit 2; }
+    if [ ! -f "$EVIDENCE_DIR/run.env" ]; then
+        echo "No recorded run.env in $EVIDENCE_DIR; nothing to clean."
+        return 0
+    fi
 
     # Reconstruct the exact names from the recorded suffix.  Do not delete
     # arbitrary names by prefix: a sudo-run cleanup must only touch the
@@ -194,10 +208,13 @@ cleanup_from_evidence()
         exit 2
     fi
 
+    # Keep this list in sync with ALL_NS/ALL_LINKS above and the probe
+    # namespace in preflight().
     ns_list=(
         "v6a$suffix" "v6b$suffix" "v6t$suffix"
         "v6ha$suffix" "v6hb$suffix"
         "v6c4a$suffix" "v6c4b$suffix"
+        "v6probe$suffix"
     )
     link_list=(
         "ta$suffix" "ua$suffix" "tb$suffix" "ub$suffix"
@@ -223,8 +240,20 @@ if [ -z "$EVIDENCE_DIR" ]; then
 fi
 [ ! -L "$EVIDENCE_DIR" ] ||
     die "refusing to use a symlinked EVIDENCE_DIR: $EVIDENCE_DIR"
-mkdir -p "$EVIDENCE_DIR/captures" "$EVIDENCE_DIR/state" ||
+if [ -e "$EVIDENCE_DIR" ]; then
+    [ -O "$EVIDENCE_DIR" ] ||
+        die "EVIDENCE_DIR is not owned by the current user: $EVIDENCE_DIR"
+fi
+mkdir -p "$EVIDENCE_DIR/captures" ||
     die "cannot prepare evidence directory $EVIDENCE_DIR"
+[ -O "$EVIDENCE_DIR" ] ||
+    die "EVIDENCE_DIR is not owned by the current user: $EVIDENCE_DIR"
+[ ! -L "$EVIDENCE_DIR/captures" ] ||
+    die "refusing to use a symlinked captures directory"
+for evidence_file in run.env namespaces.txt links.txt run.log; do
+    [ ! -L "$EVIDENCE_DIR/$evidence_file" ] ||
+        die "refusing to write through a symlinked $evidence_file"
+done
 printf 'IPV6_ONLY_SUFFIX=%s\n' "$SUFFIX" >"$EVIDENCE_DIR/run.env"
 printf '%s\n' "${ALL_NS[@]}" >"$EVIDENCE_DIR/namespaces.txt"
 printf '%s\n' "${ALL_LINKS[@]}" >"$EVIDENCE_DIR/links.txt"
@@ -241,7 +270,7 @@ preflight()
         [ "$REQUIRE_NETNS_TEST" = "1" ] && exit 1
         exit 0
     fi
-    for cmd in ip ping python3 timeout awk sed grep tr cat head cut sort wc readlink sha256sum sysctl bridge env tee mktemp; do
+    for cmd in ip ping python3 timeout awk sed grep tr cat cut sort wc readlink sha256sum sysctl bridge env tee mktemp; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             echo "SKIP: required command not available: $cmd"
             [ "$REQUIRE_NETNS_TEST" = "1" ] && exit 1
@@ -364,6 +393,7 @@ setup_topology()
     for ns in "${ALL_NS[@]}"; do
         ip netns del "$ns" 2>/dev/null || true
     done
+    ip netns del "v6probe$SUFFIX" 2>/dev/null || true
     for link in "${ALL_LINKS[@]}"; do
         ip link del "$link" 2>/dev/null || true
     done
