@@ -57,6 +57,12 @@ jobs:
       - name: Add release tools to PATH
         run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
 
+      - name: Set up Buildx OCI builder
+        run: |
+          docker buildx create --name edgeos-oci --driver docker-container --use 2>/dev/null ||
+            docker buildx use edgeos-oci
+          docker buildx inspect --bootstrap
+
       - name: Build and qualify controlled image
         run: ./scripts/build-environment.sh --output-dir qualification
 
