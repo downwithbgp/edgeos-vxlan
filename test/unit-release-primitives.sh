@@ -127,6 +127,38 @@ else
     bad ".gitattributes change kept the digest"
 fi
 
+# Every protected package-input category must be rejected as a pin-only change.
+digest_prev=$DIGEST_D
+for spec in \
+    "debian/changelog:protected changelog" \
+    "debian/rules:protected rules" \
+    "modules/4.14.54-UBNT/vxlan.ko:protected module" \
+    "containers/reproducible-build/Dockerfile:protected Dockerfile" \
+    "containers/reproducible-build/ca-certificates.crt:protected CA" \
+    "scripts/build-reproducible.sh:protected build script" \
+    "release/release-policy.json:protected policy" \
+    "templates/interfaces/vxlan/node.def:protected template" \
+    "patches/4.14.54-UBNT/CVE-2022-50405.patch:protected patch" \
+    "upstream/libvyatta-cfg1/Interface.pm:protected upstream" \
+    "LICENSE:protected license"; do
+    path=${spec%%:*}
+    content=${spec#*:}
+    mkdir -p "$(dirname "$REPO/$path")"
+    printf '%s\n' "$content" >> "$REPO/$path"
+    git -C "$REPO" add -A
+    git -C "$REPO" commit -qm "protect $path"
+    rev=$(git -C "$REPO" rev-parse HEAD)
+    digest_new=$("$ROOT/scripts/packaging-inputs.sh" --repo "$REPO" --rev "$rev")
+    if [ "$digest_new" != "$digest_prev" ]; then
+        ok
+    else
+        bad "protected input $path kept the digest"
+    fi
+    expect_fail_with "package-affecting" \
+        "$ROOT/scripts/check-pin-commit.sh" --repo "$REPO" "$A" "$rev"
+    digest_prev=$digest_new
+done
+
 # --- candidate identity ------------------------------------------------
 
 MANIFEST=$TMP/candidate.json
