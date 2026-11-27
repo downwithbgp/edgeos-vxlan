@@ -118,6 +118,8 @@ jobs:
         env:
           PRODUCTION: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate' && github.ref == 'refs/heads/main' }}
           RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+          WORKFLOW_REF_INPUT: ${{ github.ref }}
+          WORKFLOW_COMMIT_INPUT: ${{ github.sha }}
         run: |
           set -eu
           if [ "$PRODUCTION" = "true" ]; then
@@ -126,8 +128,8 @@ jobs:
               --image-archive-dir environment \
               --production \
               --release-tag "$RELEASE_TAG_INPUT" \
-              --workflow-ref "${{ github.ref }}" \
-              --workflow-commit "${{ github.sha }}"
+              --workflow-ref "$WORKFLOW_REF_INPUT" \
+              --workflow-commit "$WORKFLOW_COMMIT_INPUT"
           else
             ./scripts/build-release-candidate.sh \
               --output-dir candidate \
@@ -158,13 +160,20 @@ jobs:
           subject-path: candidate/edgeos-vxlan-kmod_*_mipsel.deb
           sbom-path: candidate/sbom-edgeos-vxlan-kmod.spdx.json
       - name: Collect attestation bundles
+        env:
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+          SBOM_INT_BUNDLE: ${{ steps.sbom-int.outputs.bundle-path }}
+          SBOM_KMOD_BUNDLE: ${{ steps.sbom-kmod.outputs.bundle-path }}
         run: |
           set -eu
-          cp "${{ steps.provenance.outputs.bundle-path }}" candidate/release-attestation.jsonl
-          cat "${{ steps.sbom-int.outputs.bundle-path }}" >> candidate/release-attestation.jsonl
-          printf '\n' >> candidate/release-attestation.jsonl
-          cat "${{ steps.sbom-kmod.outputs.bundle-path }}" >> candidate/release-attestation.jsonl
-          printf '\n' >> candidate/release-attestation.jsonl
+          {
+            cat "$PROVENANCE_BUNDLE"
+            printf '\n'
+            cat "$SBOM_INT_BUNDLE"
+            printf '\n'
+            cat "$SBOM_KMOD_BUNDLE"
+            printf '\n'
+          } > candidate/release-attestation.jsonl
           sha256sum candidate/release-attestation.jsonl
       - name: Upload candidate artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -278,12 +287,14 @@ jobs:
             --artifact-digest "$ARTIFACT_DIGEST_INPUT" \
             --source-root .
 
-  post-publish-verify:
-    name: Explicit post-publication verification
-    needs: publish
-    uses: ./.github/workflows/verify-release.yml
-    with:
-      tag: ${{ inputs.release_tag }}
-    permissions:
-      contents: read
-      attestations: read
+      - name: Verify published release explicitly
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_INPUT: ${{ inputs.release_tag }}
+        run: |
+          mkdir -p published
+          gh release download "$TAG_INPUT" --repo "$GITHUB_REPOSITORY" --dir published
+          ./scripts/verify-release.sh \
+            --asset-dir published \
+            --source-dir . \
+            --tag "$TAG_INPUT"

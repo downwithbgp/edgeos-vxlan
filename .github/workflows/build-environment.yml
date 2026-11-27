@@ -139,8 +139,9 @@ jobs:
       - name: Log in to GHCR
         env:
           ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          printf '%s' "${{ github.token }}" |
+          printf '%s' "$GH_TOKEN" |
             docker login ghcr.io -u "$ACTOR" --password-stdin
 
       - name: Push the retained OCI archive and verify its digest

@@ -104,12 +104,15 @@ echo "Building controlled image: $IMAGE_NAME"
 echo "Context:                  $CONTEXT"
 echo "Snapshot:                 $SNAPSHOT"
 
-docker buildx build \
+if ! docker buildx build \
     --output "type=oci,dest=$OUTPUT_DIR/image.oci.tar" \
     --metadata-file "$OUTPUT_DIR/build-metadata.json" \
     --build-arg "UBUNTU_SNAPSHOT=$SNAPSHOT" \
     --tag "$IMAGE_NAME" \
-    "$CONTEXT" 2>&1 | tee "$OUTPUT_DIR/image-build.log" >/dev/null
+    "$CONTEXT" 2>&1 | tee "$OUTPUT_DIR/image-build.log" >/dev/null; then
+    cat "$OUTPUT_DIR/image-build.log" >&2
+    fail "Buildx image build failed"
+fi
 
 [ -f "$OUTPUT_DIR/image.oci.tar" ] ||
     fail "Buildx did not produce image.oci.tar"

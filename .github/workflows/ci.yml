@@ -138,10 +138,10 @@ jobs:
           set -eu
           tag=v0.3.0
           tmp=$(mktemp -d)
-          mkdir -p "$tmp/tagged"
-          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$tmp"
+          mkdir -p "$tmp/assets" "$tmp/tagged"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$tmp/assets"
           git archive "$tag" | tar -xf - -C "$tmp/tagged"
-          ./scripts/verify-release.sh --asset-dir "$tmp" --source-dir "$tmp/tagged" --tag "$tag"
+          ./scripts/verify-release.sh --asset-dir "$tmp/assets" --source-dir "$tmp/tagged" --tag "$tag"
 
   dataplane:
     name: Network-namespace dataplane

@@ -293,3 +293,28 @@ packaging-inputs and pin-commit contracts, explicit artifact-ID/digest
 selection, SPDX builder, legacy/canonical verifier, permission matrix and
 attestation wrapper. Package names, version suffix, environment image and
 hardware status remain project-owned. The SADR repository was not modified.
+
+## 13. Branch Actions evidence and follow-up
+
+Initial branch push `26b3747` opened draft PR #8. The first workflows were
+executed on GitHub:
+
+- CI run <https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46026104522>:
+  dataplane and reproducibility passed; static analysis failed on an
+  actionlint/shellcheck grouping diagnostic and zizmor reported a
+  template-injection finding; published-release fixtures failed because the
+  tagged source directory was placed inside the downloaded asset directory.
+- Build environment run
+  <https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46026104099>:
+  the image build step exited before producing the OCI archive. The script now
+  prints the Buildx log on failure so the next run exposes the root cause.
+- Trusted release run
+  <https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46026104328>:
+  stopped at the same image-build step.
+
+The follow-up commit fixes the fixture layout, moves workflow inputs/step
+outputs into environment variables, groups the attestation-bundle redirects,
+removes the reusable-workflow self-reference, and records the Buildx failure
+log. `actionlint` and offline `zizmor` pass locally on the corrected
+workflows. A further branch push re-runs the workflows; those run IDs are the
+authoritative environment/candidate evidence.
