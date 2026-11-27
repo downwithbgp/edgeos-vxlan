@@ -1,9 +1,14 @@
 # Trusted release lifecycle
 
-Status: Phase III implementation on `ci/trusted-release-lifecycle`.
+Status: Phase III implementation on `ci/trusted-release-lifecycle`, draft PR
+#8, unmerged. Final branch head covered by this report:
+`d6a5d4f5b776fb8131d77d5d9d19a22bf15788b2`.
+
 No production release, container-image publication, immutable-release
 activation, signing key, tag move, historical asset change or repository
-setting change was performed.
+setting change was performed. The trusted release infrastructure works and
+fails safely in non-production; it has no operational authority until the
+decisions in section 11 are made.
 
 ## 1. Architecture and trust model
 
@@ -179,8 +184,8 @@ bytes only.
 | Workflow | Trigger | Permissions | Responsibility |
 |---|---|---|---|
 | `ci.yml` | PR, push main/`ci/**`, tags | `contents: read` | Lint, tests, package build, metadata validation, reproducibility, historical fixtures, dataplane |
-| `build-environment.yml` | dispatch, branch push | build/qualify read-only; gated publish adds `packages: write`, `id-token: write`, `attestations: write` | Image qualification, SBOM, vulnerability review, gated GHCR |
-| `release.yml` | dispatch, qualification branch push | candidate adds `id-token: write`, `attestations: write`; publish adds `contents: write` + environment | Candidate build/attestation, dry-run, authorized draft publication |
+| `build-environment.yml` | dispatch from `main`, branch push | build/qualify read-only; gated publish (`refs/heads/main` only) adds `packages: write`, `id-token: write`, `attestations: write`, plus the protected `build-image-publication` environment | Image qualification, SBOM, vulnerability review, gated GHCR |
+| `release.yml` | dispatch from `main`, qualification branch push | resolve/qualify/preflight read-only (`actions: read`, `attestations: read`); candidate adds `id-token: write`, `attestations: write`, `artifact-metadata: write`; publication adds `contents: write` + the protected `release-publication` environment | Candidate build/attestation, dry-run, authorized draft publication |
 | `verify-release.yml` | reusable, dispatch, `release: published` | `contents: read`, `attestations: read` | Independent downloaded-release verification |
 | `security-audit.yml` | schedule, dispatch | `contents: read` | Online zizmor and actionlint |
 
@@ -236,55 +241,130 @@ trusted. Negative cases include missing/extra/modified assets, manifest/source
 mismatch, wrong image/workflow identity, missing evidence and historical
 version reuse.
 
-## 9. Local verification evidence
+## 9. Verification evidence
 
-| Check | Result |
+Final branch head for every result below:
+`d6a5d4f5b776fb8131d77d5d9d19a22bf15788b2`.
+
+### 9.1 Off-device suites
+
+| Suite | Result | Covers |
+|---|---|---|
+| `bash test/run.sh` | 360/360 pass | build 11, helper 64, firewall 122, templates 93, mock 70 |
+| `test/unit-release-primitives.sh` | 46/46 | packaging-input digest, A→B pin-only contract across every protected input category, pin rendering, candidate identity |
+| `test/unit-artifact-archive.sh` | 15/15 | safe extraction (traversal, duplicates, symlinks, special files, size bomb, empty), verified fetch, expired/failed-run/wrong-name/wrong-path/API-digest rejection, bare-hex digest acceptance and malformed-digest rejection |
+| `test/unit-candidate-schema.sh` | 7/7 | malformed JSON, duplicate object keys, invalid types, schema version, unexpected properties, digest formats |
+| `test/unit-image-qualification.sh` | 8/8 | OCI index/manifest/config selection, tampered and missing blobs, ambiguity, traversal |
+| `test/unit-release-contracts.sh` | 39/39 | schema/semantic separation, candidate-ID substitution, artifact substitution, modified SBOM and predicate, wrong subject name and wrong subject bytes, malformed bundle and malformed SBOM, missing evidence, failed qualification check, duplicate artifacts, wrong workflow ref, historical reuse, canonical-to-legacy downgrade, the full publication-gate matrix, attestation identity semantics, concurrent candidates |
+| `test/unit-release-publication.sh` | 9/9 | publication path against an isolated mocked API: expired artifact, digest mismatch, conflicting draft asset, unexpected draft assets, resume without mutation, interrupted draft completion, tampered tag-side `install.sh` |
+
+`shellcheck -x -e SC1091,SC2015` over the canonical file set and
+`perl -c src/vyatta-vxlan-addr` are clean. All seven suites are wired into the
+CI "Release contract tests" step.
+
+### 9.2 Environment evidence (real GitHub Actions, no mocks)
+
+Run
+<https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46043324448>
+at head `4ea9a0c`, all six jobs successful:
+
+| Identity | Value |
 |---|---|
-| `test/unit-release-primitives.sh` | 24/24 pass (ID stability, packaging/pin contracts, tag ordering, pin rendering) |
-| `test/unit-image-qualification.sh` | 8/8 pass (OCI index/manifest/config selection, tampered/missing blobs, ambiguity, traversal) |
-| SPDX SBOM build/validate on published v0.3.0 packages | PASS (integration 30 files; kernel 5 files) |
-| `.buildinfo`/`.changes` validation on published v0.3.0 | PASS |
-| `bash test/run.sh` (existing suite) | previously green on `origin/main`; not re-run after this branch's script-only additions |
-| Local OCI image build/export | Image built locally (681 MB), but Buildx OCI export stalled; no local OCI archive was produced |
-| Local candidate build/E2E | Not completed because the local OCI archive was unavailable |
+| Candidate ID | `sha256:ee10e5d3b50e831feb3d9e8940ed20d33b28108cebc5e2bf1818f965ae80ff01` |
+| Manifest SHA-256 | `956e780175496b49f021427a298b44682b0f74f1722c3d0a931313ed387008a3` |
+| Package version | `0.3.0+edgeos3.0.1.e50` |
+| Candidate artifact | ID `15221433192`, digest `sha256:e104e48ebb37aa2203514c3be44569aeb786ddcc5fc0d01c5236ddf1ccc281e8`, 8 616 870 bytes, `expired=false` |
+| Image manifest / config | `sha256:81ba37e8…b7f0b` / `sha256:8f606027…def13` |
+| OCI archive SHA-256 | `61e15c1dc1a432ffa25371d03b639c97a613c405d73d681c07e2b3db02673634` |
+| Attestation bundle SHA-256 | `a0b6960bda9eb58f8e7bdbdc243b6afa1d8a006192fbcb426b2e5f01094ce69d` |
 
-The local OCI export stall is the same class of limitation recorded in Phase
-II. The GitHub-hosted workflows are the intended environment evidence path.
-Run IDs and artifact IDs are recorded in the draft PR/commit follow-up after
-the branch runs.
+Real Sigstore attestations were created by `actions/attest` (GitHub-native,
+Public Good instance): provenance over nine subjects, an SBOM attestation for
+the integration package (`…all.deb@sha256:6afa3f25…`), and one for the kernel
+package (`…mipsel.deb@sha256:7ffe10f6…`). Offline verification used
+`gh attestation trusted-root` plus the bundle, binding repository ID
+`1357738281`, signer workflow `.github/workflows/release.yml` at the resolved
+workflow commit, source digest and ref, OIDC issuer, subject digests, with
+self-hosted runners denied; a paired negative control against
+`refs/heads/definitely-wrong` was required to fail and did. The qualification
+dry-run then re-fetched the artifact with full identity checks, re-verified the
+bundle and wrote `promotion-plan.json` — no tag, draft, asset or registry
+mutation.
+
+The stored predicate type was confirmed against GitHub's own attestation store:
+`https://spdx.dev/Document/v2.3` for the SPDX-2.3 document, which is why the
+policy pins the versioned URI. The SBOM predicate is additionally proven equal
+to the shipped SBOM by `verify-sbom-predicate.sh`.
+
+The same head's CI run
+<https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46043324477> passed
+all jobs including "Published-release fixtures" against the real published
+v0.3.0 asset set.
+
+After the security fixes, head `d6a5d4f` re-ran cleanly: trusted release
+<https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46050666946> and CI
+<https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46050667701>, all
+jobs successful.
+
+### 9.3 What remains unexercised
+
+Successful publication end to end has not been executed. It needs real Debian
+packages for SBOM re-validation and real Sigstore signatures, so the mocked
+publication suite stops at draft verification. No production tag, release,
+asset or registry publication was performed, and no production hardware was
+touched.
 
 ## 10. Remaining risks and limitations
 
-- GitHub Actions environment protection cannot be proven from `GITHUB_TOKEN`;
-  the maintainer must create/protect the environment before enabling
-  publication. An auto-created unprotected environment is a residual risk.
-- Immutable releases are currently disabled (`enabled:false`). Canonical
-  publication cannot succeed until the maintainer enables the setting and
-  provides the proof variable/token.
-- No production candidate was built because the local OCI export stalled and
-  no branch Actions run has completed yet.
-- The Phase II Docker archive (artifact `15207216180`, 484 MB, 14-day
-  retention) was not re-downloaded/verified in this pass.
-- Kernel module source-to-binary reproducibility, hardware qualification and
-  Internet-facing probes remain out of scope/separate.
-- A failed post-publish immutable verification can only be superseded by a new
-  version, not repaired in place.
+Activation prerequisites (maintainer action, not code):
+
+- GitHub Actions environment protection cannot be proven from `GITHUB_TOKEN`.
+  `release-publication` must exist with required reviewers and deployments
+  restricted to `main`/`v*` before publication is enabled.
+- The immutable-release "proof" is a maintainer-confirmed variable. The actual
+  `immutable` state is verified only after `draft=false`, so a post-publication
+  failure leaves a published, mutable release that only a new version can
+  supersede. Verify the setting before enabling, and treat the flag as
+  activation-blocking.
+- `RELEASE_PUBLICATION_ENABLED` and `IMMUTABLE_RELEASES_CONFIRMED` must be set
+  from the protected environment, not repository-wide.
+
+Recorded code-level limitations:
+
+- The GHCR image tag is pushed before its digest is verified, and a failed run
+  leaves that tag behind. Publishing a temporary tag and promoting it after
+  verification is the intended follow-up.
+- `verify-release.yml` uses the runner's preinstalled `gh`/`jq`/`dpkg`
+  toolchain rather than the pinned release tools; the release workflow pins
+  them. A mutated runner toolchain would weaken independent verification.
+- The post-publication verifier runs inside the `contents: write` publish job.
+  Splitting it into a read-only job is the safer shape.
+- `release-policy.json` keys `signedTagsVariable` and `pinCommit.allowlist` are
+  read by no script; tag signatures are never verified. Either implement or
+  remove them, otherwise they imply a control that does not exist.
+- The production "newer than published" check compares against the static
+  `baselinePublishedVersion` (0.3.0), not the newest published release, so a
+  candidate between the baseline and the actual latest could be promoted.
+- Published-release fixtures use synthetic assets; hardware qualification,
+  kernel source-to-binary reproducibility and Internet-facing probes remain
+  separate workstreams and are not claimed here.
 
 ## 11. Maintainer decisions before activation
 
-1. Enable immutable releases.
-2. Create/protect `release-publication` with required reviewers and restrict
-   deployments to `main`/`v*`.
-3. Set `RELEASE_PUBLICATION_ENABLED=true` and, after verifying the setting,
-   `IMMUTABLE_RELEASES_CONFIRMED=true`, or provide an admin token for the API
-   proof.
-4. Decide whether published tags must be signed and provision keys.
-5. Approve GHCR image publication, visibility and retention.
-6. Approve the A→B pin commit/tag sequence.
+1. Enable immutable releases, then set `IMMUTABLE_RELEASES_CONFIRMED=true`.
+2. Create and protect `release-publication`; restrict deployments to
+   `main`/`v*`.
+3. Set `RELEASE_PUBLICATION_ENABLED=true` in that environment.
+4. Decide whether published tags must be signed. If yes, implement tag
+   signature verification first: `RELEASE_REQUIRE_SIGNED_TAG` currently has no
+   effect.
+5. Approve GHCR image publication, visibility and retention. Registry
+   publication now requires a `refs/heads/main` dispatch.
+6. Approve the A→B pin commit/tag sequence and who may create tags.
 7. Approve the first canonical version (>= 0.3.1).
-8. Decide whether critical vulnerabilities block publication.
+8. Decide whether unresolved critical vulnerabilities block publication.
 9. Approve hardware evidence requirements.
-10. Approve any SLSA claim beyond the provenance-attested GitHub build.
+10. Approve any SLSA claim beyond provenance-attested GitHub build provenance.
 
 ## 12. Cross-project reuse
 
@@ -294,46 +374,92 @@ selection, SPDX builder, legacy/canonical verifier, permission matrix and
 attestation wrapper. Package names, version suffix, environment image and
 hardware status remain project-owned. The SADR repository was not modified.
 
-## 13. Branch Actions evidence and follow-up
+## 13. Branch Actions evidence: failures, root causes, resolutions
 
-Initial branch push `26b3747` opened draft PR #8. The first workflows were
-executed on GitHub:
+Earlier runs failed. Each root cause below was established from the
+authenticated job logs, not guessed:
 
-- CI run <https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46026104522>:
-  dataplane and reproducibility passed; static analysis failed on an
-  actionlint/shellcheck grouping diagnostic and zizmor reported a
-  template-injection finding; published-release fixtures failed because the
-  tagged source directory was placed inside the downloaded asset directory.
-- Build environment run
-  <https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46026104099>:
-  the image build step exited before producing the OCI archive. The script now
-  prints the Buildx log on failure so the next run exposes the root cause.
-- Trusted release run
-  <https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46026104328>:
-  stopped at the same image-build step.
+| Symptom in the log | Root cause | Resolution |
+|---|---|---|
+| Image qualification stalled/exited before producing an archive | Buildx default driver cannot export an OCI archive | Use the `docker-container` driver and export both an OCI and a Docker archive (`6c0c848`, `9b9fbb7`) |
+| CI apt step failed | Ubuntu package source handling in CI | `scripts/apt-update-ubuntu-only.sh` used by the CI jobs |
+| `ERROR: unexpected candidate file: .artifact-names.4859` | `validate-candidate.sh` wrote its temporary name list **inside** the candidate directory, so the contract rejected the validator's own file | Moved to `mktemp` outside the candidate tree (`663dfc5`) |
+| `ERROR: unexpected candidate file: .work` | `build-release-candidate.sh` created its working directory inside the output directory; cleanup ran only after validation | Work directory moved to `mktemp` outside the tree with a `trap` (`d0b3f5d`) |
+| `no attestations found with predicate type: https://spdx.dev/Document` | `actions/attest` derives the SPDX predicate type from the document, so an SPDX-2.3 SBOM is attested as `…/v2.3`; policy expected the unversioned URI | Pin the versioned predicate in policy, read both predicate types from policy, and prove the predicate equals the shipped SBOM (`c573450`) |
+| `expected digest must be sha256:<hex>` | `actions/upload-artifact` emits a bare 64-character hex digest | `normalize_digest()` canonicalizes at both boundaries (`4ea9a0c`) |
+| CI "Static analysis" failed on `SC2129` | Pre-existing style finding in the contract fixture | Grouped redirects (`da96fbf`) |
 
-The follow-up commit fixes the fixture layout, moves workflow inputs/step
-outputs into environment variables, groups the attestation-bundle redirects,
-removes the reusable-workflow self-reference, and records the Buildx failure
-log. `actionlint` and offline `zizmor` pass locally on the corrected
-workflows. A further branch push re-runs the workflows; those run IDs are the
-authoritative environment/candidate evidence.
+After those fixes the full lifecycle is green in the environment:
+`46043324448` (first complete run, real attestations and qualification
+dry-run), `46043324477` (CI plus published-release fixtures), and `d6a5d4f`
+after the security review (`46050666946`, `46050667701`).
 
-## 14. Independent implementation review
+## 14. Independent reviews
 
-An independent review of the full branch diff found three blocking issues,
-now fixed:
+Phase III was reviewed twice by independent reviewers working from a fresh
+session.
 
-- artifact ZIP digest validation used bare-hex parsing while callers/API use
-  `sha256:<hex>`;
-- promotion jobs lacked `actions: read` for the artifact API;
-- the independent image verifier accepted a skipped vulnerability scan.
+**Review 1 (implementation).** Three blocking issues, all fixed: artifact-ZIP
+digest parsing disagreed with the API's `sha256:<hex>` form; promotion jobs
+lacked `actions: read`; the image verifier accepted a skipped vulnerability
+scan. Should-fix items applied: canonical re-verification enforces
+`nonRelease=false`, `main` and exact source-workflow commit; the candidate
+validator checks the policy hash, source-archive hash and worktree `.git`
+presence; the container mounts the archived build script rather than the host
+tree; `.buildinfo` fails when `SOURCE_DATE_EPOCH` is absent. The
+previously-listed gap "JSON Schema is not wired" is closed: the schema is
+enforced in candidate construction, verification, promotion and published
+release verification.
 
-High-risk should-fix items were also applied: canonical re-verification now
-enforces `nonRelease=false`/`main`/exact source-workflow commit; the candidate
-validator checks the release-policy hash, source archive hash and worktree
-`.git` presence; the container mounts the archived build script rather than
-the host working tree; and `.buildinfo` now fails if `SOURCE_DATE_EPOCH` is
-absent. Remaining non-blocking review items: full JSON-Schema validation of
-the candidate manifest is not wired, and some fixture/test-gap and unused-helper
-nits remain.
+**Review 2 (security, at head `05f06f6`).** One release-blocking functional
+defect and four substantive gaps; all resolved in `d6a5d4f`:
+
+- *Blocking.* The publish job fetched its own run's preflight artifact without
+  `--allow-run-in-progress`. The run is `in_progress` at that point, so the job
+  failed before `promote-release.sh` and the whole authorized publication path
+  was unreachable. It failed closed, but it had never run. Fixed; artifact
+  identity is still bound by ID, digest, run ID, head SHA, workflow path and
+  name.
+- *Supply chain.* The distributed `install.sh` is excluded from the packaging
+  digest and was constrained only in its four pins, so a tag commit could
+  append arbitrary code that users execute through the documented
+  `curl … | sh` path. `check_installer_pins_only()` now derives the expected
+  installer from commit A plus the pin substitutions and requires the tag
+  commit's `install.sh` to match byte-for-byte; it runs in preflight and in
+  published-release verification, and a tampered-installer test covers it.
+- *Privileged execution.* The GHCR publish job held `packages: write` and
+  `id-token: write` with no ref guard and ran the dispatched ref's tooling. It
+  is now restricted to `refs/heads/main`, checks out `github.workflow_sha`, and
+  asserts the checkout matches.
+- *Mutable references.* Tag movement was checked only against a local
+  checkout. `gh release create` now passes `--target TAG_COMMIT`, and the tag
+  is re-resolved remotely immediately before `draft=false`.
+- *Verification integrity.* `qualification.checks` and
+  `comparedArtifacts` are now required non-empty; the requested tag is bound to
+  the candidate before any draft exists; the schema fails closed on formats the
+  installed validator cannot enforce, and the decorative `date-time` keyword was
+  replaced by an enforced RFC 3339 pattern.
+- *Test honesty.* The subject-digest case used a byte-identical copy and only
+  exercised the name check; it now also uses the same name with different
+  bytes.
+
+Review 2 confirmed as sound, with file:line evidence: no tag or candidate
+content is executed in the privileged path; pinned tooling cannot be shadowed
+by candidate content; artifact identity is re-checked before extraction and
+again before publication; attestation verification binds repository, signer
+workflow and digest, source digest and ref, issuer, runner class, predicate
+type and subject digest; the gate matrix cannot be satisfied without every
+precondition and the admin token is unusable; archive extraction rejects
+traversal, absolute paths, duplicates, symlinks, hardlinks, special files and
+size bombs; draft contents are fully verified before publication and
+conflicting drafts are refused; canonical verification cannot fall back to the
+legacy path; no error is swallowed in a way that lets a check pass without
+running.
+
+## 15. Maintainer activation summary
+
+The trusted release infrastructure now works and fails safely in
+non-production. Nothing in this branch grants it operational authority. The
+branch remains a draft PR and must not be merged, tagged or released until the
+decisions in section 11 are made and the limitations in section 10 are accepted
+or closed.
