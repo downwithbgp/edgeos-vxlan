@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "project": {
+    "name": "edgeos-vxlan",
+    "repository": "downwithbgp/edgeos-vxlan",
+    "repositoryId": 1357738281
+  },
+  "release": {
+    "canonicalFrom": "0.3.1",
+    "immutableFrom": "0.3.1",
+    "baselinePublishedVersion": "0.3.0",
+    "requiredAssets": [
+      "edgeos-vxlan_{packageVersion}_all.deb",
+      "edgeos-vxlan-kmod_{packageVersion}_mipsel.deb",
+      "edgeos-vxlan_{packageVersion}_mipsel.buildinfo",
+      "edgeos-vxlan_{packageVersion}_mipsel.changes",
+      "release-candidate.json",
+      "sbom-edgeos-vxlan.spdx.json",
+      "sbom-edgeos-vxlan-kmod.spdx.json",
+      "build-environment-qualification.json",
+      "build-environment-image.spdx.json",
+      "release-attestation.jsonl",
+      "SHA256SUMS"
+    ]
+  },
+  "publication": {
+    "environment": "release-publication",
+    "enableVariable": "RELEASE_PUBLICATION_ENABLED",
+    "immutableConfirmedVariable": "IMMUTABLE_RELEASES_CONFIRMED",
+    "confirmValue": "PUBLISH"
+  },
+  "image": {
+    "registry": "ghcr.io",
+    "repository": "downwithbgp/edgeos-vxlan-build"
+  },
+  "attestation": {
+    "workflowPath": ".github/workflows/release.yml",
+    "provenancePredicate": "https://slsa.dev/provenance/v1",
+    "sbomPredicate": "https://spdx.dev/Document/v2.3"
+  }
+}

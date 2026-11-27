@@ -21,6 +21,8 @@ deployments, not because IPv4 is unsupported.
 | [`kernel-provenance.md`](kernel-provenance.md) | Kernel module provenance, CVE-2022-50405 backport, compatibility evidence, package build |
 | [`address-family-support-matrix.md`](address-family-support-matrix.md) | Implementation, inferred, automated, simulated, namespace and hardware evidence by combination |
 | [`engineering-backlog.md`](engineering-backlog.md) | Repository-local engineering proposals and acceptance criteria; no remote issues created |
+| [`trusted-release-lifecycle.md`](trusted-release-lifecycle.md) | Phase III trusted release lifecycle: architecture, candidate identity, provenance/SBOM, publication authorization and verification |
+| [`release-activation-runbook.md`](release-activation-runbook.md) | Activation procedure: unverifiable settings, enablement variables, sequence, emergency disable, recovery and first-release acceptance criteria |
 
 ## Current release records
 

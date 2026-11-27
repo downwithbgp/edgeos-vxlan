@@ -1,0 +1,207 @@
+# Build and qualify the controlled reproducible build image.
+#
+# Trust boundaries:
+#   * Build/qualification jobs are read-only.
+#   * The image is built from the version-controlled Dockerfile with a fixed
+#     Ubuntu snapshot and a committed CA bundle.
+#   * The OCI archive is retained and independently re-verified.
+#   * GHCR publication is explicitly gated by an environment and a repository
+#     variable, and is not enabled in Phase III.
+#
+# The branch push trigger is the qualification entry point while this workflow
+# is not yet present on the default branch. workflow_dispatch is available
+# after merge.
+
+name: Build environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_image:
+        description: Publish the qualified image to GHCR (requires approval)
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches:
+      - ci/trusted-release-lifecycle
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-environment-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and qualify image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      manifest_digest: ${{ steps.qualify.outputs.manifest_digest }}
+      config_digest: ${{ steps.qualify.outputs.config_digest }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install pinned release tools
+        run: ./scripts/install-supply-chain-tools.sh "$RUNNER_TEMP/release-tools"
+
+      - name: Add release tools to PATH
+        run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+
+      - name: Set up Buildx OCI builder
+        run: |
+          docker buildx create --name edgeos-oci --driver docker-container --use 2>/dev/null ||
+            docker buildx use edgeos-oci
+          docker buildx inspect --bootstrap
+
+      - name: Build and qualify controlled image
+        run: ./scripts/build-environment.sh --output-dir qualification
+
+      - name: Record image identity outputs
+        id: qualify
+        run: |
+          echo "manifest_digest=$(jq -r .manifestDigest qualification/build-environment-qualification.json)" >> "$GITHUB_OUTPUT"
+          echo "config_digest=$(jq -r .configDigest qualification/build-environment-qualification.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Independently verify the qualified image
+        run: ./scripts/verify-build-environment.sh --archive-dir qualification
+
+      - name: Upload qualification evidence
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-environment-qualification
+          path: qualification/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+  qualify:
+    name: Independent image qualification
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Download qualification evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.0.0
+        with:
+          name: build-environment-qualification
+          path: downloaded
+
+      - name: Verify archive, digests, inventory and inputs
+        run: ./scripts/verify-build-environment.sh --archive-dir downloaded
+
+  publish:
+    name: Publish image to GHCR (gated)
+    # Dispatch from main only: this job holds packages: write and id-token:
+    # write and executes the checkout's tooling, so it must never run on a
+    # branch ref. The protected environment is the second barrier, not the only.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.publish_image == true &&
+      vars.BUILD_IMAGE_PUBLICATION_ENABLED == 'true'
+    needs: [build, qualify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: build-image-publication
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Confirm the dispatch revision
+        env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -eu
+          actual=$(git rev-parse HEAD)
+          [ "$actual" = "$WORKFLOW_SHA" ] ||
+            { echo "ERROR: tooling checkout $actual != workflow SHA $WORKFLOW_SHA" >&2; exit 1; }
+
+      - name: Install pinned release tools
+        run: ./scripts/install-supply-chain-tools.sh "$RUNNER_TEMP/release-tools"
+
+      - name: Add release tools to PATH
+        run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+
+      - name: Download qualification evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.0.0
+        with:
+          name: build-environment-qualification
+          path: downloaded
+
+      - name: Resolve image reference from policy
+        id: image
+        run: |
+          set -eu
+          registry=$(jq -er '.image.registry' release/release-policy.json)
+          repository=$(jq -er '.image.repository' release/release-policy.json)
+          {
+            echo "registry=$registry"
+            echo "name=$registry/$repository"
+            echo "ref=$registry/$repository:${GITHUB_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        env:
+          ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ github.token }}
+          REGISTRY: ${{ steps.image.outputs.registry }}
+        run: |
+          printf '%s' "$GH_TOKEN" |
+            docker login "$REGISTRY" -u "$ACTOR" --password-stdin
+
+      - name: Stage, verify and promote the image digest
+        id: push
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          TARGET_TAG: ${{ github.sha }}
+          STAGING_TAG: staging-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -eu
+          # The staging boundary is owned by the script: push under a
+          # candidate-specific tag, verify the remotely stored digest, promote
+          # exactly that digest, then delete the staging tag. It refuses to
+          # replace a target tag that points elsewhere.
+          ./scripts/publish-image-staged.sh \
+            --oci-archive downloaded/image.oci.tar \
+            --qualification downloaded/build-environment-qualification.json \
+            --image "$IMAGE_NAME" \
+            --staging-tag "$STAGING_TAG" \
+            --target-tag "$TARGET_TAG" \
+            --digest-out "$RUNNER_TEMP/image-digest.txt"
+          echo "remote=$(cat "$RUNNER_TEMP/image-digest.txt")" >> "$GITHUB_OUTPUT"
+
+      - name: Attest and publish the image SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.push.outputs.remote }}
+          sbom-path: downloaded/image.spdx.json
+          push-to-registry: true

@@ -1,0 +1,95 @@
+name: Verify release
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Published release tag
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag (for example v0.3.0)
+        required: true
+        type: string
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  attestations: read
+
+concurrency:
+  group: verify-release-${{ inputs.tag || github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Independent published-release verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Resolve tag
+        id: release
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -eu
+          tag=${INPUT_TAG:-${EVENT_TAG:-}}
+          if [ -z "$tag" ]; then
+            echo "ERROR: no release tag supplied" >&2
+            exit 1
+          fi
+          printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' ||
+            { echo "ERROR: invalid release tag: $tag" >&2; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check out trusted verification logic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Check out tagged source with history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ steps.release.outputs.tag }}
+          path: tagged-source
+          persist-credentials: false
+          fetch-depth: 0
+
+      # Trusted-input note: `gh` (the attestation verifier) and `syft` come
+      # from the pinned release-tools set below. The remaining tools are
+      # deliberately platform-provided and are treated as trusted runner
+      # inputs: git, jq, dpkg/dpkg-deb, readelf, modinfo, python3, tar, gzip,
+      # coreutils (sha256sum, stat, cmp, find, sort, awk, sed). They are listed
+      # here so the trust assumption is explicit rather than implied.
+      - name: Install pinned release tools
+        run: ./scripts/install-supply-chain-tools.sh "$RUNNER_TEMP/release-tools"
+      - name: Add release tools to PATH
+        run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+
+      - name: Install pinned schema validator
+        run: ./scripts/install-schema-validator.sh
+
+      - name: Download published release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p published
+          gh release download "$TAG" --repo "$REPO" --dir published
+
+      - name: Verify downloaded release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          ./scripts/verify-release.sh \
+            --asset-dir published \
+            --source-dir tagged-source \
+            --tag "$TAG"
