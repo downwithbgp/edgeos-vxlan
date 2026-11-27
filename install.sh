@@ -158,15 +158,15 @@ echo
 echo "  lsmod | grep -E '^(vxlan|udp_tunnel|ip6_udp_tunnel)'"
 echo
 echo
-echo "Example configuration:"
+echo "Example configuration (IPv6 underlay and IPv6 overlay):"
 echo
 echo "  configure"
 echo "  set interfaces vxlan vxlan42 vni 42"
-echo "  set interfaces vxlan vxlan42 local-ip 192.0.2.1"
-echo "  set interfaces vxlan vxlan42 remote-ip 192.0.2.2"
-echo "  set interfaces vxlan vxlan42 address 198.51.100.1/30"
+echo "  set interfaces vxlan vxlan42 local-ip 2001:db8:10::1"
+echo "  set interfaces vxlan vxlan42 remote-ip 2001:db8:10::2"
+echo "  set interfaces vxlan vxlan42 address 2001:db8:42::1/64"
 echo "  set interfaces vxlan vxlan42 port 4789"
-echo "  set interfaces vxlan vxlan42 mtu 1450"
+echo "  set interfaces vxlan vxlan42 mtu 1430"
 echo "  commit"
 echo "  save"
 echo "  exit"
