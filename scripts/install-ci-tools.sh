@@ -46,8 +46,8 @@ download_verified()
     output=$2
     expected=$3
 
-    curl --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 \
-        -fsSL -o "$output" "$url"
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+        --retry 3 --retry-delay 2 -fsSL -o "$output" "$url"
 
     actual=$(sha256sum "$output" | awk '{print $1}')
     [ "$actual" = "$expected" ] ||

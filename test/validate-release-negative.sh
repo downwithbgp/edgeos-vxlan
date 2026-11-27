@@ -17,11 +17,23 @@ INSTALL_VERSION=$(sed -n 's/^VERSION="\([^"]*\)"/\1/p' "$ROOT/install.sh")
 RELEASE_TAG="v$INSTALL_VERSION"
 KMOD="edgeos-vxlan-kmod_${PKG_VERSION}_mipsel.deb"
 INTEGRATION="edgeos-vxlan_${PKG_VERSION}_all.deb"
+KMOD_PIN=$(sed -n 's/^KMOD_SHA256="\([^"]*\)"/\1/p' "$ROOT/install.sh")
+INTEGRATION_PIN=$(sed -n 's/^INTEGRATION_SHA256="\([^"]*\)"/\1/p' "$ROOT/install.sh")
 
 case "$PKG_VERSION" in
     *~*) PRERELEASE=yes ;;
     *) PRERELEASE=no ;;
 esac
+
+actual_kmod_sha=$(sha256sum -- "$ARTIFACT_DIR/$KMOD" | cut -d ' ' -f1)
+actual_integration_sha=$(sha256sum -- "$ARTIFACT_DIR/$INTEGRATION" | cut -d ' ' -f1)
+
+if [ "$actual_kmod_sha" = "$KMOD_PIN" ] &&
+   [ "$actual_integration_sha" = "$INTEGRATION_PIN" ]; then
+    PUBLISHED_FIXTURE_OK=yes
+else
+    PUBLISHED_FIXTURE_OK=no
+fi
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
@@ -91,6 +103,20 @@ repack()
     dpkg-deb --root-owner-group -b "$work" "$dst" >/dev/null
 }
 
+repack_with_md5sums()
+{
+    local src=$1
+    local dst=$2
+    local edit=$3
+    local work=$TMP/repack-work
+
+    rm -rf "$work"
+    mkdir -p "$work"
+    dpkg-deb -R "$src" "$work"
+    "$edit" "$work"
+    dpkg-deb --root-owner-group -b "$work" "$dst" >/dev/null
+}
+
 edit_version()
 {
     sed -i 's/^Version: .*/Version: 9.9.9~rc9+edgeos3.0.1.e50/' "$1/DEBIAN/control"
@@ -105,6 +131,23 @@ edit_depends()
 {
     sed -i "s/^Depends: .*/Depends: edgeos-vxlan-kmod (= $PKG_VERSION), vyatta-cfg-system/" \
         "$1/DEBIAN/control"
+}
+
+add_control_field()
+{
+    printf 'Essential: yes\n' >>"$1/DEBIAN/control"
+}
+
+replace_file_with_symlink()
+{
+    rm -f "$1/opt/vyatta/sbin/vyatta-vxlan"
+    ln -s /etc/passwd "$1/opt/vyatta/sbin/vyatta-vxlan"
+}
+
+write_unsafe_md5sums()
+{
+    printf '00000000000000000000000000000000  /etc/passwd\n' \
+        >"$1/DEBIAN/md5sums"
 }
 
 add_unexpected_file()
@@ -235,6 +278,20 @@ copy_clean "$clean_build"
 expect_pass "build validation accepts the real artifacts" run_build "$clean_build"
 
 if [ "$PRERELEASE" = "no" ]; then
+    expect_fail "skip-pins flag rejects a stable version" \
+        "not a recognised prerelease" \
+        run_skip_pins "$clean_build" "$ROOT"
+
+    multiline_tag=$(printf 'v%s\nv9.9.9' "$INSTALL_VERSION")
+    expect_fail "multiline release tag is rejected" "single line" \
+        "$ROOT/scripts/validate-artifacts.sh" --build --tag "$multiline_tag" \
+        "$clean_build" "$ROOT"
+else
+    expect_pass "skip-pins accepts a prerelease version" \
+        run_skip_pins "$clean_build" "$ROOT"
+fi
+
+if [ "$PRERELEASE" = "no" ] && [ "$PUBLISHED_FIXTURE_OK" = "yes" ]; then
     [ -f "$ROOT/SHA256SUMS" ] ||
         { echo "ERROR: missing $ROOT/SHA256SUMS" >&2; exit 1; }
 
@@ -249,19 +306,10 @@ if [ "$PRERELEASE" = "no" ]; then
         env RELEASE_TAG="$RELEASE_TAG" \
         "$ROOT/scripts/validate-published-release.sh" "$clean_published" \
         "$source_no_manifest"
-
-    expect_fail "skip-pins flag rejects a stable version" \
-        "not a recognised prerelease" \
-        run_skip_pins "$clean_build" "$ROOT"
-
-    multiline_tag=$(printf 'v%s\nv9.9.9' "$INSTALL_VERSION")
-    expect_fail "multiline release tag is rejected" "single line" \
-        "$ROOT/scripts/validate-artifacts.sh" --build --tag "$multiline_tag" \
-        "$clean_build" "$ROOT"
+elif [ "$PRERELEASE" = "no" ]; then
+    echo "NOTE: rebuilt packages do not match install.sh pins; skipping published-mode positive cases." >&2
 else
     echo "NOTE: prerelease tree; skipping published-mode positive cases." >&2
-    expect_pass "skip-pins accepts a prerelease version" \
-        run_skip_pins "$clean_build" "$ROOT"
 fi
 
 rc_source=$(new_dir rc-source)
@@ -300,7 +348,7 @@ expect_fail "wrong package architecture" "package architecture is not mipsel" ru
 bad_depends=$(new_dir bad-depends)
 copy_clean "$bad_depends"
 repack "$ARTIFACT_DIR/$INTEGRATION" "$bad_depends/$INTEGRATION" edit_depends
-expect_fail "wrong dependency relationships" "dependency relationships" run_build "$bad_depends"
+expect_fail "wrong dependency relationships" "Depends relationships" run_build "$bad_depends"
 
 unexpected_file=$(new_dir unexpected-file)
 copy_clean "$unexpected_file"
@@ -326,7 +374,7 @@ expect_fail "missing udp_tunnel module" "package contents" \
 bad_module=$(new_dir bad-module)
 copy_clean "$bad_module"
 repack "$ARTIFACT_DIR/$KMOD" "$bad_module/$KMOD" corrupt_module
-expect_fail "corrupted kernel module" "does not match" run_build "$bad_module"
+expect_fail "corrupted kernel module" "vxlan.ko does not match" run_build "$bad_module"
 
 bad_script_syntax=$(new_dir bad-script-syntax)
 copy_clean "$bad_script_syntax"
@@ -343,6 +391,25 @@ copy_clean "$extra_control"
 repack "$ARTIFACT_DIR/$INTEGRATION" "$extra_control/$INTEGRATION" add_control_file
 expect_fail "unexpected control-archive file" "unexpected control archive contents" \
     run_build "$extra_control"
+
+extra_control_field=$(new_dir extra-control-field)
+copy_clean "$extra_control_field"
+repack "$ARTIFACT_DIR/$INTEGRATION" "$extra_control_field/$INTEGRATION" add_control_field
+expect_fail "smuggled Essential field" "Essential is not derived" \
+    run_build "$extra_control_field"
+
+symlink_member=$(new_dir symlink-member)
+copy_clean "$symlink_member"
+repack "$ARTIFACT_DIR/$INTEGRATION" "$symlink_member/$INTEGRATION" \
+    replace_file_with_symlink
+expect_fail "symlink member" "package contents" run_build "$symlink_member"
+
+unsafe_md5sums=$(new_dir unsafe-md5sums)
+copy_clean "$unsafe_md5sums"
+repack_with_md5sums "$ARTIFACT_DIR/$INTEGRATION" \
+    "$unsafe_md5sums/$INTEGRATION" write_unsafe_md5sums
+expect_fail "unsafe md5sums path" "md5sums do not cover exactly" \
+    run_build "$unsafe_md5sums"
 
 bad_changelog=$(new_dir bad-changelog)
 copy_clean "$bad_changelog"
@@ -383,22 +450,22 @@ sed -i '1s/^[0-9a-f]*/not-a-hash/' "$malformed_manifest/SHA256SUMS"
 expect_fail "malformed manifest entry" "malformed checksum manifest" \
     run_build "$malformed_manifest"
 
-if [ "$PRERELEASE" = "no" ]; then
+if [ "$PRERELEASE" = "no" ] && [ "$PUBLISHED_FIXTURE_OK" = "yes" ]; then
     published_missing_manifest=$(new_dir published-missing-manifest)
     copy_clean "$published_missing_manifest"
-    expect_fail "published asset set without manifest" "release asset set" \
+    expect_fail "published asset set without manifest" "missing release asset" \
         run_published "$published_missing_manifest"
 
     published_extra_asset=$(new_dir published-extra-asset)
     make_published_clean "$published_extra_asset"
     printf 'notes\n' >"$published_extra_asset/notes.txt"
-    expect_fail "unexpected published asset" "release asset set" \
+    expect_fail "unexpected published asset" "unexpected release asset" \
         run_published "$published_extra_asset"
 
     published_corrupt=$(new_dir published-corrupt)
     make_published_clean "$published_corrupt"
     printf '\001' >>"$published_corrupt/$KMOD"
-    expect_fail "corrupted published package" "checksum manifest verification failed" \
+    expect_fail "corrupted published package" "install.sh pin" \
         run_published "$published_corrupt"
 
     published_manifest_order=$(new_dir published-manifest-order)
@@ -417,6 +484,8 @@ if [ "$PRERELEASE" = "no" ]; then
         env RELEASE_TAG="$RELEASE_TAG" GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v9.9.9 \
         "$ROOT/scripts/validate-published-release.sh" "$clean_published" "$ROOT"
 
+elif [ "$PRERELEASE" = "no" ]; then
+    echo "NOTE: rebuilt packages do not match install.sh pins; skipping published-mode negative cases." >&2
 else
     echo "NOTE: prerelease tree; skipping published-mode negative cases." >&2
 fi

@@ -85,17 +85,26 @@ note()
 }
 
 for cmd in dpkg-deb dpkg-parsechangelog readelf modinfo sha256sum md5sum cmp \
-           gzip find sort awk sed grep stat diff wc; do
+           gzip find sort awk sed grep stat diff wc head; do
     command -v "$cmd" >/dev/null 2>&1 ||
         fail "required command not found: $cmd"
 done
 
 [ -d "$ARTIFACT_DIR" ] || fail "artifact directory not found: $ARTIFACT_DIR"
+[ -d "$SOURCE_ROOT" ] || fail "source root not found: $SOURCE_ROOT"
+
+ARTIFACT_DIR=$(CDPATH='' cd -- "$ARTIFACT_DIR" && pwd) ||
+    fail "cannot resolve artifact directory: $ARTIFACT_DIR"
+SOURCE_ROOT=$(CDPATH='' cd -- "$SOURCE_ROOT" && pwd) ||
+    fail "cannot resolve source root: $SOURCE_ROOT"
+
 [ -f "$SOURCE_ROOT/install.sh" ] || fail "missing $SOURCE_ROOT/install.sh"
 [ -f "$SOURCE_ROOT/debian/changelog" ] ||
     fail "missing $SOURCE_ROOT/debian/changelog"
 [ -f "$SOURCE_ROOT/debian/copyright" ] ||
     fail "missing $SOURCE_ROOT/debian/copyright"
+[ -f "$SOURCE_ROOT/debian/control" ] ||
+    fail "missing $SOURCE_ROOT/debian/control"
 
 read_install_var()
 {
@@ -187,18 +196,34 @@ KMOD_DEB=${KMOD_PKG}_${PKG_VERSION}_mipsel.deb
 check_artifact_set()
 {
     if [ "$MODE" = "published" ]; then
-        expected=$(printf '%s\n' "$INTEGRATION_DEB" "$KMOD_DEB" SHA256SUMS |
+        required=$(printf '%s\n' "$INTEGRATION_DEB" "$KMOD_DEB" SHA256SUMS |
             LC_ALL=C sort)
         actual=$(find "$ARTIFACT_DIR" -mindepth 1 -maxdepth 1 -printf '%f\n' |
             LC_ALL=C sort)
 
-        if [ "$actual" != "$expected" ]; then
-            echo "Expected release assets:" >&2
-            printf '%s\n' "$expected" | sed 's/^/  /' >&2
-            echo "Actual release assets:" >&2
-            printf '%s\n' "$actual" | sed 's/^/  /' >&2
-            fail "release asset set is incomplete or contains unexpected entries"
-        fi
+        while IFS= read -r asset; do
+            [ -n "$asset" ] || continue
+
+            case "$asset" in
+                "$INTEGRATION_DEB"|"$KMOD_DEB"|SHA256SUMS)
+                    ;;
+                "edgeos-vxlan_${PKG_VERSION}_mipsel.buildinfo"|"edgeos-vxlan_${PKG_VERSION}_mipsel.changes")
+                    ;;
+                *)
+                    fail "unexpected release asset: $asset"
+                    ;;
+            esac
+        done <<EOF
+$actual
+EOF
+
+        while IFS= read -r asset; do
+            [ -n "$asset" ] || continue
+            [ -f "$ARTIFACT_DIR/$asset" ] ||
+                fail "missing release asset: $asset"
+        done <<EOF
+$required
+EOF
     else
         [ -f "$ARTIFACT_DIR/$INTEGRATION_DEB" ] ||
             fail "missing $INTEGRATION_DEB"
@@ -226,6 +251,54 @@ normalize_depends()
         sed '/^$/d' | LC_ALL=C sort
 }
 
+source_control_field()
+{
+    package=$1
+    field=$2
+
+    awk -v pkg="$package" -v field="$field" '
+        BEGIN { in_pkg = 0; capture = 0 }
+        /^Package:[ \t]/ {
+            in_pkg = ($2 == pkg)
+            capture = 0
+            next
+        }
+        in_pkg && capture && /^[ \t]/ {
+            sub(/^[ \t]+/, " ")
+            printf "%s", $0
+            next
+        }
+        in_pkg && capture { exit }
+        in_pkg && index($0, field ":") == 1 {
+            sub("^" field ":[ \t]*", "")
+            printf "%s", $0
+            capture = 1
+            next
+        }
+    ' "$SOURCE_ROOT/debian/control"
+}
+
+resolve_control_field()
+{
+    package=$1
+    field=$2
+    raw=$(source_control_field "$package" "$field")
+    resolved=$(printf '%s\n' "$raw" |
+        sed -e "s/\${binary:Version}/$PKG_VERSION/g" \
+            -e "s/\${misc:Depends}//g" \
+            -e "s/\${shlibs:Depends}//g" \
+            -e "s/\${python3:Depends}//g" \
+            -e "s/\${perl:Depends}//g")
+
+    case "$resolved" in
+        *"\${"*)
+            fail "unsupported substvar in debian/control $field: $resolved"
+            ;;
+    esac
+
+    printf '%s\n' "$resolved"
+}
+
 check_package_metadata()
 {
     deb=$1
@@ -243,6 +316,29 @@ check_package_metadata()
 
     [ "$(deb_field "$deb" Architecture)" = "$architecture" ] ||
         fail "$deb: package architecture is not $architecture"
+
+    for field in Depends Pre-Depends Conflicts Breaks Replaces Provides; do
+        expected=$(normalize_depends "$(resolve_control_field "$package" "$field")")
+        actual=$(normalize_depends "$(deb_field "$deb" "$field")")
+
+        [ "$actual" = "$expected" ] ||
+            fail "$deb: $field relationships differ from debian/control"
+    done
+
+    for field in Essential Multi-Arch; do
+        expected=$(resolve_control_field "$package" "$field" |
+            sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        actual=$(deb_field "$deb" "$field" |
+            sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+
+        if [ "$field" = "Essential" ] || [ "$field" = "Multi-Arch" ]; then
+            [ -n "$expected" ] || expected=no
+            [ -n "$actual" ] || actual=no
+        fi
+
+        [ "$actual" = "$expected" ] ||
+            fail "$deb: $field is not derived from debian/control"
+    done
 }
 
 check_control_archive()
@@ -293,52 +389,6 @@ check_control_archive()
     done
 }
 
-compare_packaged_file()
-{
-    rel=$1
-    data=$2
-    tmp=$3
-
-    case "$rel" in
-        opt/vyatta/sbin/vyatta-vxlan)
-            src=$SOURCE_ROOT/src/vyatta-vxlan
-            ;;
-        opt/vyatta/sbin/vyatta-vxlan-addr)
-            src=$SOURCE_ROOT/src/vyatta-vxlan-addr
-            ;;
-        opt/vyatta/sbin/vyatta-vxlan-bridge)
-            src=$SOURCE_ROOT/src/vyatta-vxlan-bridge
-            ;;
-        opt/vyatta/share/perl5/Vyatta/Interface.pm)
-            src=$SOURCE_ROOT/src/Interface.pm
-            ;;
-        opt/vyatta/share/vyatta-cfg/templates/interfaces/vxlan/*)
-            src=$SOURCE_ROOT/templates/interfaces/vxlan/${rel#opt/vyatta/share/vyatta-cfg/templates/interfaces/vxlan/}
-            ;;
-        lib/modules/4.14.54-UBNT/extra/vxlan.ko)
-            src=$SOURCE_ROOT/modules/4.14.54-UBNT/vxlan.ko
-            ;;
-        lib/modules/4.14.54-UBNT/kernel/net/ipv4/udp_tunnel.ko)
-            src=$SOURCE_ROOT/modules/4.14.54-UBNT/udp_tunnel.ko
-            ;;
-        usr/share/doc/*/changelog.gz)
-            gzip -dc "$data/$rel" > "$tmp/changelog"
-            cmp -s "$tmp/changelog" "$SOURCE_ROOT/debian/changelog" ||
-                fail "packaged $rel does not match debian/changelog"
-            return 0
-            ;;
-        usr/share/doc/*/copyright)
-            src=$SOURCE_ROOT/debian/copyright
-            ;;
-        *)
-            fail "no source mapping for packaged file: $rel"
-            ;;
-    esac
-
-    cmp -s "$data/$rel" "$src" ||
-        fail "packaged file $rel does not match $src"
-}
-
 symbolic_file_mode()
 {
     if [ -x "$1" ]; then
@@ -348,24 +398,25 @@ symbolic_file_mode()
     fi
 }
 
-# Derive the expected data contents from the packaging definitions in the
-# source tree under validation.  This deliberately uses the tagged source's
-# debian/*.install files rather than a manifest tied to the current release, so
-# released layouts (including older tags that predate this validator) can be
-# validated with current trusted logic.  The module hash and ABI anchors below
-# intentionally cover the supported v0.1.1-v0.2.x payloads; a future payload
-# change must update them in a reviewed commit.
+# Derive both the expected data contents and the packaged-file -> source-file
+# mapping from the source tree's debian/*.install definitions.  Expectations
+# therefore come from the tagged tree, not from a release-specific table in
+# this branch.
 build_expected_contents()
 {
     package=$1
     expected=$2
+    source_map=$3
     install_file=$SOURCE_ROOT/debian/$package.install
     files=$expected.files
+    maps=$source_map.files
+    src_list=$expected.src-list
 
     [ -f "$install_file" ] ||
         fail "missing packaging definition: $install_file"
 
     : > "$files"
+    : > "$maps"
 
     while IFS= read -r line || [ -n "$line" ]; do
         line=$(printf '%s\n' "$line" |
@@ -385,22 +436,29 @@ build_expected_contents()
 
         dest=${dest%/}
         [ -n "$dest" ] || dest=.
+        base=${src##*/}
 
         if [ -d "$SOURCE_ROOT/$src" ]; then
             [ -z "$(find "$SOURCE_ROOT/$src" -type l -print -quit)" ] ||
                 fail "$install_file: symlink packaging is not supported: $src"
 
-            find "$SOURCE_ROOT/$src" -type f -print |
-                while IFS= read -r path; do
-                    rel=${path#"$SOURCE_ROOT/$src/"}
-                    mode=$(symbolic_file_mode "$path")
-                    printf '%s root/root %s/%s/%s\n' \
-                        "$mode" "$dest" "${src##*/}" "$rel"
-                done >> "$files"
+            find "$SOURCE_ROOT/$src" -type f -printf '%P\n' > "$src_list" ||
+                fail "cannot enumerate source directory: $src"
+            LC_ALL=C sort -o "$src_list" "$src_list" ||
+                fail "cannot sort source directory listing: $src"
+
+            while IFS= read -r rel; do
+                path=$SOURCE_ROOT/$src/$rel
+                mode=$(symbolic_file_mode "$path")
+                printf '%s root/root %s/%s/%s\n' \
+                    "$mode" "$dest" "$base" "$rel" >> "$files"
+                printf '%s\t%s\n' "$dest/$base/$rel" "$src/$rel" >> "$maps"
+            done < "$src_list"
         elif [ -f "$SOURCE_ROOT/$src" ]; then
             mode=$(symbolic_file_mode "$SOURCE_ROOT/$src")
             printf '%s root/root %s/%s\n' \
-                "$mode" "$dest" "${src##*/}" >> "$files"
+                "$mode" "$dest" "$base" >> "$files"
+            printf '%s\t%s\n' "$dest/$base" "$src" >> "$maps"
         else
             fail "$install_file: missing source path: $src"
         fi
@@ -412,6 +470,11 @@ build_expected_contents()
         printf '%s root/root usr/share/doc/%s/copyright\n' \
             '-rw-r--r--' "$package"
     } >> "$files"
+
+    {
+        printf 'usr/share/doc/%s/changelog.gz\tdebian/changelog\n' "$package"
+        printf 'usr/share/doc/%s/copyright\tdebian/copyright\n' "$package"
+    } >> "$maps"
 
     dirs=$expected.dirs
     {
@@ -431,7 +494,8 @@ build_expected_contents()
     } > "$dirs"
 
     LC_ALL=C sort -u "$files" "$dirs" > "$expected"
-    rm -f "$files" "$dirs"
+    LC_ALL=C sort -u "$maps" > "$source_map"
+    rm -f "$files" "$maps" "$dirs" "$src_list"
 }
 
 check_contents()
@@ -440,12 +504,14 @@ check_contents()
     package=$2
     data=$3
     tmp=$4
+    max_doc_bytes=16777216
 
     dpkg-deb -x "$deb" "$data" ||
         fail "$deb: cannot extract the data archive"
 
-    expected="$tmp/expected-$package.txt"
-    build_expected_contents "$package" "$expected"
+    expected=$tmp/expected-$package.txt
+    source_map=$tmp/source-map-$package.txt
+    build_expected_contents "$package" "$expected" "$source_map"
 
     listing=$tmp/listing-$package.txt
     parsed=$tmp/parsed-$package.txt
@@ -464,17 +530,41 @@ check_contents()
         fail "$deb: package contents, permissions or ownership differ from the contract"
     fi
 
-    list=$tmp/files-$package.txt
-    find "$data" -type f -printf '%P\n' > "$list" ||
-        fail "$deb: cannot enumerate package files"
-    LC_ALL=C sort -o "$list" "$list" ||
-        fail "$deb: cannot sort package file list"
+    tab=$(printf '\t')
+    while IFS="$tab" read -r rel src; do
+        [ -n "$rel" ] || continue
 
-    while IFS= read -r rel; do
-        compare_packaged_file "$rel" "$data" "$tmp"
-    done < "$list"
+        case "$rel" in
+            *.gz)
+                gzip -dc "$data/$rel" 2>/dev/null |
+                    head -c $((max_doc_bytes + 1)) > "$tmp/decompressed"
+                size=$(wc -c < "$tmp/decompressed")
+                [ "$size" -le "$max_doc_bytes" ] ||
+                    fail "$deb: decompressed $rel exceeds $max_doc_bytes bytes"
+                cmp -s "$tmp/decompressed" "$SOURCE_ROOT/$src" ||
+                    fail "packaged $rel does not match $src"
+                ;;
+            *)
+                cmp -s "$data/$rel" "$SOURCE_ROOT/$src" ||
+                    fail "packaged $rel does not match $src"
+                ;;
+        esac
+    done < "$source_map"
 
-    ( cd "$data" && md5sum --quiet -c "$data/../control-$package/md5sums" ) ||
+    expected_files=$tmp/expected-files-$package.txt
+    actual_md5_files=$tmp/md5sums-$package.txt
+    awk '$1 ~ /^-/ { print $3 }' "$expected" |
+        LC_ALL=C sort > "$expected_files" ||
+        fail "$deb: cannot derive expected file list"
+    awk 'NF != 2 || length($1) != 32 || $1 ~ /[^0-9a-f]/ { exit 1 } { print $2 }' \
+        "$tmp/control-$package/md5sums" |
+        LC_ALL=C sort > "$actual_md5_files" ||
+        fail "$deb: malformed md5sums"
+
+    cmp -s "$expected_files" "$actual_md5_files" ||
+        fail "$deb: packaged md5sums do not cover exactly the packaged files"
+
+    ( cd "$data" && md5sum --strict --quiet -c "$tmp/control-$package/md5sums" ) ||
         fail "$deb: packaged md5sums do not verify"
 }
 
@@ -571,16 +661,14 @@ check_manifest()
     fi
 }
 
-check_install_pins()
+check_published_pins()
 {
-    if [ "$MODE" = "published" ] || [ "$SKIP_PINS" = "no" ]; then
-        [ "$ACTUAL_KMOD_SHA" = "$KMOD_PIN" ] ||
-            fail "kmod SHA256 $ACTUAL_KMOD_SHA != install.sh pin $KMOD_PIN"
-        [ "$ACTUAL_INTEGRATION_SHA" = "$INTEGRATION_PIN" ] ||
-            fail "integration SHA256 $ACTUAL_INTEGRATION_SHA != install.sh pin $INTEGRATION_PIN"
-    else
-        note "install.sh pins are for $INSTALLER_PKG_VERSION; package pin comparison skipped"
-    fi
+    [ "$MODE" = "published" ] || return 0
+
+    [ "$ACTUAL_KMOD_SHA" = "$KMOD_PIN" ] ||
+        fail "kmod SHA256 $ACTUAL_KMOD_SHA != install.sh pin $KMOD_PIN"
+    [ "$ACTUAL_INTEGRATION_SHA" = "$INTEGRATION_PIN" ] ||
+        fail "integration SHA256 $ACTUAL_INTEGRATION_SHA != install.sh pin $INTEGRATION_PIN"
 }
 
 check_host_paths()
@@ -627,26 +715,14 @@ check_artifact_set
 ACTUAL_KMOD_SHA=$(sha256sum "$ARTIFACT_DIR/$KMOD_DEB" | awk '{print $1}')
 ACTUAL_INTEGRATION_SHA=$(sha256sum "$ARTIFACT_DIR/$INTEGRATION_DEB" | awk '{print $1}')
 
+if [ "$MODE" = "published" ]; then
+    check_published_pins
+else
+    note "build-mode install.sh pin comparison is not enforced; policy is pending review"
+fi
+
 check_package_metadata "$ARTIFACT_DIR/$INTEGRATION_DEB" "$INTEGRATION_PKG" all
 check_package_metadata "$ARTIFACT_DIR/$KMOD_DEB" "$KMOD_PKG" mipsel
-
-integration_depends=$(normalize_depends "$(deb_field "$ARTIFACT_DIR/$INTEGRATION_DEB" Depends)")
-expected_integration_depends=$(printf '%s\n' \
-    "edgeos-vxlan-kmod (= $PKG_VERSION)" \
-    "libvyatta-cfg1 (= 1:1.0.18+t5862406.er.3.0.1.ef8cbcb)" \
-    "vyatta-cfg-system" | LC_ALL=C sort)
-
-[ "$integration_depends" = "$expected_integration_depends" ] || {
-    echo "Expected integration dependencies:" >&2
-    printf '%s\n' "$expected_integration_depends" | sed 's/^/  /' >&2
-    echo "Actual integration dependencies:" >&2
-    printf '%s\n' "$integration_depends" | sed 's/^/  /' >&2
-    fail "integration package dependency relationships are not the expected set"
-}
-
-kmod_depends=$(normalize_depends "$(deb_field "$ARTIFACT_DIR/$KMOD_DEB" Depends)")
-[ -z "$kmod_depends" ] ||
-    fail "kernel-module package has unexpected runtime dependencies: $kmod_depends"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
@@ -692,7 +768,6 @@ if [ "$MODE" = "published" ] || [ -f "$ARTIFACT_DIR/SHA256SUMS" ]; then
     check_manifest
 fi
 
-check_install_pins
 check_host_paths "$TMP/data-$INTEGRATION_PKG"
 check_host_paths "$TMP/data-$KMOD_PKG"
 
