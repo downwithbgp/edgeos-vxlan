@@ -9,6 +9,12 @@
 jobs are green. The package build, artifact validation, negative tests and reproducibility checks
 are included in §5. This record distinguishes implemented functionality from proposed future work.
 
+**Later result.** After the Phase III integration, the branch HEAD `92336a3` re-ran the same suite
+inside the canonical `ci.yml` against the same-run candidate package. That result — hosted push run
+46060990232, 113 pass / 0 fail / 2 skip, candidate-bound evidence validated — is recorded in
+[`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md) §9. The
+sections below remain the record of the earlier base and are not rewritten.
+
 ## 1. Scope
 
 This record covers:

@@ -1,8 +1,9 @@
 # IPv6-only qualification in the trusted release lifecycle
 
 **Status:** integration record, 2026-11-27. PR #8 (`Phase III: trusted release lifecycle`) merged
-to `main` at `0771455504056fcf45b6fc041cc541e20e12f0f2`. PR #9 is rebased onto that main and ports
-the IPv6-only job into the canonical `ci.yml`.
+to `main` at `0771455504056fcf45b6fc041cc541e20e12f0f2`. PR #9 integrated that main and ports
+the IPv6-only job into the canonical `ci.yml`; the final branch HEAD is
+`92336a3840d167ff475d5422755c3570ef65421a`.
 **Scope:** CI integration and candidate-bound evidence. This document does **not** modify the
 publication policy, release workflows, historical assets or release gates.
 **Related:** [`ipv6-only-qualification.md`](ipv6-only-qualification.md),
@@ -15,8 +16,10 @@ publication policy, release workflows, historical assets or release gates.
 |---|---|
 | Original PR #9 HEAD | `a7bc214520c17a3567f3d0f4d7d1c820388ce3c0` |
 | Recoverable backup | `backup/pr9-pre-phase3-integration` = `a7bc214520c17a3567f3d0f4d7d1c820388ce3c0` |
-| Merged Phase III main | `0771455504056fcf45b6fc041cc541e20e12f0f2` |
-| Integration model | Rebase onto `origin/main`; no merge commit |
+| Merged Phase III main (integration base) | `0771455504056fcf45b6fc041cc541e20e12f0f2` |
+| Reviewed integration tree | `251c1cb` (rebase result); tree `eee30a20361c2d3111b2cb2eea6aeb548dc52845` |
+| Final branch HEAD | `92336a3840d167ff475d5422755c3570ef65421a` |
+| Integration model | The reviewed rebase result was recorded as a merge commit with parents `a7bc214` and `0771455`. The merged tree is byte-identical to the reviewed rebase tree (`eee30a2…`), so review applies unchanged and no force-push of the published branch was required. |
 | Obsolete workflow | `release-validation.yml` removed; not resurrected |
 | APT helper | Main's masking implementation replaced by the stricter transient source-selection implementation; all main call sites use the same path |
 | PR #8 branch | Not modified |
@@ -166,9 +169,87 @@ cleanup and is **not** part of this integration. No workflow file was deleted in
    place.
 6. `qualify-build-image.yml` historical-reference cleanup, if wanted, is a separate change.
 
-## 8. Integration recommendation
+## 8. Changed-file inventory
 
-PR #9 is integration-ready for review. Merge only after the maintainer approves the `ci.yml`
-placement and the same-run artifact binding. Follow with a **separate** candidate-bound Phase III
-change implementing §4; do not widen this PR into a publication-policy redesign. No release or
-image publication is authorized by this integration.
+Net change against the integration base `0771455` (`origin/main`): **19 files, +4712 −74**.
+
+| File | Change |
+|---|---|
+| `.github/workflows/ci.yml` | Modified: `package` job outputs (`artifact_id`, `artifact_digest`) and the ported `ipv6-only` job. The only workflow file changed; no other Phase III workflow is touched. |
+| `scripts/apt-update-ubuntu-only.sh` | Modified: replaced main's masking helper with the transient single-source implementation. |
+| `test/ipv6-only-netns.sh`, `test/lib/ipv6-isolation.sh` | Added: isolated IPv6-only suite and isolation assertions. |
+| `test/unit-ipv6-evidence.sh` | Added: 16 evidence-binding contract fixtures. |
+| `test/run.sh` | Modified: registers the new evidence-contract suite. |
+| `scripts/validate-ipv6-qualification-evidence.py` | Added: candidate-bound evidence validator. |
+| `AGENTS.md`, `CONTRIBUTING.md` | Added/modified: current engineering rules and contributor guidance. |
+| `README.md`, `docs/README.md` | Modified: documentation index and entry points. |
+| `docs/ipv6-only-qualification.md`, `docs/ipv6-only-qualification-evidence.md`, `docs/ipv6-only-qualification-ci-integration.md` | Added: qualification guide, evidence record and this integration record. |
+| `docs/ipv4-dependency-inventory.md` | Added: IPv4 assumption inventory. |
+| `docs/address-family-support-matrix.md`, `docs/architecture.md`, `docs/deployment.md`, `docs/engineering-backlog.md` | Modified: current claims, layer model, scenarios and backlog. |
+
+No file under `release/`, `src/`, `templates/`, `debian/` or any Phase III release script is changed.
+The package payload is unchanged: the integration `.deb` is still
+`6afa3f25e8145a6ebf31a947ab104b223b351aa615b51aa2a97389364a133e2a`.
+
+## 9. Hosted verification of the integrated workflow
+
+| Run | Event | Result |
+|---|---|---|
+| [46060990232](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46060990232) | push, `ci/ipv6-native-qualification` at `92336a3` | **success** — Static analysis, Build and validate packages, Reproducibility verification, Published-release fixtures, Network-namespace dataplane and IPv6-only qualification all passed |
+| [46060996251](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46060996251) | pull_request, head `92336a3` | **success** — Static analysis, Build and validate packages and Reproducibility verification passed; Published-release fixtures, Network-namespace dataplane and IPv6-only qualification skipped by their event guards |
+
+The PR run confirms the trust boundary: untrusted PR code never reaches the privileged jobs. The
+skips are event guards, not qualifications, and are not reported as IPv6 evidence.
+
+### 9.1 Candidate-bound evidence from the integrated push run
+
+The `ipv6-only-qualification-evidence` artifact of run `46060990232` attempt 1 records:
+
+| Identity | Value |
+|---|---|
+| Source commit | `92336a3840d167ff475d5422755c3570ef65421a` |
+| Workflow run | `46060990232`, attempt 1 |
+| Workflow path/ref | `downwithbgp/edgeos-vxlan/.github/workflows/ci.yml@refs/heads/ci/ipv6-native-qualification` |
+| Harness commit | `92336a3840d167ff475d5422755c3570ef65421a` |
+| Package | `edgeos-vxlan_0.3.0+edgeos3.0.1.e50_all.deb`, SHA-256 `6afa3f25e8145a6ebf31a947ab104b223b351aa615b51aa2a97389364a133e2a` |
+| Packaged files | reconciler `814bf8074775c45a41b89eb9ef7ffd689426ee63c7435de4191d81940ed304b7`, address helper `a484717ad975ff429368e66d638f3d1bc05e17a61c37b0cd50ff9ec82866c7d7` |
+| Counts | 113 pass, 0 fail, 2 skip; `capture=executed`, `reconciler=executed`, `packageExecuted=true` |
+| Evidence classes | N6, N6-R, N6-R-P |
+
+Retained evidence hashes: `summary.json` `73b32231e15fe9b0e8303b685a3fe04d144256de5d88e162680bb5f1e52490ff`,
+`summary.txt` `74b8b5f598f53da07dc49ad607d8b059d7eae0ab8f3de71f77c0a1c2b055ceb5` (isolation),
+`topology-after.txt` `22498d4840db471e1cff81342e12666ab9c5a3ce9460c7a60399d58db98e6fc9` (dataplane),
+`captures/analysis.txt` `4566ecfb86aaef625b23be90c9f498baa17e90b955ff65790117d9b1ef48af56` (capture),
+`reconciler-evidence.txt` `6813645cea6f0762bd99e611e616721c032350a6aa92bb4eef92cca25cd0bed5` (reconciler).
+The two skips are the permitted host-global-IPv6 escape control and the documented
+`iproute2-json-normalization` workaround.
+
+Re-validating the downloaded artifact against that identity returned **PASS**, with only the two
+permitted skips:
+
+```bash
+python3 scripts/validate-ipv6-qualification-evidence.py \
+  --summary summary.json --evidence-dir . \
+  --expected-source-commit 92336a3… --expected-package-sha256 6afa3f25… \
+  --expected-workflow-run-id 46060990232 --expected-workflow-run-attempt 1 \
+  --expected-workflow-path 'downwithbgp/edgeos-vxlan/.github/workflows/ci.yml@refs/heads/ci/ipv6-native-qualification' \
+  --expected-workflow-ref refs/heads/ci/ipv6-native-qualification \
+  --expected-workflow-commit 92336a3… --expected-harness-commit 92336a3… \
+  --require-workflow-binding --require-package-execution \
+  --allow-skip host-global-ipv6-escape-unavailable \
+  --allow-skip iproute2-json-normalization \
+  --allow-workaround iproute2-json-normalization
+```
+
+Local gates at `92336a3`: `bash test/run.sh` **376 checks passed** (11 build + 64 helper + 122
+firewall + 93 templates + 70 mock + 16 qualification-evidence contract); `shellcheck -x -e
+SC1091,SC2015` clean; `perl -c src/vyatta-vxlan-addr` OK; `actionlint` 1.7.12 clean; `zizmor
+--offline --collect all` 1.33.1 no findings; `git diff --check` clean.
+
+## 10. Integration recommendation
+
+PR #9 is integration-ready for review and remains a **draft, unmerged**. Merge only after the
+maintainer approves the `ci.yml` placement and the same-run artifact binding. Follow with a
+**separate** candidate-bound Phase III change implementing §4; do not widen this PR into a
+publication-policy redesign. No release, image publication, version change or historical asset
+change is part of this integration.

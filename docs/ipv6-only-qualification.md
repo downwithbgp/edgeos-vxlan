@@ -255,6 +255,12 @@ Hosted push run
 113 pass, 0 fail and 2 skips (host-global-IPv6 escape control unavailable; explicit modern-iproute2
 JSON normalization). The package and reproducibility jobs in the same run also passed.
 
+After the Phase III integration the suite runs from `ci.yml` against the package built in the same
+run. Hosted push run
+[46060990232](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46060990232) at `92336a3`
+passed with the same 113 pass / 0 fail / 2 skip counts and candidate-bound evidence; see
+[`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md) §9.
+
 The script prints `PASS:`, `FAIL:`, `SKIP:` and a final `ipv6-only: pass=... fail=... skip=...`
 line. The uploaded `summary.txt`, `summary.json`, `environment.txt`, `topology-*.txt`,
 `captures/*.pcap`, `captures/analysis.txt` and the per-test logs are the diagnostic record.
