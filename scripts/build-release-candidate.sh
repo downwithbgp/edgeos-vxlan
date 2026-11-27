@@ -219,7 +219,7 @@ build_once()
         --cap-drop ALL --security-opt no-new-privileges \
         --user "$(id -u):$(id -g)" \
         --tmpfs /tmp:rw,mode=1777 -e HOME=/tmp --read-only \
-        -v "$ROOT/scripts/build-reproducible.sh:/usr/local/bin/build-reproducible.sh:ro" \
+        -v "$WORK/source/scripts/build-reproducible.sh:/usr/local/bin/build-reproducible.sh:ro" \
         -v "$SOURCE_TAR:/input/source.tar:ro" \
         -v "$out:/out" \
         "$RUN_REF" \

@@ -197,17 +197,18 @@ def main() -> int:
                 fail(f"Installed-Build-Depends does not mention {name}")
 
         environment = info.get("Environment", "")
-        if environment:
-            import re
-
-            match = re.search(r'SOURCE_DATE_EPOCH="([0-9]+)"', environment)
-            if match and int(match.group(1)) != epoch:
-                fail(
-                    "buildinfo SOURCE_DATE_EPOCH does not match the changelog "
-                    f"timestamp: {match.group(1)} != {epoch}"
-                )
-        else:
+        if not environment:
             fail("buildinfo has no Environment field")
+        import re
+
+        match = re.search(r'SOURCE_DATE_EPOCH="([0-9]+)"', environment)
+        if not match:
+            fail("buildinfo Environment lacks SOURCE_DATE_EPOCH")
+        if int(match.group(1)) != epoch:
+            fail(
+                "buildinfo SOURCE_DATE_EPOCH does not match the changelog "
+                f"timestamp: {match.group(1)} != {epoch}"
+            )
 
         print("Build metadata: PASS")
         print(f"Version:        {version}")

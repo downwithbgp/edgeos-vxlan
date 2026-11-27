@@ -17,6 +17,7 @@ DIR=
 SOURCE_ROOT=$ROOT
 REV=
 PRODUCTION=no
+RELEASE=no
 LATEST_VERSION=
 
 usage()
@@ -30,6 +31,8 @@ Options:
   --rev REV             Source commit expected in the manifest
   --production          Enforce production-only rules (nonRelease=false,
                         main ref, exact workflow/source commit, newer version)
+  --release             Enforce release rules (nonRelease=false, main ref,
+                        exact workflow/source commit; allow re-verification)
   --latest-version V    Latest published version for production version reuse
   -h, --help            Show this help
 EOF
@@ -54,6 +57,10 @@ while [ $# -gt 0 ]; do
             ;;
         --production)
             PRODUCTION=yes
+            shift
+            ;;
+        --release)
+            RELEASE=yes
             shift
             ;;
         --latest-version)
@@ -126,17 +133,19 @@ WORKFLOW_COMMIT=$(manifest_get "$MANIFEST" '.source.trustedWorkflow.commit')
     fail "trusted workflow path mismatch: $WORKFLOW_PATH"
 is_commit "$WORKFLOW_COMMIT" || fail "invalid trusted workflow commit: $WORKFLOW_COMMIT"
 
-if [ "$PRODUCTION" = "yes" ]; then
-    [ "$NON_RELEASE" = "false" ] || fail "production candidate is marked nonRelease"
+if [ "$PRODUCTION" = "yes" ] || [ "$RELEASE" = "yes" ]; then
+    [ "$NON_RELEASE" = "false" ] || fail "release candidate is marked nonRelease"
     [ "$WORKFLOW_REF" = "refs/heads/main" ] ||
-        fail "production candidate workflow ref is not refs/heads/main: $WORKFLOW_REF"
+        fail "release candidate workflow ref is not refs/heads/main: $WORKFLOW_REF"
     [ "$WORKFLOW_COMMIT" = "$SOURCE_COMMIT" ] ||
-        fail "production candidate workflow commit != source commit"
-    if [ -z "$LATEST_VERSION" ]; then
-        LATEST_VERSION=$(jq -r '.release.baselinePublishedVersion' "$POLICY")
+        fail "release candidate workflow commit != source commit"
+    if [ "$PRODUCTION" = "yes" ]; then
+        if [ -z "$LATEST_VERSION" ]; then
+            LATEST_VERSION=$(jq -r '.release.baselinePublishedVersion' "$POLICY")
+        fi
+        dpkg --compare-versions "$VERSION" gt "$LATEST_VERSION" ||
+            fail "candidate version $VERSION is not newer than published $LATEST_VERSION"
     fi
-    dpkg --compare-versions "$VERSION" gt "$LATEST_VERSION" ||
-        fail "candidate version $VERSION is not newer than published $LATEST_VERSION"
 else
     [ "$NON_RELEASE" = "true" ] ||
         note "non-production validation of a nonRelease=false candidate"
@@ -163,6 +172,15 @@ fi
 
 [ "$(jq '.limitations | length' "$MANIFEST")" -gt 0 ] ||
     fail "candidate has no explicit limitations"
+
+POLICY_SHA=$(sha256_file "$POLICY")
+[ "$POLICY_SHA" = "$(manifest_get "$MANIFEST" '.project.releasePolicySha256')" ] ||
+    fail "release-policy hash does not match the manifest"
+if [ -f "$DIR/source.tar" ]; then
+    [ "$(sha256_file "$DIR/source.tar")" = \
+      "$(manifest_get "$MANIFEST" '.source.archiveSha256')" ] ||
+        fail "source archive hash does not match the manifest"
+fi
 
 # Every qualification check must have passed.
 if jq -e '.qualification.checks[] | select(.status != "passed")' "$MANIFEST" >/dev/null; then
@@ -250,7 +268,7 @@ while IFS= read -r entry; do
     fi
 done < <(find "$DIR" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)
 
-if [ -n "$REV" ] && [ -d "$SOURCE_ROOT/.git" ]; then
+if [ -n "$REV" ] && [ -e "$SOURCE_ROOT/.git" ]; then
     actual_commit=$(git -C "$SOURCE_ROOT" rev-parse --verify --quiet "${REV}^{commit}") ||
         fail "cannot resolve source revision: $REV"
     [ "$actual_commit" = "$SOURCE_COMMIT" ] ||
@@ -260,6 +278,8 @@ if [ -n "$REV" ] && [ -d "$SOURCE_ROOT/.git" ]; then
         fail "cannot compute packaging inputs"
     [ "$actual_inputs" = "$(manifest_get "$MANIFEST" '.source.packagingInputsSha256')" ] ||
         fail "packaging-inputs digest does not match the source tree"
+elif [ -n "$REV" ]; then
+    fail "source root is not a Git checkout; cannot recompute packaging inputs"
 fi
 
 echo "Candidate validation: PASS"

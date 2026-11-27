@@ -174,7 +174,8 @@ B_PACKAGING=$("$ROOT/scripts/packaging-inputs.sh" --repo "$SOURCE_DIR" --rev "$T
 "$ROOT/scripts/validate-candidate.sh" \
     --candidate-dir "$ASSET_DIR" \
     --source-root "$SOURCE_DIR" \
-    --rev "$SOURCE_COMMIT"
+    --rev "$SOURCE_COMMIT" \
+    --release
 
 # Package-only view for the historical artifact validator.
 PKG_VIEW=$(mktemp -d "${TMPDIR:-/tmp}/edgeos-vxlan-release-view.XXXXXX")

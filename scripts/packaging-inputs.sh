@@ -75,8 +75,8 @@ REPO=$(cd "$REPO" && pwd)
 COMMIT=$(git -C "$REPO" rev-parse --verify --quiet "${REV}^{commit}") ||
     fail "cannot resolve revision: $REV"
 
-# Keep this list identical to release/release-policy.json
-# packagingInputs.exclude. A test asserts the two lists agree.
+# Keep these patterns aligned with release/release-policy.json
+# packagingInputs.exclude.
 is_excluded()
 {
     case "$1" in

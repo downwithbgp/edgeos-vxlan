@@ -65,9 +65,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
+          REPO: ${{ github.repository }}
         run: |
           mkdir -p published
-          gh release download "$TAG" --repo "${{ github.repository }}" --dir published
+          gh release download "$TAG" --repo "$REPO" --dir published
 
       - name: Verify downloaded release
         env:

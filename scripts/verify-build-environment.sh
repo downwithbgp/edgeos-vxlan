@@ -83,6 +83,8 @@ QUALIFIED=$(jq -er '.qualified' "$QUAL")
 VULN_SCAN=$(jq -er '.vulnerabilityScan' "$QUAL")
 
 [ "$QUALIFIED" = "true" ] || fail "qualification is not marked qualified"
+[ "$VULN_SCAN" = "completed" ] ||
+    fail "vulnerability scan is not completed: $VULN_SCAN"
 
 require_digest_field "OCI index digest" "$OCI_INDEX_DIGEST"
 require_digest_field "manifest digest" "$MANIFEST_DIGEST"

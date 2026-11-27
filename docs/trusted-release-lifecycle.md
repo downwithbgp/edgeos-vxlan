@@ -318,3 +318,22 @@ removes the reusable-workflow self-reference, and records the Buildx failure
 log. `actionlint` and offline `zizmor` pass locally on the corrected
 workflows. A further branch push re-runs the workflows; those run IDs are the
 authoritative environment/candidate evidence.
+
+## 14. Independent implementation review
+
+An independent review of the full branch diff found three blocking issues,
+now fixed:
+
+- artifact ZIP digest validation used bare-hex parsing while callers/API use
+  `sha256:<hex>`;
+- promotion jobs lacked `actions: read` for the artifact API;
+- the independent image verifier accepted a skipped vulnerability scan.
+
+High-risk should-fix items were also applied: canonical re-verification now
+enforces `nonRelease=false`/`main`/exact source-workflow commit; the candidate
+validator checks the release-policy hash, source archive hash and worktree
+`.git` presence; the container mounts the archived build script rather than
+the host working tree; and `.buildinfo` now fails if `SOURCE_DATE_EPOCH` is
+absent. Remaining non-blocking review items: full JSON-Schema validation of
+the candidate manifest is not wired, and some fixture/test-gap and unused-helper
+nits remain.

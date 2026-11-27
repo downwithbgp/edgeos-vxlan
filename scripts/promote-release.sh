@@ -195,7 +195,7 @@ fi
 
 [ "$FIXTURE" = "no" ] || fail "--fixture is only valid with --dry-run"
 [ -n "$ARTIFACT_ID" ] || fail "--artifact-id is required for publication"
-is_sha256 "$ARTIFACT_DIGEST" || fail "--artifact-digest must be sha256:<hex>"
+is_digest "$ARTIFACT_DIGEST" || fail "--artifact-digest must be sha256:<hex>"
 artifact_json=$("$GH_BIN" api "repos/$REPO/actions/artifacts/$ARTIFACT_ID") ||
     fail "cannot read candidate artifact $ARTIFACT_ID"
 [ "$(jq -r '.expired' <<<"$artifact_json")" = "false" ] ||
