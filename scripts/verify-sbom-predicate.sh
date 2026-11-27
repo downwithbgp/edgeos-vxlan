@@ -108,7 +108,8 @@ COUNT=$(jq 'length' "$TMP/predicates.json")
     fail "expected exactly one $PREDICATE predicate for $NAME, found $COUNT"
 
 jq -S -c '.[0]' "$TMP/predicates.json" > "$TMP/attested.json"
-jq -S -c . "$SBOM" > "$TMP/expected.json"
+jq -S -c . "$SBOM" > "$TMP/expected.json" 2>"$TMP/sbom.err" ||
+    { cat "$TMP/sbom.err" >&2; fail "cannot parse the expected SBOM: $(basename "$SBOM")"; }
 cmp -s "$TMP/attested.json" "$TMP/expected.json" ||
     fail "attested SBOM predicate does not match $(basename "$SBOM")"
 

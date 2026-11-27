@@ -433,5 +433,57 @@ jq -n '[{verificationResult:{signature:{certificate:{sourceRepositoryIdentifier:
     > "$TMP/id-good.json"
 expect_pass verify_with_identity "$TMP/id-good.json"
 
+# --- adversarial matrix: malformed evidence -----------------------------------
+
+# A malformed attestation bundle is rejected, not ignored.
+printf 'not-json\n' > "$TMP/bundle-bad.jsonl"
+expect_fail_with "cannot parse the attestation bundle" \
+    "$ROOT/scripts/verify-sbom-predicate.sh" \
+    --bundle "$TMP/bundle-bad.jsonl" --package "$SBOM_PKG" --sbom "$SBOM_FILE"
+
+# A malformed SBOM is rejected, not silently compared.
+printf 'not json\n' > "$TMP/bad.spdx.json"
+expect_fail_with "cannot parse the expected SBOM" \
+    "$ROOT/scripts/verify-sbom-predicate.sh" \
+    --bundle "$TMP/bundle-int.jsonl" --package "$SBOM_PKG" \
+    --sbom "$TMP/bad.spdx.json"
+
+# --- adversarial matrix: concurrent candidates --------------------------------
+
+# Two candidates for the same version must not share an identity when their
+# content differs, and the release workflow must serialize them per tag.
+CONC_A=$TMP/concurrent-a
+make_candidate "$CONC_A" "0.3.1+edgeos3.0.1.e50" "v0.3.1" false
+CONC_B=$TMP/concurrent-b
+cp -a "$CONC_A" "$CONC_B"
+printf 'different payload\n' > "$CONC_B/edgeos-vxlan_0.3.1+edgeos3.0.1.e50_all.deb"
+b_entries=$(jq -r '.artifacts[] | [.name, .role] | @tsv' "$CONC_A/release-candidate.json" |
+    while IFS=$'\t' read -r name role; do
+        jq -n --arg name "$name" --arg role "$role" \
+            --argjson size "$(stat -c '%s' "$CONC_B/$name")" \
+            --arg sha256 "$(sha256_file "$CONC_B/$name")" \
+            '{name:$name,role:$role,size:$size,sha256:$sha256}'
+    done | jq -s .)
+jq --argjson a "$b_entries" '.artifacts=$a' "$CONC_B/release-candidate.json" \
+    > "$TMP/cb.json"
+mv "$TMP/cb.json" "$CONC_B/release-candidate.json"
+b_id=$(candidate_id_from_manifest "$CONC_B/release-candidate.json")
+jq --arg id "$b_id" '.candidate.id=$id' "$CONC_B/release-candidate.json" > "$TMP/cb2.json"
+mv "$TMP/cb2.json" "$CONC_B/release-candidate.json"
+a_id=$(jq -r '.candidate.id' "$CONC_A/release-candidate.json")
+[ "$a_id" != "$b_id" ] && ok || bad "concurrent candidates shared an identity"
+# A stale ID from the other concurrent candidate cannot pass validation.
+CONC_STALE=$TMP/concurrent-stale
+cp -a "$CONC_A" "$CONC_STALE"
+jq --arg id "$b_id" '.candidate.id=$id' "$CONC_A/release-candidate.json" \
+    > "$CONC_STALE/release-candidate.json"
+expect_fail_with "candidate ID mismatch" \
+    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$CONC_STALE" --release
+# The workflow must serialize publication per tag and never cancel a run.
+grep -qF "group: trusted-release-\${{ github.ref }}-\${{ inputs.release_tag ||" \
+    "$ROOT/.github/workflows/release.yml" &&
+    grep -qF 'cancel-in-progress: false' "$ROOT/.github/workflows/release.yml" &&
+    ok || bad "release workflow does not serialize concurrent candidates"
+
 echo "unit-release-contracts: pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]
