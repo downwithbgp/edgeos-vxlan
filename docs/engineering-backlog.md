@@ -42,6 +42,7 @@ not change product runtime semantics, installer behavior or release assets.
 | ENG-IPV6-07 | External VTEP qualification over real routed networks | P1 | No, external acceptance is not claimed |
 | ENG-IPV6-08 | Family-selective firewall state capture | P1 | No, provided the current limitation remains stated |
 | ENG-IPV6-09 | Routed-underlay PMTUD and ICMPv6 Packet Too Big qualification | P1 | No, provided the local-MTU limitation remains stated |
+| ENG-IPV6-10 | Modern iproute2 JSON diagnostic tolerance | P2 | No, provided the supported-platform boundary remains stated |
 
 ---
 
@@ -207,6 +208,10 @@ namespaces is Level B, not Level D.
 * [ ] The job is ported into the trusted-release-lifecycle `ci.yml` and wired into the candidate
   manifest/release gate. This is a coordination item with PR #8; see
   [`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md).
+* [x] The hosted run itself exposed a modern-iproute2 JSON diagnostic (`info: Using default fan map
+  value`) on stdout. The N6-R harness filters only that non-JSON line and records a skip; the real
+  reconciler, kernel and exit statuses are unchanged. This is a test-environment compatibility shim,
+  not a product fix; the supported EdgeOS behavior is unchanged. Tracked as ENG-IPV6-10.
 * [ ] Level C: installer, package acquisition and management over IPv6 only. Deferred to
   ENG-IPV6-01/02.
 * [ ] Level D: IPv6-only runner/control plane/source and artifact acquisition. Not achievable with
@@ -414,3 +419,39 @@ suite. No hardware is required for the namespace-level test; hardware PMTUD rema
 * Overlay TCP/UDP recovers via PMTUD or fails with an explicit, documented blackhole mode.
 * The local VXLAN-MTU test remains distinct from the routed-PMTUD test in the evidence record.
 * The new test is part of the authoritative CI qualification or explicitly listed as pending.
+
+---
+
+## ENG-IPV6-10: Modern iproute2 JSON diagnostic tolerance
+
+**Problem.** On the GitHub-hosted Ubuntu runner, `ip -j -d link show` emits a non-JSON diagnostic
+line (`info: Using default fan map value (33)`) on stdout. The real `src/vyatta-vxlan` reconciler
+pipes that output to `vyatta-vxlan-addr parse-live`; the parser correctly rejects it, so an
+otherwise valid interface cannot be re-read. The supported EdgeOS 3.0.1 iproute2 path does not
+exhibit this in the available evidence. This is a portability issue for the N6-R test environment
+and potentially for a future unsupported userland.
+
+**Technical significance.** The product's supported platform is EdgeOS 3.0.1, not Ubuntu 24.04.
+The N6-R harness filters only the known diagnostic so it can exercise the real reconciler on the
+hosted runner. That shim must not be mistaken for product robustness; a real deployment on a
+modern iproute2 userland has not been qualified.
+
+**Proposed validation methodology.**
+
+1. Reproduce the diagnostic with the affected iproute2 version and record the exact versions.
+2. Decide whether the product call site should tolerate a leading diagnostic before JSON parsing,
+   or whether the supported-platform/version boundary should be stated explicitly.
+3. If changing product behavior, add a unit test with contaminated `ip -j` output and re-run the
+   helper, mock, firewall and namespace suites.
+4. Remove the test-harness shim once the product boundary is resolved, or keep it as an explicitly
+   named environment compatibility layer.
+
+**Dependencies.** Product runtime change approval; supported-platform decision; iproute2 version
+matrix.
+
+**Acceptance criteria.**
+
+* The supported EdgeOS behavior is demonstrated or explicitly stated.
+* The modern-iproute2 behavior is either tolerated by the product or documented as unsupported.
+* The N6-R shim is documented as a test-environment compatibility layer, not a product fix.
+* The test suite distinguishes a filtered diagnostic from a real reconciler failure.

@@ -1222,6 +1222,29 @@ if [ "${1:-}" = "interfaces" ] && [ "${2:-}" = "vxlan" ]; then
 fi
 exit 1
 EOF
+    ip_bin=$(command -v ip) || return 1
+    cat >"$HARNESS/bin/ip" <<EOF
+#!/bin/sh
+# Test-environment shim: some modern iproute2 builds write
+# "info: Using default fan map value (33)" to stdout even for
+# \`ip -j -d link show\`, which is not JSON.  Drop only that diagnostic
+# line from JSON output; every other call and the real exit status are
+# preserved.  The supported EdgeOS iproute2 is not replaced by this shim.
+if [ "\$1" = "-j" ] && [ "\$2" = "-d" ]; then
+    tmp=\$(mktemp) || exit 1
+    "$ip_bin" "\$@" >"\$tmp"
+    rc=\$?
+    if [ "\$rc" -eq 0 ]; then
+        if grep -q '^info: ' "\$tmp"; then
+            echo "iproute2-info-diagnostic-filtered" >>"\${HARNESS_LOG:-/dev/null}"
+        fi
+        sed '/^info: /d' "\$tmp"
+    fi
+    rm -f "\$tmp"
+    exit "\$rc"
+fi
+exec "$ip_bin" "\$@"
+EOF
     cp "$ROOT/src/vyatta-vxlan-addr" "$HARNESS/sbin/vyatta-vxlan-addr" || return 1
     chmod +x "$HARNESS/bin"/* "$HARNESS/sbin"/* || return 1
 }
@@ -1440,6 +1463,9 @@ test_reconciler_integration()
         bad "actual reconciler failed to delete vxlan900 on vtep-b"
     fi
 
+    if grep -q 'iproute2-info-diagnostic-filtered' "$HARNESS/log"/*.log 2>/dev/null; then
+        skip "reconciler integration: filtered a modern iproute2 JSON info diagnostic"
+    fi
     cp "$HARNESS/log"/*.log "$EVIDENCE_DIR/" 2>/dev/null || true
     if [ "$FAIL" -gt "$fail_before" ]; then
         RECONCILER_STATUS=failed

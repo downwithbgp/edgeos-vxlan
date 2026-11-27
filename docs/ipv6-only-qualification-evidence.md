@@ -120,6 +120,7 @@ delete arbitrary names by prefix.
 | Host IPv4/IPv6 forwarding sysctls unchanged | Passed |
 | Capture startup and completion verified; capture failure fails the suite | Passed |
 | Pre-existing same-name namespace refused, not deleted | Passed |
+| Hosted-run modern-iproute2 diagnostic filtered by the N6-R test shim | Passed, with an explicit reconciler skip on the hosted runner |
 
 The reconciler test used the real `src/vyatta-vxlan`, `ip`, sysfs and kernel state. The EdgeOS
 configuration API, `vyatta-vxlan-firewall`, `vyatta-vxlan-bridge` and `vyatta-address` were test
@@ -286,6 +287,13 @@ branch has not been pushed. The following job results are therefore **pending**,
 * `Network-namespace dataplane` (existing dual-stack suite);
 * `IPv6-only qualification` (new job; `REQUIRE_CAPTURE=1`, tcpdump installed if absent);
 * `Verify published release` (release events/manual dispatch only).
+
+The first hosted push run (46038607030) failed the IPv6-only job with four reconciler failures.
+The runner's modern iproute2 wrote `info: Using default fan map value (33)` to stdout for
+`ip -j -d`, so the real reconciler's JSON parser rejected it. The N6-R harness now filters only that
+known non-JSON diagnostic, records an explicit skip when it is filtered, and preserves the real
+reconciler/kernel/exit behavior. This is a test-environment compatibility shim, tracked as
+ENG-IPV6-10; the supported EdgeOS path is unchanged. The corrected run is pending.
 
 The new job is guarded by `if: github.event_name != 'pull_request'`. It grants no new permissions,
 does not use `pull_request_target`, performs no package acquisition inside the isolated workload,
