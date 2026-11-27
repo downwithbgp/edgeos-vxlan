@@ -5,8 +5,8 @@
 #
 # The default artifact directory is the parent of the repository, which is
 # where dpkg-buildpackage writes the .deb files.  Prerelease builds (`~` in the
-# changelog version) skip the install.sh pin cross-check: install.sh keeps the
-# hashes of the last published release until the release commit updates them.
+# changelog version) skip the install.sh version agreement: install.sh keeps
+# the last published version/pins until the release commit updates them.
 
 set -eu
 

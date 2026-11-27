@@ -11,15 +11,17 @@
 #   validate-artifacts.sh [options] --published <asset-dir> <source-root>
 #
 # --build      expects the two package files.  A SHA256SUMS file is validated
-#              when present.
-# --published  expects exactly the two packages and SHA256SUMS, and requires
-#              the package hashes to match install.sh pins.
+#              when present.  Build-mode package hashes are reported but not
+#              compared to install.sh pins; that policy is pending review.
+# --published  expects the required packages and SHA256SUMS, allows optional
+#              .buildinfo/.changes provenance, and requires package hashes to
+#              match install.sh pins.
 #
 # The source root is read-only data.  In published mode it is normally the
 # tagged source tree, while this script comes from current trusted CI code.
 #
-# --skip-install-pins is used only for prerelease builds, where install.sh
-# still carries the pins of the last published release.
+# --skip-install-pins relaxes the install.sh version agreement for prerelease
+# builds; published assets are always pin-verified.
 
 set -eu
 
@@ -34,7 +36,7 @@ Usage: validate-artifacts.sh [options] --build|--published <artifact-dir> <sourc
 
 Options:
   --tag <tag>            Require the release tag to match install.sh VERSION
-  --skip-install-pins    Do not require package hashes to match install.sh pins
+  --skip-install-pins    Skip the install.sh version agreement (prerelease builds)
   -h, --help             Show this help
 EOF
 }
@@ -350,15 +352,16 @@ check_control_archive()
     dpkg-deb -e "$deb" "$ctl" ||
         fail "$deb: cannot extract the control archive"
 
-    if [ "$package" = "$INTEGRATION_PKG" ]; then
-        expected_scripts="preinst prerm postrm"
-    else
-        expected_scripts="preinst postinst prerm postrm"
-    fi
+    expected_scripts=
+    for script in preinst postinst prerm postrm; do
+        if [ -f "$SOURCE_ROOT/debian/$package.$script" ]; then
+            expected_scripts="$expected_scripts $script"
+        fi
+    done
 
     # shellcheck disable=SC2086
     expected=$(printf '%s\n' control md5sums $expected_scripts | LC_ALL=C sort)
-    actual=$(find "$ctl" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' |
+    actual=$(find "$ctl" -mindepth 1 -maxdepth 1 -printf '%f\n' |
         LC_ALL=C sort)
 
     if [ "$actual" != "$expected" ]; then
@@ -557,9 +560,10 @@ check_contents()
         LC_ALL=C sort > "$expected_files" ||
         fail "$deb: cannot derive expected file list"
     awk 'NF != 2 || length($1) != 32 || $1 ~ /[^0-9a-f]/ { exit 1 } { print $2 }' \
-        "$tmp/control-$package/md5sums" |
-        LC_ALL=C sort > "$actual_md5_files" ||
+        "$tmp/control-$package/md5sums" > "$tmp/md5-names" ||
         fail "$deb: malformed md5sums"
+    LC_ALL=C sort "$tmp/md5-names" > "$actual_md5_files" ||
+        fail "$deb: cannot sort md5sums"
 
     cmp -s "$expected_files" "$actual_md5_files" ||
         fail "$deb: packaged md5sums do not cover exactly the packaged files"
@@ -718,7 +722,7 @@ ACTUAL_INTEGRATION_SHA=$(sha256sum "$ARTIFACT_DIR/$INTEGRATION_DEB" | awk '{prin
 if [ "$MODE" = "published" ]; then
     check_published_pins
 else
-    note "build-mode install.sh pin comparison is not enforced; policy is pending review"
+    note "build-mode package hashes are not compared to install.sh pins; published assets are pinned"
 fi
 
 check_package_metadata "$ARTIFACT_DIR/$INTEGRATION_DEB" "$INTEGRATION_PKG" all

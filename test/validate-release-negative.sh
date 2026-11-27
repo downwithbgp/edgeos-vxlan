@@ -299,6 +299,13 @@ if [ "$PRERELEASE" = "no" ] && [ "$PUBLISHED_FIXTURE_OK" = "yes" ]; then
     make_published_clean "$clean_published"
     expect_pass "published validation accepts the real assets" run_published "$clean_published"
 
+    provenance_published=$(new_dir published-provenance)
+    make_published_clean "$provenance_published"
+    printf 'Format: 1.0\n' >"$provenance_published/edgeos-vxlan_${PKG_VERSION}_mipsel.buildinfo"
+    printf 'Format: 1.8\n' >"$provenance_published/edgeos-vxlan_${PKG_VERSION}_mipsel.changes"
+    expect_pass "published validation accepts provenance assets" \
+        run_published "$provenance_published"
+
     source_no_manifest=$(new_dir source-no-manifest)
     cp -a "$ROOT/install.sh" "$ROOT/debian" "$ROOT/src" "$ROOT/templates" \
         "$ROOT/modules" "$source_no_manifest/"
