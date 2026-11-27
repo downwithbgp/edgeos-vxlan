@@ -18,7 +18,16 @@ mkdir -p "$(dirname -- "$OUT")"
     echo "dpkg=$(dpkg --version | sed -n '1p')"
     echo "dpkg_deb=$(dpkg-deb --version | sed -n '1p')"
     echo "dpkg_architecture=$(dpkg --print-architecture)"
-    echo "source_date_epoch=${SOURCE_DATE_EPOCH:-unset}"
+    if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
+        source_epoch=$SOURCE_DATE_EPOCH
+        source_epoch_origin=environment
+    else
+        source_epoch=$(dpkg-parsechangelog -S Timestamp 2>/dev/null ||
+            echo unset)
+        source_epoch_origin=changelog
+    fi
+    echo "source_date_epoch=$source_epoch"
+    echo "source_date_epoch_origin=$source_epoch_origin"
     echo "changelog_date=$(dpkg-parsechangelog -S Date)"
     echo "changelog_timestamp=$(dpkg-parsechangelog -S Timestamp)"
 

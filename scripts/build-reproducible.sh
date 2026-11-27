@@ -81,7 +81,7 @@ git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 ||
 COMMIT=$(git -C "$ROOT" rev-parse --verify --quiet "${SOURCE_REV}^{commit}") ||
     fail "cannot resolve source revision: $SOURCE_REV"
 
-DIRTY=$(git -C "$ROOT" status --porcelain --untracked-files=no)
+DIRTY=$(GIT_OPTIONAL_LOCKS=0 git -C "$ROOT" status --porcelain --untracked-files=no)
 if [ -n "$DIRTY" ]; then
     if [ "$SOURCE_REV" = "HEAD" ]; then
         printf '%s\n' "$DIRTY" >&2
