@@ -198,6 +198,7 @@ OCI_INDEX_DIGEST=$(jq -er '.ociIndexDigest' "$QUAL")
 CONFIG_DIGEST=$(jq -er '.configDigest' "$QUAL")
 OCI_ARCHIVE_SHA=$(jq -er '.ociArchiveSha256' "$QUAL")
 DOCKER_ARCHIVE_SHA=$(jq -er '.dockerArchiveSha256' "$QUAL")
+IMAGE_CONFIG_JSON_SHA=$(jq -er '.imageConfigJsonSha256' "$QUAL")
 DOCKERFILE_SHA=$(jq -er '.dockerfileSha256' "$QUAL")
 CA_BUNDLE_SHA=$(jq -er '.caBundleSha256' "$QUAL")
 DEPENDENCY_SNAPSHOT=$(jq -er '.dependencySnapshot' "$QUAL")
@@ -209,11 +210,15 @@ IMAGE_SBOM_SHA=$(sha256_file "$IMAGE_DIR/image.spdx.json")
 
 docker load -i "$IMAGE_DIR/image.docker.tar" > "$WORK/docker-load.log" 2>&1 ||
     { cat "$WORK/docker-load.log" >&2; fail "cannot load qualified Docker archive"; }
-RUN_REF=$(docker image inspect "$IMAGE_NAME" \
-    --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null |
-    awk -v d="$MANIFEST_DIGEST" 'index($0, d) { print; exit }')
-[ -n "$RUN_REF" ] ||
-    fail "qualified image has no repository digest for $MANIFEST_DIGEST"
+RUN_REF=$(resolve_loaded_image_ref "$IMAGE_NAME" "$MANIFEST_DIGEST" "$CONFIG_DIGEST") ||
+    fail "qualified image cannot be bound to its manifest/config digest"
+[ -n "$RUN_REF" ] || fail "qualified image has no verified execution reference"
+LOCAL_CONFIG_JSON_SHA=$(
+    docker image inspect "$RUN_REF" --format '{{json .Config}}' |
+        sha256sum | awk '{print $1}'
+)
+[ "$LOCAL_CONFIG_JSON_SHA" = "$IMAGE_CONFIG_JSON_SHA" ] ||
+    fail "qualified image config JSON hash does not match the qualification"
 
 build_once()
 {

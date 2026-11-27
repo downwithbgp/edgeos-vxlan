@@ -190,3 +190,29 @@ json_escape()
 {
     printf '%s' "$1" | jq -Rs .
 }
+
+# Resolve a loaded Docker image to an immutable execution reference.
+# Prefer a RepoDigest matching the OCI manifest. Some Docker stores expose no
+# RepoDigest after loading a Docker archive; in that case accept the local tag
+# only when its image ID equals the qualified config/manifest digest. Callers
+# must additionally verify the config JSON hash.
+resolve_loaded_image_ref()
+{
+    _image=$1
+    _manifest=$2
+    _config=$3
+    _repo_ref=$(docker image inspect "$_image" \
+        --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null |
+        awk -v d="$_manifest" 'index($0, d) { print; exit }')
+    if [ -n "$_repo_ref" ]; then
+        printf '%s\n' "$_repo_ref"
+        return 0
+    fi
+    _image_id=$(docker image inspect "$_image" --format '{{.Id}}' 2>/dev/null) ||
+        return 1
+    if [ "$_image_id" = "$_manifest" ] || [ "$_image_id" = "$_config" ]; then
+        printf '%s\n' "$_image"
+        return 0
+    fi
+    return 1
+}

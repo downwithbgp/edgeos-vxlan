@@ -81,6 +81,7 @@ SNAPSHOT=$(jq -er '.dependencySnapshot' "$QUAL")
 INVENTORY_SHA256=$(jq -er '.dependencyInventorySha256' "$QUAL")
 IMAGE_SBOM_SHA256=$(jq -er '.imageSbomSha256' "$QUAL")
 VULN_SHA256=$(jq -er '.vulnerabilityReportSha256' "$QUAL")
+IMAGE_CONFIG_JSON_SHA256=$(jq -er '.imageConfigJsonSha256' "$QUAL")
 QUALIFIED=$(jq -er '.qualified' "$QUAL")
 VULN_SCAN=$(jq -er '.vulnerabilityScan' "$QUAL")
 
@@ -98,6 +99,7 @@ require_sha256_field "CA bundle checksum" "$CA_BUNDLE_SHA256"
 require_sha256_field "inventory checksum" "$INVENTORY_SHA256"
 require_sha256_field "image SBOM checksum" "$IMAGE_SBOM_SHA256"
 require_sha256_field "vulnerability report checksum" "$VULN_SHA256"
+require_sha256_field "image config JSON checksum" "$IMAGE_CONFIG_JSON_SHA256"
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/edgeos-vxlan-verify-image.XXXXXX") ||
     fail "cannot create temporary directory"
@@ -140,11 +142,15 @@ SOURCE_SNAPSHOT=$(sed -n 's/^ARG UBUNTU_SNAPSHOT=//p' \
 
 docker load -i "$ARCHIVE_DIR/image.docker.tar" > "$TMP/docker-load.log" 2>&1 ||
     { cat "$TMP/docker-load.log" >&2; fail "cannot load Docker archive"; }
-RUN_REF=$(docker image inspect "$IMAGE_NAME" \
-    --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null |
-    awk -v d="$MANIFEST_DIGEST" 'index($0, d) { print; exit }')
-[ -n "$RUN_REF" ] ||
-    fail "loaded image has no repository digest for $MANIFEST_DIGEST"
+RUN_REF=$(resolve_loaded_image_ref "$IMAGE_NAME" "$MANIFEST_DIGEST" "$CONFIG_DIGEST") ||
+    fail "loaded image cannot be bound to the qualified manifest/config digest"
+[ -n "$RUN_REF" ] || fail "loaded image has no verified execution reference"
+LOCAL_CONFIG_JSON_SHA256=$(
+    docker image inspect "$RUN_REF" --format '{{json .Config}}' |
+        sha256sum | awk '{print $1}'
+)
+[ "$LOCAL_CONFIG_JSON_SHA256" = "$IMAGE_CONFIG_JSON_SHA256" ] ||
+    fail "loaded image config JSON hash does not match the qualification"
 
 docker run --rm --pull=never --network none --read-only \
     --cap-drop ALL --security-opt no-new-privileges \

@@ -131,11 +131,10 @@ require_sha256_field "OCI archive checksum" "$OCI_ARCHIVE_SHA256"
 docker load -i "$OUTPUT_DIR/image.docker.tar" > "$OUTPUT_DIR/docker-load.log" 2>&1 ||
     { cat "$OUTPUT_DIR/docker-load.log" >&2; fail "docker load failed for $OUTPUT_DIR/image.docker.tar"; }
 
-RUN_REF=$(docker image inspect "$IMAGE_NAME" \
-    --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null |
-    awk -v d="$MANIFEST_DIGEST" 'index($0, d) { print; exit }')
+RUN_REF=$(resolve_loaded_image_ref "$IMAGE_NAME" "$MANIFEST_DIGEST" "$CONFIG_DIGEST") ||
+    fail "loaded image cannot be bound to the qualified manifest/config digest"
 [ -n "$RUN_REF" ] ||
-    fail "loaded image has no repository digest for $MANIFEST_DIGEST; refusing a tag-only reference"
+    fail "loaded image has no verified execution reference"
 
 docker image inspect "$RUN_REF" >/dev/null 2>&1 ||
     fail "loaded image cannot be inspected by manifest digest: $RUN_REF"
