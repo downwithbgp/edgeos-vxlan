@@ -177,27 +177,26 @@ jobs:
           printf '%s' "$GH_TOKEN" |
             docker login "$REGISTRY" -u "$ACTOR" --password-stdin
 
-      - name: Push the retained OCI archive and verify its digest
+      - name: Stage, verify and promote the image digest
         id: push
         env:
-          IMAGE: ${{ steps.image.outputs.ref }}
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          TARGET_TAG: ${{ github.sha }}
+          STAGING_TAG: staging-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -eu
-          qualified=$(jq -r .manifestDigest downloaded/build-environment-qualification.json)
-          crane push downloaded/image.oci.tar "$IMAGE"
-          remote=$(crane digest "$IMAGE")
-          echo "remote=$remote" >> "$GITHUB_OUTPUT"
-          if [ "$remote" = "$qualified" ]; then
-            echo "Remote index digest equals the qualified manifest digest."
-            exit 0
-          fi
-          if crane manifest "$IMAGE" | jq -e --arg d "$qualified" \
-              '.manifests[]? | select(.digest == $d)' >/dev/null; then
-            echo "Qualified manifest is present in the remote index."
-            exit 0
-          fi
-          echo "ERROR: remote manifest does not contain the qualified digest $qualified" >&2
-          exit 1
+          # The staging boundary is owned by the script: push under a
+          # candidate-specific tag, verify the remotely stored digest, promote
+          # exactly that digest, then delete the staging tag. It refuses to
+          # replace a target tag that points elsewhere.
+          ./scripts/publish-image-staged.sh \
+            --oci-archive downloaded/image.oci.tar \
+            --qualification downloaded/build-environment-qualification.json \
+            --image "$IMAGE_NAME" \
+            --staging-tag "$STAGING_TAG" \
+            --target-tag "$TARGET_TAG" \
+            --digest-out "$RUNNER_TEMP/image-digest.txt"
+          echo "remote=$(cat "$RUNNER_TEMP/image-digest.txt")" >> "$GITHUB_OUTPUT"
 
       - name: Attest and publish the image SBOM
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2

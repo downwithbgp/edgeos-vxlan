@@ -341,9 +341,20 @@ Activation prerequisites (maintainer action, not code):
 
 Recorded code-level limitations:
 
-- The GHCR image tag is pushed before its digest is verified, and a failed run
-  leaves that tag behind. Publishing a temporary tag and promoting it after
-  verification is the intended follow-up.
+- GHCR staging is implemented in `scripts/publish-image-staged.sh` but not
+  activated: the publish job still requires a `refs/heads/main` dispatch, the
+  protected `build-image-publication` environment and
+  `BUILD_IMAGE_PUBLICATION_ENABLED=true`, and no image has been pushed. The
+  script pushes the archive under a candidate-specific staging tag
+  (`staging-<run_id>-<run_attempt>`), verifies the remotely stored digest
+  against the qualified manifest (accepting an index only when it contains
+  that manifest), refuses to replace an existing target tag that resolves
+  elsewhere, promotes exactly the verified digest, re-reads the target digest,
+  and deletes the staging tag. A failure between push and promote leaves only
+  the staging marker, which the next run overwrites or deletes; a conflicting
+  target tag is never replaced, so recovery is a deliberate maintainer action.
+  `test/unit-release-image-publish.sh` exercises all of this against a
+  recording fake `crane`; the real registry has not been contacted.
 - `verify-release.yml` uses the runner's preinstalled `gh`/`jq`/`dpkg`
   toolchain rather than the pinned release tools; the release workflow pins
   them. A mutated runner toolchain would weaken independent verification.
