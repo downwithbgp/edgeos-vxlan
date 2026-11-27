@@ -3,10 +3,11 @@
 **Date:** 2026-11-27 (UTC).
 **Branch:** `ci/ipv6-native-qualification`.
 **Base commit:** `5958bc469ccf498e54bc0b9f361668e309f66b9d` (`origin/main`, PR #7 merge).
-**Record status:** local validation complete; hosted CI pending because the branch has not been
-published. The package build, artifact validation, negative tests and reproducibility checks are
-included in §5. This record distinguishes implemented functionality from proposed future work and does
-not claim a CI result that did not run.
+**Record status:** local and hosted validation complete. Hosted CI run
+[46041331249](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46041331249) passed at
+`26bb3a30ba90510bb094023a95a11f5ca0f57c13`; the IPv6-only job and the package/reproducibility
+jobs are green. The package build, artifact validation, negative tests and reproducibility checks
+are included in §5. This record distinguishes implemented functionality from proposed future work.
 
 ## 1. Scope
 
@@ -63,8 +64,10 @@ docker run --rm --privileged \
   ipv6-qual:local bash test/ipv6-only-netns.sh
 ```
 
-Result: **exit 0**, `pass=113 fail=0 skip=1 capture=executed reconciler=executed`. The final
-harness also writes `summary.json`: `result=passed`, `counts={pass:113, fail:0, skip:1}`, and
+Result: **exit 0**, `pass=113 fail=0 skip=1 capture=executed reconciler=executed`. The hosted run
+at the same commit returned **113 pass, 0 fail, 2 skip** (`capture=executed`,
+`reconciler=executed`); the second skip is the explicit modern-iproute2 JSON normalization. The
+final harness also writes `summary.json`: `result=passed`, `counts={pass:113, fail:0, skip:1}`, and
 passed checks for `ipv6-only-isolation`, `ipv6-only-dataplane`, `ipv6-only-capture` and
 `ipv6-only-reconciler`. The JSON records the raw underlay/overlay capture hashes, the analysis
 hash, the reconciler evidence hash and `hardware.status=not-qualified`.
@@ -81,6 +84,7 @@ Two consecutive runs in the same container:
 |---|---|
 | 1 | exit 0, `pass=113 fail=0 skip=1 capture=executed reconciler=executed` |
 | 2 | exit 0, `pass=113 fail=0 skip=1 capture=executed reconciler=executed` |
+| Hosted run 46041331249 | exit 0, `pass=113 fail=0 skip=2 capture=executed reconciler=executed` |
 
 After both runs, `ip netns list` was empty and the suite's own "no host-side test veth remains"
 check passed. A separate `--cleanup` test against the final script created a namespace
@@ -136,14 +140,14 @@ The local run had tcpdump available and captured on the transit underlay interfa
 | Measurement | Count |
 |---|---:|
 | Underlay IPv4 Ethernet or ARP frames | 0 |
-| Underlay IPv6 UDP/4789 (VXLAN) packets | 30 |
+| Underlay IPv6 UDP/4789 (VXLAN) packets | 30 (local) / 34 (hosted) |
 | Underlay ICMPv6 ND (NS/NA) packets | 2 |
 | Overlay decapsulated IPv6 packets | 15 |
-| Overlay TCP packets | 9 |
-| Overlay UDP packets | 2 |
+| Overlay TCP packets | 9 (local) / 9 (hosted) |
+| Overlay UDP packets | 2 (local) / 2 (hosted) |
 | Overlay outer UDP/4789 packets | 0 |
 | Overlay ICMPv6 ND packets | 2 |
-| Overlay IPv4 Ethernet or ARP frames | 0 |
+| Overlay IPv4 Ethernet or ARP frames | 0 (both) |
 
 This demonstrates the expected protocol split: outer IPv6/VXLAN on the underlay, inner IPv6/TCP/
 UDP/ND on the overlay, and no IPv4/ARP frames at either capture point. Packet counts vary slightly
@@ -161,6 +165,7 @@ evidence.
 | SIGTERM during setup/preflight | 130 | Cleanup removed namespaces and host links; no leftovers |
 | Pre-existing namespace with the same suffix | 1 | Refused to reuse it; the pre-existing namespace remained |
 | `REQUIRE_CAPTURE=1` with tcpdump hidden | 1 | `FAIL: packet capture is required but tcpdump is unavailable`; capture was not reported as a pass |
+| Hosted `ipv6-only` job (run 46041331249) | 0 | 113 pass, 0 fail, 2 skip; capture executed; reconciler executed |
 
 A missing privilege is never converted into a pass. In authoritative mode (`REQUIRE_CAPTURE=1`),
 an unavailable tcpdump or a failed capture is a failure; in local mode, the absence of tcpdump is
@@ -194,6 +199,8 @@ payload is unchanged.
 | `scripts/validate-release.sh "$TMPDIR/pkg-final-head"` | 0 | Artifact contract PASS; version `0.3.0+edgeos3.0.1.e50` |
 | `test/validate-release-negative.sh "$TMPDIR/pkg-final-head"` | 0 | **25 checks passed, 0 failed** |
 | `scripts/verify-reproducible-build.sh --source-rev HEAD --work-dir "$TMPDIR/repro-final-head"` | 0 | **SAME** for both packages; same hashes as the canonical build |
+| Hosted package job (run 46041331249) | 0 | Canonical build at `26bb3a3`; kmod `7ffe10f6…`, integration `6afa3f25…`; `validate-release.sh` PASS; lintian PASS |
+| Hosted reproducibility job (run 46041331249) | 0 | **SAME** for both packages; same hashes |
 | lintian (container, same suppressions as CI) | 0 | **PASS** (`--fail-on error`, no errors) |
 
 `lintian` was run in a container because the development host does not have it installed; the
@@ -277,16 +284,19 @@ trust model as a pre-existing residual risk; branch protection and review remain
 
 ## 6. CI status
 
-The workflow definition passes actionlint and zizmor locally. **Hosted CI has not run** because the
-branch has not been pushed. The following job results are therefore **pending**, not passed:
+Hosted push run
+[46041331249](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46041331249) at
+`26bb3a30ba90510bb094023a95a11f5ca0f57c13` completed successfully:
 
-* `Static analysis` (includes the new `test/lib/*.sh` ShellCheck input);
-* `Build and validate packages`;
-* `Reproducibility verification`;
-* `Published-release fixtures`;
-* `Network-namespace dataplane` (existing dual-stack suite);
-* `IPv6-only qualification` (new job; `REQUIRE_CAPTURE=1`, tcpdump installed if absent);
-* `Verify published release` (release events/manual dispatch only).
+| Job | Result |
+|---|---|
+| Static analysis (includes `test/lib/*.sh` ShellCheck) | **success** |
+| Build and validate packages | **success**; canonical `7ffe10f6…`/`6afa3f25…`; `validate-release.sh` PASS; lintian PASS |
+| Reproducibility verification | **success**; both packages SAME |
+| Published-release fixtures | **success** |
+| Network-namespace dataplane (existing dual-stack) | **success** |
+| IPv6-only qualification | **success**; 113 pass, 0 fail, 2 skip; capture and reconciler executed |
+| Verify published release | skipped (not a release/manual release-validation event) |
 
 The first hosted push run (46038607030) failed the IPv6-only job with four reconciler failures.
 The runner's kernel 7.0 exposed `IFLA_VXLAN_FAN_MAP` to iproute2 6.1.0, which wrote both an
@@ -294,8 +304,14 @@ The runner's kernel 7.0 exposed `IFLA_VXLAN_FAN_MAP` to iproute2 6.1.0, which wr
 `ip -j -d` JSON. The real reconciler's JSON parser rejected the malformed document. The N6-R
 harness now normalizes only those known environment artifacts, records an explicit skip when it
 does so, and preserves the real reconciler/kernel/exit behavior. This is a test-environment
-compatibility shim, tracked as ENG-IPV6-10; the supported EdgeOS path is unchanged. The corrected
-run is pending.
+compatibility shim, tracked as ENG-IPV6-10; the supported EdgeOS path is unchanged.
+
+The corrected hosted run
+[46041331249](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46041331249) passed at
+`26bb3a3` with `pass=113 fail=0 skip=2 capture=executed reconciler=executed`. The two skips are
+the host-global-IPv6 escape control (the runner has no global IPv6) and the explicit iproute2 JSON
+normalization. Raw captures, `analysis.txt`, `summary.json` and the per-test logs are retained as
+the run artifact.
 
 The new job is guarded by `if: github.event_name != 'pull_request'`. It grants no new permissions,
 does not use `pull_request_target`, performs no package acquisition inside the isolated workload,
@@ -340,10 +356,11 @@ checksums. The new APT helper is test/CI-only and does not alter the package pay
 7. No PMTUD/PTB test across a real routed path; the MTU boundary is local to the VXLAN interface.
 8. The local host cannot create network namespaces; the privileged-container execution is recorded
    as such and is not hosted CI.
-9. Hosted CI is pending.
+9. Hosted CI has run and passed for this branch (run 46041331249); the PR #8 porting/candidate-gate
+   integration is still pending.
 10. The current `ipv6-only` job lives in the workflow that PR #8 deletes; porting to `ci.yml` and
     wiring the candidate manifest/release gate is a coordination item, not yet implemented.
-11. `lintian` was run in a container locally; hosted CI is still the authoritative CI result.
+11. `lintian` passed locally in a container and in the hosted package job.
 
 ## 10. Reproduction
 

@@ -244,6 +244,11 @@ write access, so this is the existing trusted-tag boundary, not untrusted pull-r
 | **Unsupported** | The kernel or runner lacks a required facility (network namespaces, VXLAN module, root). With `REQUIRE_NETNS_TEST=1`, this is a failure; without it, the script exits 0 with an explicit `SKIP` line. | In CI, `REQUIRE_NETNS_TEST=1` makes this a failure. |
 | **Blocked** | Hosted CI has not run because the branch has not been published. | Not evidence of success; must be reported as pending. |
 
+Hosted push run
+[46041331249](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46041331249) passed with
+113 pass, 0 fail and 2 skips (host-global-IPv6 escape control unavailable; explicit modern-iproute2
+JSON normalization). The package and reproducibility jobs in the same run also passed.
+
 The script prints `PASS:`, `FAIL:`, `SKIP:` and a final `ipv6-only: pass=... fail=... skip=...`
 line. The uploaded `summary.txt`, `summary.json`, `environment.txt`, `topology-*.txt`,
 `captures/*.pcap`, `captures/analysis.txt` and the per-test logs are the diagnostic record.
