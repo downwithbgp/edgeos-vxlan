@@ -197,7 +197,7 @@ namespaces is Level B, not Level D.
   distribution source in a separate dependency-preparation step if absent. Capture startup,
   completion, non-empty output, VXLAN/IPv6/TCP/UDP/ND observations and absence of IPv4/ARP are
   checked; a failed capture fails the job.
-* [x] The authoritative hosted run passed: run 46041331249, 113 pass / 0 fail / 2 skip, capture
+* [x] The authoritative hosted run passed: run 46044226321 at `7d6762f`, 113 pass / 0 fail / 2 skip, capture
   executed, reconciler executed, package/reproducibility jobs green.
 * [x] The actual reconciler path is exercised for creation, IPv6 endpoint validation, address/MTU
   application, idempotent reapplication, recreation, rollback, deletion and reconciler-created

@@ -249,7 +249,7 @@ write access, so this is the existing trusted-tag boundary, not untrusted pull-r
 | **Blocked** | Hosted CI has not run because the branch has not been published. | Not evidence of success; must be reported as pending. |
 
 Hosted push run
-[46041331249](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46041331249) passed with
+[46044226321](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46044226321) passed with
 113 pass, 0 fail and 2 skips (host-global-IPv6 escape control unavailable; explicit modern-iproute2
 JSON normalization). The package and reproducibility jobs in the same run also passed.
 

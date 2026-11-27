@@ -4,8 +4,8 @@
 **Branch:** `ci/ipv6-native-qualification`.
 **Base commit:** `5958bc469ccf498e54bc0b9f361668e309f66b9d` (`origin/main`, PR #7 merge).
 **Record status:** local and hosted validation complete. Hosted CI run
-[46041331249](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46041331249) passed at
-`26bb3a30ba90510bb094023a95a11f5ca0f57c13`; the IPv6-only job and the package/reproducibility
+[46044226321](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46044226321) passed at
+`7d6762f851c8a40bd649ff7442ff3f9e22d442a0`; the IPv6-only job and the package/reproducibility
 jobs are green. The package build, artifact validation, negative tests and reproducibility checks
 are included in §5. This record distinguishes implemented functionality from proposed future work.
 
@@ -85,7 +85,7 @@ Two consecutive runs in the same container:
 |---|---|
 | 1 | exit 0, `pass=113 fail=0 skip=1 capture=executed reconciler=executed` |
 | 2 | exit 0, `pass=113 fail=0 skip=1 capture=executed reconciler=executed` |
-| Hosted run 46041331249 | exit 0, `pass=113 fail=0 skip=2 capture=executed reconciler=executed` |
+| Hosted run 46044226321 | exit 0, `pass=113 fail=0 skip=2 capture=executed reconciler=executed` |
 
 After both runs, `ip netns list` was empty and the suite's own "no host-side test veth remains"
 check passed. A separate `--cleanup` test against the final script created a namespace
@@ -176,7 +176,7 @@ evidence.
 | SIGTERM during setup/preflight | 130 | Cleanup removed namespaces and host links; no leftovers |
 | Pre-existing namespace with the same suffix | 1 | Refused to reuse it; the pre-existing namespace remained |
 | `REQUIRE_CAPTURE=1` with tcpdump hidden | 1 | `FAIL: packet capture is required but tcpdump is unavailable`; capture was not reported as a pass |
-| Hosted `ipv6-only` job (run 46041331249) | 0 | 113 pass, 0 fail, 2 skip; capture executed; reconciler executed |
+| Hosted `ipv6-only` job (run 46044226321) | 0 | 113 pass, 0 fail, 2 skip; capture executed; reconciler executed |
 
 A missing privilege is never converted into a pass. In authoritative mode (`REQUIRE_CAPTURE=1`),
 an unavailable tcpdump or a failed capture is a failure; in local mode, the absence of tcpdump is
@@ -227,8 +227,8 @@ payload is unchanged.
 | `scripts/validate-release.sh "$TMPDIR/pkg-final-head"` | 0 | Artifact contract PASS; version `0.3.0+edgeos3.0.1.e50` |
 | `test/validate-release-negative.sh "$TMPDIR/pkg-final-head"` | 0 | **25 checks passed, 0 failed** |
 | `scripts/verify-reproducible-build.sh --source-rev HEAD --work-dir "$TMPDIR/repro-final-head"` | 0 | **SAME** for both packages; same hashes as the canonical build |
-| Hosted package job (run 46041331249) | 0 | Canonical build at `26bb3a3`; kmod `7ffe10f6…`, integration `6afa3f25…`; `validate-release.sh` PASS; lintian PASS |
-| Hosted reproducibility job (run 46041331249) | 0 | **SAME** for both packages; same hashes |
+| Hosted package job (run 46044226321) | 0 | Canonical build at `7d6762f`; kmod `7ffe10f6…`, integration `6afa3f25…`; `validate-release.sh` PASS; lintian PASS |
+| Hosted reproducibility job (run 46044226321) | 0 | **SAME** for both packages; same hashes |
 | lintian (container, same suppressions as CI) | 0 | **PASS** (`--fail-on error`, no errors) |
 
 `lintian` was run in a container because the development host does not have it installed; the
@@ -313,8 +313,8 @@ trust model as a pre-existing residual risk; branch protection and review remain
 ## 6. CI status
 
 Hosted push run
-[46041331249](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46041331249) at
-`26bb3a30ba90510bb094023a95a11f5ca0f57c13` completed successfully:
+[46044226321](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46044226321) at
+`7d6762f851c8a40bd649ff7442ff3f9e22d442a0` completed successfully:
 
 | Job | Result |
 |---|---|
@@ -335,8 +335,8 @@ does so, and preserves the real reconciler/kernel/exit behavior. This is a test-
 compatibility shim, tracked as ENG-IPV6-10; the supported EdgeOS path is unchanged.
 
 The corrected hosted run
-[46041331249](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46041331249) passed at
-`26bb3a3` with `pass=113 fail=0 skip=2 capture=executed reconciler=executed`. The two skips are
+[46044226321](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46044226321) passed at
+`7d6762f` with `pass=113 fail=0 skip=2 capture=executed reconciler=executed`. The two skips are
 the host-global-IPv6 escape control (the runner has no global IPv6) and the explicit iproute2 JSON
 normalization. Raw captures, `analysis.txt`, `summary.json` and the per-test logs are retained as
 the run artifact.

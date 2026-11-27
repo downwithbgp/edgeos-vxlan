@@ -174,10 +174,12 @@ Until step 2, this branch remains based on `main` and its `release-validation.ym
 development/qualification entry point. It must not be merged in a way that silently drops the job
 when `release-validation.yml` is deleted.
 
-## 8. Current PR #8 review (head `c573450`, 2026-11-27)
+## 8. PR #8 review point (`c573450`; latest observed `4ea9a0c`, 2026-11-27)
 
-PR #8 is still an **open draft**. It has advanced since the first contract draft; the findings below
-are against `c573450357810c19732ccd9434c4a726ec3a1396`, not against an assumed merged state.
+PR #8 is still an **open draft**. The findings below are against the review point
+`c573450357810c19732ccd9434c4a726ec3a1396`, not against an assumed merged state. During this
+review PR #8 advanced to `4ea9a0c325b1231326abe2846bc5022c1486c335`; that change normalizes bare
+artifact digests at the artifact trust boundary and does not change the qualification contract.
 
 ### 8.1 `ci.yml`
 
