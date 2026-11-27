@@ -112,7 +112,7 @@ for path in publication.environment publication.confirmValue; do
 done
 # The two variable names must be *used*, not merely printed in an error, so the
 # gate relies on indirect expansion of the policy value.
-if [ "$(grep -c '\${!' "$ROOT/scripts/check-release-gates.sh")" -ge 2 ]; then
+if [ "$(grep -c "\${!" "$ROOT/scripts/check-release-gates.sh")" -ge 2 ]; then
     ok
 else
     bad "check-release-gates.sh does not enforce the policy variable names"
