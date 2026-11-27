@@ -144,6 +144,27 @@ fetch "$TMP/fetched"
 [ "$(cat "$TMP/fetched/release-candidate.json")" = "hello" ] &&
     ok || bad "fetched artifact content"
 
+# GitHub's upload-artifact output is a bare hex digest; accept it and
+# canonicalize it to sha256:<hex>.
+cp "$GOOD_ARTIFACT_JSON" "$ARTIFACT_JSON"
+cp "$GOOD_RUN_JSON" "$RUN_JSON"
+"$ROOT/scripts/fetch-github-artifact.sh" \
+    --repo owner/repo --artifact-id 42 \
+    --expected-digest "${DIGEST#sha256:}" \
+    --destination "$TMP/fetched-bare-hex" --expected-run-id 100 \
+    --expected-head-sha "$SHA" \
+    --expected-workflow-path .github/workflows/release.yml \
+    --expected-name release-candidate --gh "$FAKE_GH" >/dev/null 2>&1 &&
+    ok || bad "bare hex expected digest was rejected"
+
+# A malformed digest must still fail.
+cp "$GOOD_ARTIFACT_JSON" "$ARTIFACT_JSON"
+cp "$GOOD_RUN_JSON" "$RUN_JSON"
+expect_fail_with "expected digest" \
+    "$ROOT/scripts/fetch-github-artifact.sh" \
+    --repo owner/repo --artifact-id 42 --expected-digest not-a-digest \
+    --destination "$TMP/fetch-malformed-digest" --gh "$FAKE_GH"
+
 cp "$GOOD_ARTIFACT_JSON" "$ARTIFACT_JSON"
 cp "$GOOD_RUN_JSON" "$RUN_JSON"
 expect_fail_with "artifact name" \

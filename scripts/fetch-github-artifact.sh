@@ -74,8 +74,8 @@ printf '%s' "$REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' ||
     fail "invalid repository: $REPO"
 printf '%s' "$ARTIFACT_ID" | grep -Eq '^[0-9]+$' ||
     fail "invalid artifact ID: $ARTIFACT_ID"
-is_digest "$EXPECTED_DIGEST" ||
-    fail "expected digest must be sha256:<hex>: $EXPECTED_DIGEST"
+EXPECTED_DIGEST=$(normalize_digest "$EXPECTED_DIGEST") ||
+    fail "expected digest must be sha256:<hex> or a bare 64-character hex: $EXPECTED_DIGEST"
 if [ -n "$EXPECTED_RUN_ID" ]; then
     printf '%s' "$EXPECTED_RUN_ID" | grep -Eq '^[0-9]+$' ||
         fail "invalid expected run ID: $EXPECTED_RUN_ID"

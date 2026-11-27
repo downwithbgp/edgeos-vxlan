@@ -96,6 +96,11 @@ require_file "$DIR/release-candidate.json"
 require_file "$POLICY"
 require_cmd jq git sha256sum find sort awk sed cmp
 
+if [ -n "$ARTIFACT_DIGEST" ]; then
+    ARTIFACT_DIGEST=$(normalize_digest "$ARTIFACT_DIGEST") ||
+        fail "artifact digest must be sha256:<hex> or a bare 64-character hex"
+fi
+
 MANIFEST=$DIR/release-candidate.json
 check_manifest_sha256 "$MANIFEST" "$MANIFEST_SHA"
 check_candidate_id "$MANIFEST"

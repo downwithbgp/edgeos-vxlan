@@ -46,6 +46,19 @@ is_digest()
     printf '%s' "$1" | grep -Eq '^sha256:[0-9a-f]{64}$'
 }
 
+# GitHub's upload-artifact output is a bare 64-character hex digest; the
+# canonical form used by this project is sha256:<hex>. Normalize both.
+normalize_digest()
+{
+    if is_digest "$1"; then
+        printf '%s' "$1"
+    elif is_sha256 "$1"; then
+        printf 'sha256:%s' "$1"
+    else
+        return 1
+    fi
+}
+
 is_commit()
 {
     case "$1" in
