@@ -14,8 +14,11 @@
 # unavailable, the command fails; that is a real infrastructure failure and
 # is not hidden.
 #
-# Usage: apt-update-ubuntu-only.sh [extra apt-get update options...]
+# Usage: apt-update-ubuntu-only.sh
 set -eu
+
+[ "$#" -eq 0 ] ||
+    { echo "usage: $0" >&2; exit 2; }
 
 if [ "$(id -u)" -eq 0 ]; then
     apt_get()
@@ -43,5 +46,4 @@ fi
 echo "Refreshing only the distribution APT source: $source"
 apt_get update \
     -o Dir::Etc::sourceparts="-" \
-    -o Dir::Etc::sourcelist="$source" \
-    "$@"
+    -o Dir::Etc::sourcelist="$source"

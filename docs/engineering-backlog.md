@@ -184,6 +184,10 @@ namespaces is Level B, not Level D.
 * [x] Existing dual-stack and IPv4 regression jobs remain in place.
 * [x] CI dependency acquisition is scoped and does not depend on unrelated third-party repositories
   for the namespace jobs.
+* [ ] A deliberately introduced IPv4-only toolchain or test-harness dependency fails the job with
+  a clear error. The current negative controls validate the isolation validator and dataplane
+  interruption; they do not prove that an arbitrary toolchain dependency is rejected. This
+  criterion remains open.
 * [ ] Level C: installer, package acquisition and management over IPv6 only. Deferred to
   ENG-IPV6-01/02.
 * [ ] Level D: IPv6-only runner/control plane/source and artifact acquisition. Not achievable with

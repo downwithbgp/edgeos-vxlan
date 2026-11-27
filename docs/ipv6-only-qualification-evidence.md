@@ -63,7 +63,7 @@ docker run --rm --privileged \
   ipv6-qual:local bash test/ipv6-only-netns.sh
 ```
 
-Result: **exit 0**, `pass=81 fail=0 skip=1 capture=executed reconciler=executed`.
+Result: **exit 0**, `pass=80 fail=0 skip=1 capture=executed reconciler=executed`.
 
 The single skip is the host-global-IPv6 escape control: the container had no global IPv6 address
 to use as a destination. The host-IPv4 escape control ran and passed; the namespace-boundary and
@@ -75,8 +75,8 @@ Two consecutive runs in the same container:
 
 | Run | Result |
 |---|---|
-| 1 | exit 0, `pass=81 fail=0 skip=1 capture=executed reconciler=executed` |
-| 2 | exit 0, `pass=81 fail=0 skip=1 capture=executed reconciler=executed` |
+| 1 | exit 0, `pass=80 fail=0 skip=1 capture=executed reconciler=executed` |
+| 2 | exit 0, `pass=80 fail=0 skip=1 capture=executed reconciler=executed` |
 
 After both runs, `ip netns list` was empty and the suite's own "no host-side test veth remains"
 check passed. A separate `--cleanup` test removed a namespace recorded in
@@ -124,10 +124,10 @@ The local run had tcpdump available and captured on the transit underlay interfa
 | Measurement | Count |
 |---|---:|
 | Underlay IPv4 Ethernet or ARP frames | 0 |
-| Underlay IPv6 UDP/4789 (VXLAN) packets | 32 |
+| Underlay IPv6 UDP/4789 (VXLAN) packets | 34 |
 | Underlay ICMPv6 ND (NS/NA) packets | 2 |
-| Overlay decapsulated IPv6 packets | 14 |
-| Overlay TCP packets | 8 |
+| Overlay decapsulated IPv6 packets | 15 |
+| Overlay TCP packets | 9 |
 | Overlay UDP packets | 2 |
 | Overlay outer UDP/4789 packets | 0 |
 | Overlay ICMPv6 ND packets | 2 |

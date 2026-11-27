@@ -208,7 +208,8 @@ The new job is `ipv6-only` in `.github/workflows/release-validation.yml`, named
 | Packet capture | `REQUIRE_CAPTURE=0`; if tcpdump is absent, the suite records a capture **skip**. The functional and isolation results are unaffected. |
 
 No `pull_request_target` is used. No workflow permission is added. The job does not execute
-downloaded packages or tagged source as part of validation.
+downloaded packages. On a release event the privileged job runs the tagged source; tags require
+write access, so this is the existing trusted-tag boundary, not untrusted pull-request code.
 
 ### 5.1 Failure semantics
 

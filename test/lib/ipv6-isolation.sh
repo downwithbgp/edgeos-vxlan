@@ -13,6 +13,10 @@
 
 ipv6_iso_run()
 {
+    if declare -F nsrun >/dev/null 2>&1; then
+        nsrun "$@"
+        return
+    fi
     local ns=$1
     shift
     ip netns exec "$ns" "$@"

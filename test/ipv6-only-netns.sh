@@ -47,7 +47,7 @@ case "${1:-}" in
     '' | run) ;;
     --cleanup | cleanup) MODE=cleanup ;;
     --help | -h)
-        sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
     *)
@@ -166,29 +166,50 @@ cleanup()
 
 cleanup_from_evidence()
 {
-    local ns link
+    local suffix ns link
+    local ns_list=() link_list=()
     if [ "$(id -u)" -ne 0 ]; then
         echo "ERROR: --cleanup requires root/CAP_NET_ADMIN" >&2
         exit 1
     fi
     [ -n "$EVIDENCE_DIR" ] ||
         { echo "ERROR: EVIDENCE_DIR is required for --cleanup" >&2; exit 2; }
-    if [ -f "$EVIDENCE_DIR/namespaces.txt" ]; then
-        while IFS= read -r ns; do
-            case "$ns" in
-                v6[a-z0-9]*) ip netns del "$ns" 2>/dev/null || true ;;
-            esac
-        done <"$EVIDENCE_DIR/namespaces.txt"
+    [ ! -L "$EVIDENCE_DIR" ] ||
+        { echo "ERROR: refusing to use a symlinked EVIDENCE_DIR" >&2; exit 2; }
+    [ -f "$EVIDENCE_DIR/run.env" ] ||
+        { echo "ERROR: $EVIDENCE_DIR/run.env is missing" >&2; exit 2; }
+
+    # Reconstruct the exact names from the recorded suffix.  Do not delete
+    # arbitrary names by prefix: a sudo-run cleanup must only touch the
+    # objects this test created.
+    suffix=$(sed -n 's/^IPV6_ONLY_SUFFIX=//p' "$EVIDENCE_DIR/run.env")
+    case "$suffix" in
+        '' | *[!A-Za-z0-9]*)
+            echo "ERROR: invalid recorded suffix '$suffix'" >&2
+            exit 2
+            ;;
+    esac
+    if [ "${#suffix}" -gt 8 ]; then
+        echo "ERROR: recorded suffix is too long: '$suffix'" >&2
+        exit 2
     fi
-    if [ -f "$EVIDENCE_DIR/links.txt" ]; then
-        while IFS= read -r link; do
-            case "$link" in
-                ta* | ua* | tb* | ub* | ha* | hba* | hbb* | hb* | c4a* | c4b*)
-                    ip link del "$link" 2>/dev/null || true
-                    ;;
-            esac
-        done <"$EVIDENCE_DIR/links.txt"
-    fi
+
+    ns_list=(
+        "v6a$suffix" "v6b$suffix" "v6t$suffix"
+        "v6ha$suffix" "v6hb$suffix"
+        "v6c4a$suffix" "v6c4b$suffix"
+    )
+    link_list=(
+        "ta$suffix" "ua$suffix" "tb$suffix" "ub$suffix"
+        "ha$suffix" "hba$suffix" "hb$suffix" "hbb$suffix"
+        "c4a$suffix" "c4b$suffix"
+    )
+    for ns in "${ns_list[@]}"; do
+        ip netns del "$ns" 2>/dev/null || true
+    done
+    for link in "${link_list[@]}"; do
+        ip link del "$link" 2>/dev/null || true
+    done
 }
 
 if [ "$MODE" = "cleanup" ]; then
@@ -200,13 +221,17 @@ if [ -z "$EVIDENCE_DIR" ]; then
     EVIDENCE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ipv6-only-evidence.XXXXXX") ||
         die "cannot create evidence directory"
 fi
+[ ! -L "$EVIDENCE_DIR" ] ||
+    die "refusing to use a symlinked EVIDENCE_DIR: $EVIDENCE_DIR"
 mkdir -p "$EVIDENCE_DIR/captures" "$EVIDENCE_DIR/state" ||
     die "cannot prepare evidence directory $EVIDENCE_DIR"
+printf 'IPV6_ONLY_SUFFIX=%s\n' "$SUFFIX" >"$EVIDENCE_DIR/run.env"
 printf '%s\n' "${ALL_NS[@]}" >"$EVIDENCE_DIR/namespaces.txt"
 printf '%s\n' "${ALL_LINKS[@]}" >"$EVIDENCE_DIR/links.txt"
 exec > >(tee -a "$EVIDENCE_DIR/run.log") 2>&1
 
-trap cleanup EXIT INT TERM HUP
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT TERM HUP
 
 preflight()
 {
@@ -216,7 +241,7 @@ preflight()
         [ "$REQUIRE_NETNS_TEST" = "1" ] && exit 1
         exit 0
     fi
-    for cmd in ip ping python3 timeout awk sed grep tr cat; do
+    for cmd in ip ping python3 timeout awk sed grep tr cat head cut sort wc readlink sha256sum sysctl bridge env tee mktemp; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             echo "SKIP: required command not available: $cmd"
             [ "$REQUIRE_NETNS_TEST" = "1" ] && exit 1
@@ -311,8 +336,8 @@ link_up()
 addr6()
 {
     local ns=$1 addr=$2 iface=$3
-    nsrun "$ns" ip -6 addr add "$addr" nodad dev "$iface" ||
-        die "cannot add $addr to $iface in $ns"
+    nsrun "$ns" ip -6 addr replace "$addr" nodad dev "$iface" ||
+        die "cannot add or replace $addr on $iface in $ns"
 }
 
 route6()
@@ -469,10 +494,15 @@ check_isolation()
         bad "$phase IPv4 loopback is missing on lo in vtep-a"
     fi
 
-    if [ -z "$(nsrun "$NS_T" ip -6 route show default 2>/dev/null)" ]; then
-        ok "$phase transit has no IPv6 default route"
+    local transit_default
+    if transit_default=$(nsrun "$NS_T" ip -6 route show default 2>/dev/null); then
+        if [ -z "$transit_default" ]; then
+            ok "$phase transit has no IPv6 default route"
+        else
+            bad "$phase transit has an IPv6 default route"
+        fi
     else
-        bad "$phase transit has an IPv6 default route"
+        bad "$phase cannot read the transit IPv6 default route"
     fi
 
     if nsrun "$NS_A" ip -6 route get 2001:db8:10:2::b1 2>/dev/null |
@@ -765,6 +795,7 @@ EOF
 
 test_tcp_udp()
 {
+    local quiet=${1:-no}
     local server_pid
     write_python_helpers
 
@@ -775,9 +806,9 @@ test_tcp_udp()
     sleep 0.5
     if nsrun "$NS_HA" timeout 8 python3 "$WORK/tcp_client.py" \
         >"$EVIDENCE_DIR/tcp-client.log" 2>&1; then
-        ok "IPv6 TCP across the routed VXLAN overlay"
+        [ "$quiet" = "yes" ] || ok "IPv6 TCP across the routed VXLAN overlay"
     else
-        bad "IPv6 TCP across the routed VXLAN overlay"
+        [ "$quiet" = "yes" ] || bad "IPv6 TCP across the routed VXLAN overlay"
     fi
     kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
@@ -790,12 +821,13 @@ test_tcp_udp()
     sleep 0.5
     if nsrun "$NS_HA" timeout 8 python3 "$WORK/udp_client.py" \
         >"$EVIDENCE_DIR/udp-client.log" 2>&1; then
-        ok "IPv6 UDP across the routed VXLAN overlay"
+        [ "$quiet" = "yes" ] || ok "IPv6 UDP across the routed VXLAN overlay"
     else
-        bad "IPv6 UDP across the routed VXLAN overlay"
+        [ "$quiet" = "yes" ] || bad "IPv6 UDP across the routed VXLAN overlay"
     fi
     kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
+    drop_pid "$server_pid"
 }
 
 drop_pid()
@@ -1137,6 +1169,12 @@ test_reconciler_integration()
     else
         bad "actual reconciler accepted the invalid recreation"
     fi
+    if grep -qE 'mtu|MTU|Failed to apply requested VXLAN state' \
+        "$EVIDENCE_DIR/reconciler-vtep-a-rollback.log"; then
+        ok "invalid recreation failed at the MTU/apply step"
+    else
+        bad "invalid recreation failed for an unexpected reason"
+    fi
     sleep 2
     if reconciler_identity_ok "$NS_A" 900 1430 '2001:db8:900::a/64'; then
         ok "actual reconciler rolled back the invalid recreation to the previous identity"
@@ -1187,8 +1225,16 @@ test_reconciler_integration()
 
 pcap_count()
 {
-    local file=$1 filter=$2
-    tcpdump -nn -r "$file" "$filter" 2>/dev/null | wc -l
+    local file=$1 filter=$2 out
+    if ! out=$(tcpdump -nn -r "$file" "$filter" 2>/dev/null); then
+        echo "ERROR: tcpdump could not analyze $file ($filter)" >&2
+        return 1
+    fi
+    if [ -n "$out" ]; then
+        printf '%s\n' "$out" | wc -l
+    else
+        echo 0
+    fi
 }
 
 test_packet_capture()
@@ -1205,12 +1251,12 @@ test_packet_capture()
         return
     fi
 
-    ip netns exec "$NS_T" tcpdump -Z root -i ta0 -nn -s 0 -w "$underlay" \
+    ip netns exec "$NS_T" tcpdump -i ta0 -nn -s 0 -w "$underlay" \
         >"$EVIDENCE_DIR/captures/underlay.log" 2>&1 &
     pid=$!
     PIDS+=("$pid")
     CAPTURE_PIDS+=("$pid")
-    ip netns exec "$NS_A" tcpdump -Z root -i vxlan200 -nn -s 0 -w "$overlay" \
+    ip netns exec "$NS_A" tcpdump -i vxlan200 -nn -s 0 -w "$overlay" \
         >"$EVIDENCE_DIR/captures/overlay.log" 2>&1 &
     pid=$!
     PIDS+=("$pid")
@@ -1221,7 +1267,7 @@ test_packet_capture()
     ping6_ok "$NS_A" 2001:db8:10:1::1
     nsrun "$NS_A" ip -6 neigh flush dev vxlan200
     ping6_ok "$NS_A" 2001:db8:200::b
-    test_tcp_udp
+    test_tcp_udp yes
     sleep 0.5
 
     for pid in "${CAPTURE_PIDS[@]}"; do
@@ -1243,14 +1289,18 @@ test_packet_capture()
     fi
 
     local underlay_ipv4 underlay_vxlan underlay_nd overlay_ipv6 overlay_tcp overlay_udp overlay_vxlan overlay_nd
-    underlay_ipv4=$(pcap_count "$underlay" 'ether proto 0x0800 or ether proto 0x0806')
-    underlay_vxlan=$(pcap_count "$underlay" 'ip6 and udp port 4789')
-    underlay_nd=$(pcap_count "$underlay" 'icmp6 and (ip6[40] == 135 or ip6[40] == 136)')
-    overlay_ipv6=$(pcap_count "$overlay" 'ip6')
-    overlay_tcp=$(pcap_count "$overlay" 'tcp')
-    overlay_udp=$(pcap_count "$overlay" 'udp')
-    overlay_vxlan=$(pcap_count "$overlay" 'udp port 4789')
-    overlay_nd=$(pcap_count "$overlay" 'icmp6 and (ip6[40] == 135 or ip6[40] == 136)')
+    if ! underlay_ipv4=$(pcap_count "$underlay" 'ether proto 0x0800 or ether proto 0x0806') ||
+        ! underlay_vxlan=$(pcap_count "$underlay" 'ip6 and udp port 4789') ||
+        ! underlay_nd=$(pcap_count "$underlay" 'icmp6 and (ip6[40] == 135 or ip6[40] == 136)') ||
+        ! overlay_ipv6=$(pcap_count "$overlay" 'ip6') ||
+        ! overlay_tcp=$(pcap_count "$overlay" 'tcp') ||
+        ! overlay_udp=$(pcap_count "$overlay" 'udp') ||
+        ! overlay_vxlan=$(pcap_count "$overlay" 'udp port 4789') ||
+        ! overlay_nd=$(pcap_count "$overlay" 'icmp6 and (ip6[40] == 135 or ip6[40] == 136)'); then
+        bad "packet capture analysis failed"
+        CAPTURE_STATUS=failed
+        return
+    fi
 
     {
         echo "underlay_ipv4_or_arp=$underlay_ipv4"
