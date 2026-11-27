@@ -1,0 +1,174 @@
+# Build and qualify the controlled reproducible build image.
+#
+# Trust boundaries:
+#   * Build/qualification jobs are read-only.
+#   * The image is built from the version-controlled Dockerfile with a fixed
+#     Ubuntu snapshot and a committed CA bundle.
+#   * The OCI archive is retained and independently re-verified.
+#   * GHCR publication is explicitly gated by an environment and a repository
+#     variable, and is not enabled in Phase III.
+#
+# The branch push trigger is the qualification entry point while this workflow
+# is not yet present on the default branch. workflow_dispatch is available
+# after merge.
+
+name: Build environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_image:
+        description: Publish the qualified image to GHCR (requires approval)
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches:
+      - ci/trusted-release-lifecycle
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-environment-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and qualify image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      manifest_digest: ${{ steps.qualify.outputs.manifest_digest }}
+      config_digest: ${{ steps.qualify.outputs.config_digest }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install pinned release tools
+        run: ./scripts/install-supply-chain-tools.sh "$RUNNER_TEMP/release-tools"
+
+      - name: Add release tools to PATH
+        run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+
+      - name: Build and qualify controlled image
+        run: ./scripts/build-environment.sh --output-dir qualification
+
+      - name: Record image identity outputs
+        id: qualify
+        run: |
+          echo "manifest_digest=$(jq -r .manifestDigest qualification/build-environment-qualification.json)" >> "$GITHUB_OUTPUT"
+          echo "config_digest=$(jq -r .configDigest qualification/build-environment-qualification.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Independently verify the qualified image
+        run: ./scripts/verify-build-environment.sh --archive-dir qualification
+
+      - name: Upload qualification evidence
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-environment-qualification
+          path: qualification/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+  qualify:
+    name: Independent image qualification
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Download qualification evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.0.0
+        with:
+          name: build-environment-qualification
+          path: downloaded
+
+      - name: Verify archive, digests, inventory and inputs
+        run: ./scripts/verify-build-environment.sh --archive-dir downloaded
+
+  publish:
+    name: Publish image to GHCR (gated)
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish_image == true &&
+      vars.BUILD_IMAGE_PUBLICATION_ENABLED == 'true'
+    needs: [build, qualify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: build-image-publication
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install pinned release tools
+        run: ./scripts/install-supply-chain-tools.sh "$RUNNER_TEMP/release-tools"
+
+      - name: Add release tools to PATH
+        run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+
+      - name: Download qualification evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.0.0
+        with:
+          name: build-environment-qualification
+          path: downloaded
+
+      - name: Log in to GHCR
+        env:
+          ACTOR: ${{ github.actor }}
+        run: |
+          printf '%s' "${{ github.token }}" |
+            docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      - name: Push the retained OCI archive and verify its digest
+        id: push
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}-build:${{ github.sha }}
+        run: |
+          set -eu
+          qualified=$(jq -r .manifestDigest downloaded/build-environment-qualification.json)
+          crane push downloaded/image.oci.tar "$IMAGE"
+          remote=$(crane digest "$IMAGE")
+          echo "remote=$remote" >> "$GITHUB_OUTPUT"
+          if [ "$remote" = "$qualified" ]; then
+            echo "Remote index digest equals the qualified manifest digest."
+            exit 0
+          fi
+          if crane manifest "$IMAGE" | jq -e --arg d "$qualified" \
+              '.manifests[]? | select(.digest == $d)' >/dev/null; then
+            echo "Qualified manifest is present in the remote index."
+            exit 0
+          fi
+          echo "ERROR: remote manifest does not contain the qualified digest $qualified" >&2
+          exit 1
+
+      - name: Attest and publish the image SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/${{ github.repository }}-build
+          subject-digest: ${{ steps.push.outputs.remote }}
+          sbom-path: downloaded/image.spdx.json
+          push-to-registry: true

@@ -1,0 +1,166 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'ci/**'
+    tags:
+      - 'v*'
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: Static analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install pinned analysis tools
+        run: ./scripts/install-ci-tools.sh "$RUNNER_TEMP/ci-tools"
+      - name: Add analysis tools to PATH
+        run: printf '%s\n' "$RUNNER_TEMP/ci-tools" >> "$GITHUB_PATH"
+      - name: Validate workflow definitions
+        run: actionlint -color
+      - name: Audit workflow security offline
+        run: zizmor --offline --collect all --format plain .github
+      - name: Check shell scripts
+        run: shellcheck -x -e SC1091,SC2015 install.sh scripts/*.sh test/*.sh debian/*.preinst debian/*.postinst debian/*.prerm debian/*.postrm src/vyatta-vxlan src/vyatta-vxlan-bridge src/vyatta-vxlan-firewall
+      - name: Check Perl syntax
+        run: perl -c src/vyatta-vxlan-addr >/dev/null
+      - name: Release contract tests
+        run: |
+          bash test/unit-release-primitives.sh
+          bash test/unit-image-qualification.sh
+
+  package:
+    name: Build and validate packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Check changed lines for whitespace errors
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: ./scripts/check-whitespace.sh
+      - name: Install build and validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential debhelper dpkg-dev fakeroot kmod lintian python3
+      - name: Run off-device test suite
+        run: bash test/run.sh
+      - name: Build Debian packages (canonical)
+        run: ./scripts/build-reproducible.sh --output-dir ci-artifacts
+      - name: Capture build environment
+        run: ./scripts/capture-build-environment.sh ci-artifacts/provenance/build-environment.txt
+      - name: Validate build artifacts
+        run: ./scripts/validate-release.sh ci-artifacts
+      - name: Validate Debian build metadata
+        run: python3 scripts/validate-build-metadata.py ci-artifacts .
+      - name: Run negative artifact-validation tests
+        run: bash test/validate-release-negative.sh ci-artifacts
+      - name: Run lintian
+        run: |
+          VERSION=$(dpkg-parsechangelog -S Version)
+          lintian --suppress-tags-from-file .github/lintian-suppressions.txt \
+            --fail-on error --tag-display-limit 0 \
+            "ci-artifacts/edgeos-vxlan-kmod_${VERSION}_mipsel.deb" \
+            "ci-artifacts/edgeos-vxlan_${VERSION}_all.deb"
+      - name: Upload non-release packages and provenance
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: edgeos-vxlan-ci-packages-nonrelease
+          path: ci-artifacts/
+          if-no-files-found: error
+          compression-level: 0
+
+  reproducibility:
+    name: Reproducibility verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential debhelper dpkg-dev fakeroot
+      - name: Build twice and compare
+        run: ./scripts/verify-reproducible-build.sh --source-rev HEAD --work-dir "$RUNNER_TEMP/reproducibility"
+      - name: Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reproducibility-diagnostics
+          path: ${{ runner.temp }}/reproducibility
+          if-no-files-found: warn
+          compression-level: 0
+
+  published-fixtures:
+    name: Published-release fixtures
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify published-release fixtures
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash test/published-release-fixtures.sh
+      - name: Verify historical release classification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag=v0.3.0
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/tagged"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$tmp"
+          git archive "$tag" | tar -xf - -C "$tmp/tagged"
+          ./scripts/verify-release.sh --asset-dir "$tmp" --source-dir "$tmp/tagged" --tag "$tag"
+
+  dataplane:
+    name: Network-namespace dataplane
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install dataplane test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            iproute2 iptables iputils-ping python3
+      - name: Enable VXLAN modules
+        run: sudo modprobe vxlan udp_tunnel ip6_udp_tunnel || true
+      - name: Linux network-namespace dataplane test
+        env:
+          REQUIRE_NETNS_TEST: "1"
+        run: sudo -E bash test/integration-netns.sh

@@ -1,0 +1,289 @@
+name: Trusted release
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Build a candidate or promote an existing candidate
+        required: true
+        default: candidate
+        type: choice
+        options: [candidate, promote]
+      source_ref:
+        description: Source commit/ref for a candidate (main for production)
+        required: false
+        default: main
+        type: string
+      release_tag:
+        description: Release tag (vMAJOR.MINOR.PATCH)
+        required: false
+        default: ''
+        type: string
+      artifact_id:
+        description: Candidate artifact ID (promotion)
+        required: false
+        default: ''
+        type: string
+      artifact_digest:
+        description: Candidate artifact ZIP digest (sha256:...)
+        required: false
+        default: ''
+        type: string
+      candidate_id:
+        description: Expected candidate ID (sha256:...)
+        required: false
+        default: ''
+        type: string
+      manifest_sha256:
+        description: Expected candidate manifest SHA-256
+        required: false
+        default: ''
+        type: string
+      dry_run:
+        description: Verify and print the promotion plan only
+        required: false
+        default: true
+        type: boolean
+      confirm_publish:
+        description: Type PUBLISH to authorize real publication
+        required: false
+        default: ''
+        type: string
+  push:
+    branches:
+      - ci/trusted-release-lifecycle
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trusted-release-${{ github.ref }}-${{ inputs.release_tag || '' }}
+  cancel-in-progress: false
+
+jobs:
+  environment:
+    name: Qualify build image
+    if: github.event_name == 'push' || inputs.mode == 'candidate'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install pinned release tools
+        run: ./scripts/install-supply-chain-tools.sh "$RUNNER_TEMP/release-tools"
+      - name: Add release tools to PATH
+        run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+      - name: Build and qualify image
+        run: ./scripts/build-environment.sh --output-dir environment
+      - name: Verify image qualification
+        run: ./scripts/verify-build-environment.sh --archive-dir environment
+      - name: Upload image qualification
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-build-environment
+          path: environment/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+  candidate:
+    name: Build candidate
+    needs: environment
+    if: github.event_name == 'push' || inputs.mode == 'candidate'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install pinned release tools
+        run: ./scripts/install-supply-chain-tools.sh "$RUNNER_TEMP/release-tools"
+      - name: Add release tools to PATH
+        run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+      - name: Download qualified image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.0.0
+        with:
+          name: release-build-environment
+          path: environment
+      - name: Build release candidate
+        env:
+          PRODUCTION: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate' && github.ref == 'refs/heads/main' }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+        run: |
+          set -eu
+          if [ "$PRODUCTION" = "true" ]; then
+            ./scripts/build-release-candidate.sh \
+              --output-dir candidate \
+              --image-archive-dir environment \
+              --production \
+              --release-tag "$RELEASE_TAG_INPUT" \
+              --workflow-ref "${{ github.ref }}" \
+              --workflow-commit "${{ github.sha }}"
+          else
+            ./scripts/build-release-candidate.sh \
+              --output-dir candidate \
+              --image-archive-dir environment
+          fi
+      - name: Attest candidate provenance
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            candidate/release-candidate.json
+            candidate/*.deb
+            candidate/*.buildinfo
+            candidate/*.changes
+            candidate/sbom-*.spdx.json
+            candidate/build-environment-qualification.json
+            candidate/build-environment-image.spdx.json
+      - name: Attest integration SBOM
+        id: sbom-int
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: candidate/edgeos-vxlan_*_all.deb
+          sbom-path: candidate/sbom-edgeos-vxlan.spdx.json
+      - name: Attest kernel-module SBOM
+        id: sbom-kmod
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: candidate/edgeos-vxlan-kmod_*_mipsel.deb
+          sbom-path: candidate/sbom-edgeos-vxlan-kmod.spdx.json
+      - name: Collect attestation bundles
+        run: |
+          set -eu
+          cp "${{ steps.provenance.outputs.bundle-path }}" candidate/release-attestation.jsonl
+          cat "${{ steps.sbom-int.outputs.bundle-path }}" >> candidate/release-attestation.jsonl
+          printf '\n' >> candidate/release-attestation.jsonl
+          cat "${{ steps.sbom-kmod.outputs.bundle-path }}" >> candidate/release-attestation.jsonl
+          printf '\n' >> candidate/release-attestation.jsonl
+          sha256sum candidate/release-attestation.jsonl
+      - name: Upload candidate artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-candidate
+          path: candidate/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+  promote-dry-run:
+    name: Promotion dry-run
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'promote' && inputs.dry_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_tag }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install pinned release tools
+        run: ./scripts/install-supply-chain-tools.sh "$RUNNER_TEMP/release-tools"
+      - name: Add release tools to PATH
+        run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+      - name: Download explicit candidate artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID_INPUT: ${{ inputs.artifact_id }}
+        run: |
+          set -eu
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID_INPUT/zip" > candidate.zip
+          mkdir -p candidate
+          unzip -q candidate.zip -d candidate
+
+      - name: Verify candidate and print plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_INPUT: ${{ inputs.release_tag }}
+          CANDIDATE_ID_INPUT: ${{ inputs.candidate_id }}
+          MANIFEST_SHA_INPUT: ${{ inputs.manifest_sha256 }}
+          ARTIFACT_ID_INPUT: ${{ inputs.artifact_id }}
+          ARTIFACT_DIGEST_INPUT: ${{ inputs.artifact_digest }}
+        run: |
+          ./scripts/promote-release.sh \
+            --candidate-dir candidate \
+            --tag "$TAG_INPUT" \
+            --candidate-id "$CANDIDATE_ID_INPUT" \
+            --manifest-sha256 "$MANIFEST_SHA_INPUT" \
+            --artifact-id "$ARTIFACT_ID_INPUT" \
+            --artifact-digest "$ARTIFACT_DIGEST_INPUT" \
+            --source-root . \
+            --dry-run
+
+  publish:
+    name: Authorized publication
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.mode == 'promote' &&
+      !inputs.dry_run &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release-publication
+    permissions:
+      contents: write
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_tag }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install pinned release tools
+        run: ./scripts/install-supply-chain-tools.sh "$RUNNER_TEMP/release-tools"
+      - name: Add release tools to PATH
+        run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+      - name: Download explicit candidate artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID_INPUT: ${{ inputs.artifact_id }}
+        run: |
+          set -eu
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID_INPUT/zip" > candidate.zip
+          mkdir -p candidate
+          unzip -q candidate.zip -d candidate
+
+      - name: Publish exact candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ENVIRONMENT: release-publication
+          RELEASE_PUBLICATION_ENABLED: ${{ vars.RELEASE_PUBLICATION_ENABLED }}
+          IMMUTABLE_RELEASES_CONFIRMED: ${{ vars.IMMUTABLE_RELEASES_CONFIRMED }}
+          IMMUTABLE_RELEASES_ADMIN_TOKEN: ${{ secrets.IMMUTABLE_RELEASES_ADMIN_TOKEN }}
+          CONFIRM_PUBLISH: ${{ inputs.confirm_publish }}
+          TAG_INPUT: ${{ inputs.release_tag }}
+          CANDIDATE_ID_INPUT: ${{ inputs.candidate_id }}
+          MANIFEST_SHA_INPUT: ${{ inputs.manifest_sha256 }}
+          ARTIFACT_ID_INPUT: ${{ inputs.artifact_id }}
+          ARTIFACT_DIGEST_INPUT: ${{ inputs.artifact_digest }}
+        run: |
+          ./scripts/promote-release.sh \
+            --candidate-dir candidate \
+            --tag "$TAG_INPUT" \
+            --candidate-id "$CANDIDATE_ID_INPUT" \
+            --manifest-sha256 "$MANIFEST_SHA_INPUT" \
+            --artifact-id "$ARTIFACT_ID_INPUT" \
+            --artifact-digest "$ARTIFACT_DIGEST_INPUT" \
+            --source-root .
+
+  post-publish-verify:
+    name: Explicit post-publication verification
+    needs: publish
+    uses: ./.github/workflows/verify-release.yml
+    with:
+      tag: ${{ inputs.release_tag }}
+    permissions:
+      contents: read
+      attestations: read
