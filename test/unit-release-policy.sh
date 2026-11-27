@@ -113,10 +113,11 @@ done
 # baselinePublishedVersion classifies legacy releases; publication eligibility
 # must consult the newest published release instead.
 if grep -qF '.release.baselinePublishedVersion' "$ROOT/scripts/build-release-candidate.sh" &&
-    ! grep -qF 'baselinePublishedVersion' "$ROOT/scripts/promote-release.sh"; then
+    ! grep -qF "jq -r '.release.baselinePublishedVersion'" "$ROOT/scripts/promote-release.sh" &&
+    grep -qF 'check-version-eligibility.sh' "$ROOT/scripts/promote-release.sh"; then
     ok
 else
-    bad "publication eligibility still depends on the static baseline"
+    bad "publication eligibility must resolve the newest published version, not the static baseline"
 fi
 
 echo "unit-release-policy: pass=$PASS fail=$FAIL"

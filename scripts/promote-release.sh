@@ -218,6 +218,12 @@ if [ "$FIXTURE" = "no" ]; then
     is_digest "$ARTIFACT_DIGEST" || fail "--artifact-digest must be sha256:<hex>"
     "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$DIR" \
         --source-root "$SOURCE_ROOT" --rev "$SOURCE_COMMIT" --production
+    # Publication eligibility consults the newest published stable release.
+    # release.baselinePublishedVersion only classifies historical releases and
+    # is a coarse floor at construction time, not the publication gate.
+    "$ROOT/scripts/check-version-eligibility.sh" \
+        --repo "$(jq -r '.project.repository' "$POLICY")" \
+        --tag "$TAG" --gh "$GH_BIN"
 else
     "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$DIR" \
         --source-root "$SOURCE_ROOT" --rev "$SOURCE_COMMIT"

@@ -276,6 +276,10 @@ if args[:1] == ["api"]:
     if path.endswith("/releases?per_page=100") or path.endswith("/releases"):
         print(json.dumps(load()))
         sys.exit(0)
+    if "/tags" in path:
+        # Version eligibility reads existing release tags.
+        print("[]")
+        sys.exit(0)
     if "/commits/" in path:
         # Tag re-resolution immediately before publication.
         print(json.dumps({"sha": os.environ["FAKE_TAG_COMMIT"]}))

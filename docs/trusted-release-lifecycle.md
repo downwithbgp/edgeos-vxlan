@@ -347,9 +347,13 @@ Recorded code-level limitations:
   contracts live in `scripts/packaging-inputs.sh` and
   `scripts/check-pin-commit.sh`, and `test/unit-release-policy.sh` fails if an
   unimplemented policy key is reintroduced.
-- The production "newer than published" check compares against the static
-  `baselinePublishedVersion` (0.3.0), not the newest published release, so a
-  candidate between the baseline and the actual latest could be promoted.
+- Publication eligibility now resolves the newest published stable release
+  (`scripts/check-version-eligibility.sh`) and rejects regression below it;
+  `baselinePublishedVersion` is retained only as the legacy classification
+  floor and as a coarse construction-time check. Drafts, prereleases and
+  tags without a release do not raise the published version. No backport
+  bypass exists; a future maintenance-branch exception requires a separate
+  reviewed change.
 - Published-release fixtures use synthetic assets; hardware qualification,
   kernel source-to-binary reproducibility and Internet-facing probes remain
   separate workstreams and are not claimed here.

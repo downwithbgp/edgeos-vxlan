@@ -48,6 +48,7 @@ jobs:
           bash test/unit-release-contracts.sh
           bash test/unit-release-publication.sh
           bash test/unit-release-policy.sh
+          bash test/unit-release-version.sh
 
   package:
     name: Build and validate packages
