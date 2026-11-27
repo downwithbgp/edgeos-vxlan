@@ -57,13 +57,15 @@ make_candidate()
     mkdir -p "$dir"
     local tsv=$TMP/artifacts.tsv
     : > "$tsv"
-    add_file "$dir" "edgeos-vxlan_${version}_all.deb" package "integration" >> "$tsv"
-    add_file "$dir" "edgeos-vxlan-kmod_${version}_mipsel.deb" package "kmod" >> "$tsv"
-    add_file "$dir" "edgeos-vxlan_${version}_mipsel.buildinfo" debian-metadata "buildinfo" >> "$tsv"
-    add_file "$dir" "edgeos-vxlan_${version}_mipsel.changes" debian-metadata "changes" >> "$tsv"
-    add_file "$dir" "sbom-edgeos-vxlan.spdx.json" sbom "{}" >> "$tsv"
-    add_file "$dir" "sbom-edgeos-vxlan-kmod.spdx.json" sbom "{}" >> "$tsv"
-    add_file "$dir" "build-environment-qualification.json" environment-qualification "{}" >> "$tsv"
+    {
+        add_file "$dir" "edgeos-vxlan_${version}_all.deb" package "integration"
+        add_file "$dir" "edgeos-vxlan-kmod_${version}_mipsel.deb" package "kmod"
+        add_file "$dir" "edgeos-vxlan_${version}_mipsel.buildinfo" debian-metadata "buildinfo"
+        add_file "$dir" "edgeos-vxlan_${version}_mipsel.changes" debian-metadata "changes"
+        add_file "$dir" "sbom-edgeos-vxlan.spdx.json" sbom "{}"
+        add_file "$dir" "sbom-edgeos-vxlan-kmod.spdx.json" sbom "{}"
+        add_file "$dir" "build-environment-qualification.json" environment-qualification "{}"
+    } >> "$tsv"
     printf '{}\n' > "$dir/build-environment-image.spdx.json"
 
     jq -R -s '[split("\n")[] | select(length > 0) | split("\t") | {name:.[0], role:.[1]}]' "$tsv" > "$TMP/names.json"
@@ -174,6 +176,67 @@ expect_fail_with "missing required artifact" \
 expect_fail_with "required file not found" \
     "$ROOT/scripts/verify-attestations.sh" --candidate-dir "$CAND" \
     --bundle "$TMP/no-such-bundle.jsonl"
+
+# SBOM predicate binding. The attested predicate must be exactly the shipped
+# SBOM and must be bound to the package subject digest.
+make_sbom_bundle()
+{
+    local bundle=$1 package=$2 sbom=$3
+    python3 - "$bundle" "$package" "$sbom" <<'PY'
+import base64, json, sys
+from hashlib import sha256
+from pathlib import Path
+
+bundle_path, package_path, sbom_path = (Path(arg) for arg in sys.argv[1:4])
+digest = sha256(package_path.read_bytes()).hexdigest()
+predicate = json.loads(sbom_path.read_text(encoding="utf-8"))
+statement = {
+    "_type": "https://in-toto.io/Statement/v1",
+    "subject": [{"name": package_path.name, "digest": {"sha256": digest}}],
+    "predicateType": "https://spdx.dev/Document/v2.3",
+    "predicate": predicate,
+}
+envelope = {
+    "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+    "dsseEnvelope": {
+        "payloadType": "application/vnd.in-toto+json",
+        "payload": base64.b64encode(json.dumps(statement).encode()).decode(),
+        "signatures": [],
+    },
+}
+bundle_path.write_text(json.dumps(envelope) + "\n", encoding="utf-8")
+PY
+}
+
+SBOM_PKG=$CAND/edgeos-vxlan_0.3.1+edgeos3.0.1.e50_all.deb
+SBOM_FILE=$CAND/sbom-edgeos-vxlan.spdx.json
+make_sbom_bundle "$TMP/bundle-int.jsonl" "$SBOM_PKG" "$SBOM_FILE"
+expect_pass "$ROOT/scripts/verify-sbom-predicate.sh" \
+    --bundle "$TMP/bundle-int.jsonl" --package "$SBOM_PKG" --sbom "$SBOM_FILE"
+
+# A modified SBOM must not satisfy the attested predicate.
+cp "$SBOM_FILE" "$TMP/tampered.spdx.json"
+jq '.name="tampered"' "$SBOM_FILE" > "$TMP/tampered.spdx.json"
+expect_fail_with "does not match" \
+    "$ROOT/scripts/verify-sbom-predicate.sh" \
+    --bundle "$TMP/bundle-int.jsonl" --package "$SBOM_PKG" \
+    --sbom "$TMP/tampered.spdx.json"
+
+# The predicate must be bound to the package subject digest.
+cp "$SBOM_PKG" "$TMP/other.deb"
+expect_fail_with "expected exactly one" \
+    "$ROOT/scripts/verify-sbom-predicate.sh" \
+    --bundle "$TMP/bundle-int.jsonl" --package "$TMP/other.deb" --sbom "$SBOM_FILE"
+
+# The unversioned SPDX predicate type is not what GitHub emits.
+expect_fail_with "unsupported SBOM predicate type" \
+    "$ROOT/scripts/verify-sbom-predicate.sh" \
+    --bundle "$TMP/bundle-int.jsonl" --package "$SBOM_PKG" --sbom "$SBOM_FILE" \
+    --predicate-type https://spdx.dev/Document
+
+# The policy must pin the versioned predicate type GitHub actually emits.
+[ "$(jq -r '.attestation.sbomPredicate' "$ROOT/release/release-policy.json")" = \
+  "https://spdx.dev/Document/v2.3" ] && ok || bad "policy SBOM predicate is not versioned"
 
 # Release-mode downgrade: nonRelease candidate must not verify as a release.
 NONREL=$TMP/nonrelease
