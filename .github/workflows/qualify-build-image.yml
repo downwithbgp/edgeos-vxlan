@@ -8,6 +8,9 @@ name: Qualify reproducible build image
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - ci/reproducible-builds
 
 permissions:
   contents: read
