@@ -19,6 +19,7 @@ REV=
 PRODUCTION=no
 RELEASE=no
 LATEST_VERSION=
+PUBLISHED_ASSETS=no
 
 usage()
 {
@@ -34,6 +35,10 @@ Options:
   --release             Enforce release rules (nonRelease=false, main ref,
                         exact workflow/source commit; allow re-verification)
   --latest-version V    Latest published version for production version reuse
+  --published-assets    Verify a published release asset set: the raw evidence
+                        directory is not published, so presence and file hashes
+                        are not recomputed; the attested manifest still binds
+                        them and the IPv6 block is fully validated.
   -h, --help            Show this help
 EOF
 }
@@ -68,6 +73,10 @@ while [ $# -gt 0 ]; do
             LATEST_VERSION=$2
             shift 2
             ;;
+        --published-assets)
+            PUBLISHED_ASSETS=yes
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -92,6 +101,7 @@ python3 "$ROOT/scripts/validate-candidate-schema.py" \
 
 POLICY=$ROOT/release/release-policy.json
 check_candidate_id "$MANIFEST"
+check_build_identity "$MANIFEST"
 
 [ "$(manifest_get "$MANIFEST" '.schemaVersion')" = \
   "https://edgeos-vxlan.dev/release-candidate/v1" ] ||
@@ -261,6 +271,134 @@ grep -Fx "$(sha256_file "$DIR/$KMOD")  $KMOD" "$SUMS" >/dev/null ||
     fail "SHA256SUMS is missing the kernel-module package"
 ( cd "$DIR" && sha256sum --strict --quiet -c SHA256SUMS ) >/dev/null ||
     fail "SHA256SUMS verification failed"
+
+# --- IPv6-only qualification evidence --------------------------------------
+# The four required checks, their retained evidence bytes, the build identity
+# and the workflow provenance are all verified here. Any mismatch rejects the
+# candidate; a permitted skip or workaround is checked against an explicit
+# allow-list rather than accepted from the manifest.
+REQUIRED_IPV6_CHECKS="ipv6-only-isolation ipv6-only-dataplane ipv6-only-capture ipv6-only-reconciler"
+ALLOWED_IPV6_SKIPS="host-global-ipv6-escape-unavailable iproute2-json-normalization"
+ALLOWED_IPV6_WORKAROUNDS="iproute2-json-normalization"
+
+[ "$(manifest_get "$MANIFEST" '.qualification.ipv6.status')" = "passed" ] ||
+    fail "IPv6-only qualification status is not passed"
+[ "$(manifest_get "$MANIFEST" '.qualification.ipv6.level')" = "B" ] ||
+    fail "IPv6-only qualification level is not B"
+[ "$(manifest_get "$MANIFEST" '.qualification.ipv6.buildIdentity')" = \
+  "$(manifest_get "$MANIFEST" '.build.identity')" ] ||
+    fail "IPv6 qualification build identity does not match the candidate build identity"
+[ "$(manifest_get "$MANIFEST" '.qualification.ipv6.sourceCommit')" = \
+  "$(manifest_get "$MANIFEST" '.source.commit')" ] ||
+    fail "IPv6 qualification source commit does not match the candidate source commit"
+
+IPV6_PACKAGE=$(manifest_get "$MANIFEST" '.qualification.ipv6.package')
+[ "$IPV6_PACKAGE" = "edgeos-vxlan_${PKG_VERSION}_all.deb" ] ||
+    fail "IPv6 qualification package $IPV6_PACKAGE is not the candidate integration package"
+[ "$(manifest_get "$MANIFEST" '.qualification.ipv6.packageSha256')" = \
+  "$(sha256_file "$DIR/$IPV6_PACKAGE")" ] ||
+    fail "IPv6 qualification package hash does not match the candidate integration package"
+for field in reconcilerSha256 addrHelperSha256; do
+    require_sha256_field "IPv6 $field" "$(manifest_get "$MANIFEST" ".qualification.ipv6.$field")"
+done
+
+WF_PATH=$(manifest_get "$MANIFEST" '.source.trustedWorkflow.path')
+WF_REF=$(manifest_get "$MANIFEST" '.source.trustedWorkflow.ref')
+WF_COMMIT=$(manifest_get "$MANIFEST" '.source.trustedWorkflow.commit')
+[ "$(manifest_get "$MANIFEST" '.qualification.ipv6.workflow.path')" = "$WF_PATH" ] ||
+    fail "IPv6 qualification workflow path does not match the trusted workflow path"
+[ "$(manifest_get "$MANIFEST" '.qualification.ipv6.workflow.ref')" = "$WF_REF" ] ||
+    fail "IPv6 qualification workflow ref does not match the trusted workflow ref"
+[ "$(manifest_get "$MANIFEST" '.qualification.ipv6.workflow.commit')" = "$WF_COMMIT" ] ||
+    fail "IPv6 qualification workflow commit does not match the trusted workflow commit"
+[ "$(manifest_get "$MANIFEST" '.qualification.ipv6.workflow.repository')" = \
+  "$(manifest_get "$MANIFEST" '.project.repository')" ] ||
+    fail "IPv6 qualification workflow repository does not match the project repository"
+RUN_ID=$(manifest_get "$MANIFEST" '.qualification.ipv6.workflow.runId')
+RUN_ATTEMPT=$(manifest_get "$MANIFEST" '.qualification.ipv6.workflow.runAttempt')
+printf '%s' "$RUN_ID" | grep -Eq '^[0-9]+$' ||
+    fail "IPv6 qualification workflow run ID is not numeric: $RUN_ID"
+printf '%s' "$RUN_ATTEMPT" | grep -Eq '^[0-9]+$' ||
+    fail "IPv6 qualification workflow run attempt is not numeric: $RUN_ATTEMPT"
+[ "$(manifest_get "$MANIFEST" '.qualification.ipv6.harness.path')" = \
+  "test/ipv6-only-netns.sh" ] ||
+    fail "IPv6 qualification harness path is not the repository harness"
+[ "$(manifest_get "$MANIFEST" '.qualification.ipv6.harness.commit')" = "$WF_COMMIT" ] ||
+    fail "IPv6 qualification harness commit does not match the trusted workflow commit"
+
+[ "$(manifest_get "$MANIFEST" '.qualification.ipv6.evidence.dir')" = \
+  "qualification/ipv6-only" ] ||
+    fail "IPv6 qualification evidence directory is not qualification/ipv6-only"
+IPV6_EVIDENCE=$DIR/qualification/ipv6-only
+if [ "$PUBLISHED_ASSETS" = "no" ]; then
+    require_dir "$IPV6_EVIDENCE"
+    require_file "$IPV6_EVIDENCE/summary.json"
+    [ "$(sha256_file "$IPV6_EVIDENCE/summary.json")" = \
+      "$(manifest_get "$MANIFEST" '.qualification.ipv6.evidence.summarySha256')" ] ||
+        fail "retained IPv6 qualification summary hash does not match the manifest"
+fi
+
+for check_id in $REQUIRED_IPV6_CHECKS; do
+    entry=$(jq -c --arg id "$check_id" \
+        '[.qualification.checks[] | select(.id == $id)]' "$MANIFEST")
+    [ "$(jq 'length' <<<"$entry")" -eq 1 ] ||
+        fail "required IPv6 qualification check $check_id must appear exactly once"
+    [ "$(jq -r '.[0].status' <<<"$entry")" = "passed" ] ||
+        fail "required IPv6 qualification check $check_id did not pass"
+    file=$(jq -r '.[0].evidenceFile // empty' <<<"$entry")
+    [ -n "$file" ] || fail "check $check_id records no evidence file"
+    require_sha256_field "$check_id evidence" "$(jq -r '.[0].evidenceSha256' <<<"$entry")"
+    if [ "$PUBLISHED_ASSETS" = "no" ]; then
+        require_file "$IPV6_EVIDENCE/$file"
+        [ "$(sha256_file "$IPV6_EVIDENCE/$file")" = \
+          "$(jq -r '.[0].evidenceSha256' <<<"$entry")" ] ||
+            fail "retained evidence for $check_id does not match the manifest"
+    fi
+done
+
+for field in underlay overlay analysis; do
+    sha=$(manifest_get "$MANIFEST" ".qualification.ipv6.capture.${field}Sha256")
+    require_sha256_field "IPv6 capture $field" "$sha"
+done
+[ "$(manifest_get "$MANIFEST" '.qualification.ipv6.capture.status')" = "executed" ] ||
+    fail "IPv6 qualification capture did not execute"
+if [ "$PUBLISHED_ASSETS" = "no" ]; then
+    for field in underlay overlay; do
+        require_file "$IPV6_EVIDENCE/captures/$field.pcap"
+        [ "$(sha256_file "$IPV6_EVIDENCE/captures/$field.pcap")" = \
+          "$(manifest_get "$MANIFEST" ".qualification.ipv6.capture.${field}Sha256")" ] ||
+            fail "retained IPv6 $field capture hash does not match the manifest"
+    done
+    require_file "$IPV6_EVIDENCE/captures/analysis.txt"
+    [ "$(sha256_file "$IPV6_EVIDENCE/captures/analysis.txt")" = \
+      "$(manifest_get "$MANIFEST" '.qualification.ipv6.capture.analysisSha256')" ] ||
+        fail "retained IPv6 capture analysis hash does not match the manifest"
+fi
+
+[ "$(manifest_get "$MANIFEST" '.qualification.ipv6.reconciler.status')" = "executed" ] ||
+    fail "IPv6 qualification reconciler path did not execute"
+if [ "$PUBLISHED_ASSETS" = "no" ]; then
+    require_file "$IPV6_EVIDENCE/reconciler-evidence.txt"
+    [ "$(sha256_file "$IPV6_EVIDENCE/reconciler-evidence.txt")" = \
+      "$(manifest_get "$MANIFEST" '.qualification.ipv6.reconciler.evidenceSha256')" ] ||
+        fail "retained IPv6 reconciler evidence hash does not match the manifest"
+fi
+
+while IFS= read -r skip; do
+    [ -n "$skip" ] || continue
+    case " $ALLOWED_IPV6_SKIPS " in
+        *" $skip "*) ;;
+        *) fail "candidate declares an unpermitted IPv6 skip: $skip" ;;
+    esac
+done < <(jq -r '.qualification.ipv6.skips[]' "$MANIFEST")
+while IFS= read -r workaround; do
+    [ -n "$workaround" ] || continue
+    case " $ALLOWED_IPV6_WORKAROUNDS " in
+        *" $workaround "*) ;;
+        *) fail "candidate declares an unpermitted IPv6 workaround: $workaround" ;;
+    esac
+done < <(jq -r '.qualification.ipv6.workarounds[].id' "$MANIFEST")
+
 
 # No unexpected top-level files. qualification/ holds logs and reproducibility
 # evidence; source.tar is the exact materialized input.

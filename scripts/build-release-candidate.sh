@@ -27,17 +27,44 @@ EXPECTED_WORKFLOW_COMMIT=
 EXPECTED_IMAGE_MANIFEST_DIGEST=
 EXPECTED_IMAGE_CONFIG_DIGEST=
 EXPECTED_IMAGE_QUALIFICATION_SHA256=
+STAGE=
+IPV6_EVIDENCE_DIR=
+EXPECTED_WORKFLOW_RUN_ID=${GITHUB_RUN_ID:-}
+EXPECTED_WORKFLOW_RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT:-}
+EXPECTED_WORKFLOW_PATH=${GITHUB_WORKFLOW_REF:-}
+EXPECTED_EVIDENCE_REF=${GITHUB_REF:-}
+EXPECTED_EVIDENCE_COMMIT=${GITHUB_SHA:-}
+EXPECTED_HARNESS_COMMIT=
+EXPECTED_BUILD_IDENTITY=
 
 usage()
 {
     cat <<'EOF'
-Usage: build-release-candidate.sh --output-dir DIR --image-archive-dir DIR [options]
+Usage: build-release-candidate.sh --stage build|finalize [options]
+
+Build stage (produces the artifacts and the immutable build identity):
+  --stage build --output-dir DIR --image-archive-dir DIR
+  --repo DIR --source-ref REV --production --release-tag TAG ...
+
+Finalize stage (attaches IPv6 qualification evidence and computes the
+candidate identity; no build environment or Docker is used):
+  --stage finalize --output-dir DIR --ipv6-evidence-dir DIR
+  --expected-workflow-run-id ID --expected-workflow-run-attempt N ...
 
 Options:
+  --stage build|finalize     Required; selects the stage
   --repo DIR                 Git repository (default: this repository)
   --source-ref REV           Source revision to build (default: HEAD)
-  --output-dir DIR           Empty/absent candidate directory
-  --image-archive-dir DIR    Qualified image artifact directory
+  --output-dir DIR           Build output / existing candidate directory
+  --image-archive-dir DIR    Qualified image artifact directory (build)
+  --ipv6-evidence-dir DIR    Retained N6-R-P evidence (finalize)
+  --expected-build-identity SHA  Require this exact build identity
+  --expected-workflow-run-id ID       Evidence workflow run ID
+  --expected-workflow-run-attempt N   Evidence workflow run attempt
+  --expected-workflow-path P          Evidence workflow path@ref
+  --expected-evidence-ref REF         Evidence workflow ref
+  --expected-evidence-commit SHA      Evidence workflow commit
+  --expected-harness-commit SHA       Evidence harness commit
   --production               Production candidate: require main ref at the
                              exact source commit and a newer version
   --release-tag TAG          Release tag (default: v<changelog version>)
@@ -118,6 +145,51 @@ while [ $# -gt 0 ]; do
             EXPECTED_IMAGE_QUALIFICATION_SHA256=$2
             shift 2
             ;;
+        --stage)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            STAGE=$2
+            shift 2
+            ;;
+        --ipv6-evidence-dir)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            IPV6_EVIDENCE_DIR=$2
+            shift 2
+            ;;
+        --expected-build-identity)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            EXPECTED_BUILD_IDENTITY=$2
+            shift 2
+            ;;
+        --expected-workflow-run-id)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            EXPECTED_WORKFLOW_RUN_ID=$2
+            shift 2
+            ;;
+        --expected-workflow-run-attempt)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            EXPECTED_WORKFLOW_RUN_ATTEMPT=$2
+            shift 2
+            ;;
+        --expected-workflow-path)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            EXPECTED_WORKFLOW_PATH=$2
+            shift 2
+            ;;
+        --expected-evidence-ref)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            EXPECTED_EVIDENCE_REF=$2
+            shift 2
+            ;;
+        --expected-evidence-commit)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            EXPECTED_EVIDENCE_COMMIT=$2
+            shift 2
+            ;;
+        --expected-harness-commit)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            EXPECTED_HARNESS_COMMIT=$2
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -128,6 +200,188 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+finalize_candidate()
+{
+    require_cmd jq sha256sum python3 tar stat find sort awk sed cmp
+    require_dir "$OUTPUT_DIR"
+    require_dir "$IPV6_EVIDENCE_DIR"
+    require_file "$IPV6_EVIDENCE_DIR/summary.json"
+    OUTPUT_DIR=$(cd "$OUTPUT_DIR" && pwd) ||
+        fail "cannot resolve candidate directory"
+    IPV6_EVIDENCE_DIR=$(cd "$IPV6_EVIDENCE_DIR" && pwd) ||
+        fail "cannot resolve evidence directory"
+    BUILD_RECORD=$OUTPUT_DIR/qualification/build-record.json
+    require_file "$BUILD_RECORD"
+
+    [ "$(manifest_get "$BUILD_RECORD" '.candidate.status')" = "built" ] ||
+        fail "build record candidate status is not built"
+    [ "$(manifest_get "$BUILD_RECORD" '.qualification.status')" = "pending" ] ||
+        fail "build record qualification status is not pending"
+    check_build_identity "$BUILD_RECORD"
+    BUILD_IDENTITY=$(manifest_get "$BUILD_RECORD" '.build.identity')
+    if [ -n "$EXPECTED_BUILD_IDENTITY" ]; then
+        [ "$BUILD_IDENTITY" = "$EXPECTED_BUILD_IDENTITY" ] ||
+            fail "build identity $BUILD_IDENTITY != expected $EXPECTED_BUILD_IDENTITY"
+    fi
+
+    SOURCE_COMMIT=$(manifest_get "$BUILD_RECORD" '.source.commit')
+    PKG_VERSION=$(manifest_get "$BUILD_RECORD" '.project.packageVersion')
+    INTEGRATION="edgeos-vxlan_${PKG_VERSION}_all.deb"
+    require_file "$OUTPUT_DIR/$INTEGRATION"
+    INTEGRATION_SHA=$(sha256_file "$OUTPUT_DIR/$INTEGRATION")
+    RECORDED_SHA=$(jq -r --arg n "$INTEGRATION" \
+        '.artifacts[] | select(.name == $n) | .sha256' "$BUILD_RECORD")
+    [ "$INTEGRATION_SHA" = "$RECORDED_SHA" ] ||
+        fail "integration package changed after the build stage"
+
+    # Provenance must be supplied independently of the evidence file itself.
+    for pair in \
+        "workflow run ID:$EXPECTED_WORKFLOW_RUN_ID" \
+        "workflow run attempt:$EXPECTED_WORKFLOW_RUN_ATTEMPT" \
+        "workflow path:$EXPECTED_WORKFLOW_PATH" \
+        "workflow ref:$EXPECTED_EVIDENCE_REF" \
+        "workflow commit:$EXPECTED_EVIDENCE_COMMIT"; do
+        [ -n "${pair#*:}" ] || fail "missing ${pair%%:*}"
+    done
+    if [ -z "$EXPECTED_HARNESS_COMMIT" ]; then
+        EXPECTED_HARNESS_COMMIT=$(manifest_get "$BUILD_RECORD" '.source.trustedWorkflow.commit')
+    fi
+
+    # The evidence records GITHUB_WORKFLOW_REF (owner/repo/path@ref); the
+    # manifest binds the canonical workflow file path. Normalize and require
+    # the evidence workflow to be the trusted workflow of this candidate.
+    TRUSTED_WORKFLOW_PATH=$(manifest_get "$BUILD_RECORD" '.source.trustedWorkflow.path')
+    EVIDENCE_WORKFLOW_PATH=$EXPECTED_WORKFLOW_PATH
+    EVIDENCE_WORKFLOW_PATH=${EVIDENCE_WORKFLOW_PATH%@*}
+    EVIDENCE_WORKFLOW_PATH=${EVIDENCE_WORKFLOW_PATH#*/}
+    EVIDENCE_WORKFLOW_PATH=${EVIDENCE_WORKFLOW_PATH#*/}
+    [ "$EVIDENCE_WORKFLOW_PATH" = "$TRUSTED_WORKFLOW_PATH" ] ||
+        fail "qualification evidence workflow $EVIDENCE_WORKFLOW_PATH is not the trusted workflow $TRUSTED_WORKFLOW_PATH"
+
+    echo "Validating IPv6-only qualification evidence"
+    python3 "$ROOT/scripts/validate-ipv6-qualification-evidence.py" \
+        --summary "$IPV6_EVIDENCE_DIR/summary.json" \
+        --evidence-dir "$IPV6_EVIDENCE_DIR" \
+        --expected-source-commit "$SOURCE_COMMIT" \
+        --expected-build-identity "$BUILD_IDENTITY" \
+        --expected-package-sha256 "$INTEGRATION_SHA" \
+        --expected-workflow-run-id "$EXPECTED_WORKFLOW_RUN_ID" \
+        --expected-workflow-run-attempt "$EXPECTED_WORKFLOW_RUN_ATTEMPT" \
+        --expected-workflow-path "$EXPECTED_WORKFLOW_PATH" \
+        --expected-workflow-ref "$EXPECTED_EVIDENCE_REF" \
+        --expected-workflow-commit "$EXPECTED_EVIDENCE_COMMIT" \
+        --expected-harness-commit "$EXPECTED_HARNESS_COMMIT" \
+        --require-workflow-binding \
+        --require-package-execution \
+        --allow-skip host-global-ipv6-escape-unavailable \
+        --allow-skip iproute2-json-normalization \
+        --allow-workaround iproute2-json-normalization
+
+    EVIDENCE_DIR=$OUTPUT_DIR/qualification/ipv6-only
+    [ ! -e "$EVIDENCE_DIR" ] ||
+        fail "qualification evidence directory already exists: $EVIDENCE_DIR"
+    mkdir -p "$EVIDENCE_DIR"
+    cp -a "$IPV6_EVIDENCE_DIR/." "$EVIDENCE_DIR/"
+    require_file "$EVIDENCE_DIR/summary.json"
+    SUMMARY_SHA=$(sha256_file "$EVIDENCE_DIR/summary.json")
+
+    # Each retained evidence file must hash to the summary's recorded value.
+    while IFS=$'\t' read -r check_id file sha; do
+        [ -n "$file" ] || fail "check $check_id has no evidence file"
+        require_file "$EVIDENCE_DIR/$file"
+        [ "$(sha256_file "$EVIDENCE_DIR/$file")" = "$sha" ] ||
+            fail "retained evidence for $check_id does not match the summary"
+    done < <(jq -r '.checks[] | [.id, .evidenceFile, .evidenceSha256] | @tsv' \
+        "$EVIDENCE_DIR/summary.json")
+
+    ipv6_checks=$(jq -c '[.checks[] |
+        {id, status, evidenceFile, evidenceSha256}]' "$EVIDENCE_DIR/summary.json")
+    ipv6_block=$(jq -c \
+        --arg buildIdentity "$BUILD_IDENTITY" \
+        --arg summarySha "$SUMMARY_SHA" \
+        --arg workflowPath "$TRUSTED_WORKFLOW_PATH" \
+        '{
+          status: .result,
+          level: .level,
+          buildIdentity: $buildIdentity,
+          sourceCommit: .candidate.sourceCommit,
+          package: .candidate.package,
+          packageSha256: .candidate.packageSha256,
+          reconcilerSha256: .candidate.reconcilerSha256,
+          addrHelperSha256: .candidate.addrHelperSha256,
+          workflow: {
+            runId: .workflow.runId,
+            runAttempt: .workflow.runAttempt,
+            repository: .workflow.repository,
+            path: $workflowPath,
+            ref: .workflow.ref,
+            commit: .workflow.commit
+          },
+          harness: {
+            path: .harness.path,
+            commit: .harness.commit,
+            version: .harness.version
+          },
+          evidence: {dir: "qualification/ipv6-only", summarySha256: $summarySha},
+          capture: {
+            status: .capture.status,
+            underlaySha256: .capture.underlaySha256,
+            overlaySha256: .capture.overlaySha256,
+            analysisSha256: .capture.analysisSha256
+          },
+          reconciler: {
+            status: .reconciler.status,
+            evidenceSha256: .reconciler.evidenceSha256
+          },
+          skips: [.skips[] | split(":")[0] | gsub("\\s+$"; "")],
+          workarounds: [.workarounds[] | {id, applied}]
+        }' "$EVIDENCE_DIR/summary.json") ||
+        fail "cannot build the IPv6 qualification manifest block"
+
+    jq --argjson ipv6checks "$ipv6_checks" --argjson ipv6 "$ipv6_block" \
+        '.candidate.status = "qualified"
+         | .qualification.status = "passed"
+         | .qualification.checks += $ipv6checks
+         | .qualification.ipv6 = $ipv6' \
+        "$BUILD_RECORD" > "$OUTPUT_DIR/release-candidate.json" ||
+        fail "cannot assemble the candidate manifest"
+
+    ID=$(candidate_id_from_manifest "$OUTPUT_DIR/release-candidate.json")
+    jq --arg id "$ID" '.candidate.id = $id' "$OUTPUT_DIR/release-candidate.json" \
+        > "$OUTPUT_DIR/release-candidate.json.new"
+    mv "$OUTPUT_DIR/release-candidate.json.new" "$OUTPUT_DIR/release-candidate.json"
+
+    if [ "$(manifest_get "$OUTPUT_DIR/release-candidate.json" '.candidate.nonRelease')" = "false" ]; then
+        "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$OUTPUT_DIR" \
+            --source-root "$REPO" --rev "$SOURCE_COMMIT" --production
+    else
+        "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$OUTPUT_DIR" \
+            --source-root "$REPO" --rev "$SOURCE_COMMIT"
+    fi
+
+    echo
+    echo "Release candidate: PASS"
+    echo "Candidate ID:      $ID"
+    echo "Build identity:    $BUILD_IDENTITY"
+    echo "Manifest SHA-256:  $(sha256_file "$OUTPUT_DIR/release-candidate.json")"
+    echo "Package version:   $PKG_VERSION"
+    echo "Source commit:     $SOURCE_COMMIT"
+    echo "Output:            $OUTPUT_DIR"
+}
+
+if [ "$STAGE" = "finalize" ]; then
+    [ -n "$OUTPUT_DIR" ] || { usage >&2; exit 2; }
+    [ -n "$IPV6_EVIDENCE_DIR" ] || { usage >&2; exit 2; }
+    finalize_candidate
+    exit 0
+fi
+
+case "$STAGE" in
+    build) ;;
+    '') usage >&2; exit 2 ;;
+    *) fail "invalid stage: $STAGE (expected build or finalize)" ;;
+esac
 
 if [ -z "$OUTPUT_DIR" ] || [ -z "$IMAGE_DIR" ]; then
     usage >&2
@@ -447,7 +701,7 @@ checks=$(jq -n \
 jq -n \
     --arg schemaVersion "https://edgeos-vxlan.dev/release-candidate/v1" \
     --arg createdAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --arg status qualified \
+    --arg status built \
     --argjson nonRelease "$([ "$NON_RELEASE" = true ] && echo true || echo false)" \
     --arg projectName "edgeos-vxlan" \
     --arg repository "$REPOSITORY" \
@@ -500,7 +754,7 @@ jq -n \
              reproducibility:{status:"passed",
                 comparedArtifacts:($artifacts[0] | map(select(.role=="package") | .name))}},
       artifacts:$artifacts[0],
-      qualification:{status:"passed", checks:$checks,
+      qualification:{status:"pending", checks:$checks,
              hardware:{status:"not-required", required:false, evidence:[]}},
       limitations:[
         "Kernel module binaries are prebuilt repository inputs; source-to-binary reproducibility is not established.",
@@ -508,27 +762,26 @@ jq -n \
         "Attestations establish build provenance, not software correctness or hardware compatibility.",
         "Hardware qualification is a separate workstream and is not claimed by this candidate."
       ]}
-    ' > "$OUTPUT_DIR/release-candidate.json"
+    ' > "$OUTPUT_DIR/qualification/build-record.json"
 
-ID=$(candidate_id_from_manifest "$OUTPUT_DIR/release-candidate.json")
-jq --arg id "$ID" '.candidate.id = $id' "$OUTPUT_DIR/release-candidate.json" \
-    > "$OUTPUT_DIR/release-candidate.json.new"
-mv "$OUTPUT_DIR/release-candidate.json.new" "$OUTPUT_DIR/release-candidate.json"
-
-if [ "$PRODUCTION" = "yes" ]; then
-    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$OUTPUT_DIR" \
-        --source-root "$REPO" --rev "$COMMIT" --production
-else
-    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$OUTPUT_DIR" \
-        --source-root "$REPO" --rev "$COMMIT"
+BUILD_RECORD=$OUTPUT_DIR/qualification/build-record.json
+BUILD_IDENTITY=$(build_identity_from_manifest "$BUILD_RECORD")
+is_sha256 "$BUILD_IDENTITY" || fail "computed build identity is not a SHA-256"
+jq --arg identity "$BUILD_IDENTITY" '.build.identity = $identity' "$BUILD_RECORD" \
+    > "$BUILD_RECORD.new"
+mv "$BUILD_RECORD.new" "$BUILD_RECORD"
+check_build_identity "$BUILD_RECORD"
+if [ -n "$EXPECTED_BUILD_IDENTITY" ]; then
+    [ "$BUILD_IDENTITY" = "$EXPECTED_BUILD_IDENTITY" ] ||
+        fail "build identity $BUILD_IDENTITY != expected $EXPECTED_BUILD_IDENTITY"
 fi
 
 echo
-echo "Release candidate: PASS"
-echo "Candidate ID:      $ID"
-echo "Manifest SHA-256:  $(sha256_file "$OUTPUT_DIR/release-candidate.json")"
-echo "Tag:               $TAG"
-echo "Package version:   $PKG_VERSION"
-echo "Source commit:     $COMMIT"
-echo "Non-release:       $NON_RELEASE"
-echo "Output:            $OUTPUT_DIR"
+echo "Build stage: PASS"
+echo "Build identity:  $BUILD_IDENTITY"
+echo "Tag:             $TAG"
+echo "Package version: $PKG_VERSION"
+echo "Source commit:   $COMMIT"
+echo "Non-release:     $NON_RELEASE"
+echo "Build record:    $BUILD_RECORD"
+echo "Output:          $OUTPUT_DIR"

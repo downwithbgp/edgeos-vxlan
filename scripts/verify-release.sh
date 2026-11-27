@@ -173,11 +173,14 @@ B_PACKAGING=$("$ROOT/scripts/packaging-inputs.sh" --repo "$SOURCE_DIR" --rev "$T
 # The distributed installer must differ from the built source only in its pins.
 check_installer_pins_only "$SOURCE_DIR" "$SOURCE_COMMIT" "$TAG_COMMIT" "$MANIFEST"
 
+# The published asset set carries the attested candidate manifest but not the
+# raw evidence directory; the manifest's evidence hashes remain bound by the
+# candidate ID and the provenance attestation.
 "$ROOT/scripts/validate-candidate.sh" \
     --candidate-dir "$ASSET_DIR" \
     --source-root "$SOURCE_DIR" \
     --rev "$SOURCE_COMMIT" \
-    --release
+    --release --published-assets
 
 # Package-only view for the historical artifact validator.
 PKG_VIEW=$(mktemp -d "${TMPDIR:-/tmp}/edgeos-vxlan-release-view.XXXXXX")

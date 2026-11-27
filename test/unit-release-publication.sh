@@ -15,6 +15,8 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 # shellcheck source=../scripts/release-common.sh
 . "$ROOT/scripts/release-common.sh"
+# shellcheck source=lib/ipv6-qualification-fixture.sh
+. "$ROOT/test/lib/ipv6-qualification-fixture.sh"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/edgeos-vxlan-publication.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 PASS=0
@@ -174,6 +176,18 @@ jq --arg q "$qsha" --arg i "$isha" \
     '.buildEnvironment.qualificationSha256=$q | .buildEnvironment.imageSbomSha256=$i' \
     "$CAND/release-candidate.json" > "$TMP/m2"
 mv "$TMP/m2" "$CAND/release-candidate.json"
+
+# Immutable build identity and synthetic IPv6-only qualification evidence.
+IDENTITY=$(build_identity_from_manifest "$CAND/release-candidate.json")
+jq --arg identity "$IDENTITY" '.build.identity=$identity' \
+    "$CAND/release-candidate.json" > "$TMP/m2b"
+mv "$TMP/m2b" "$CAND/release-candidate.json"
+ipv6_fixture_write "$CAND" "$IDENTITY" "$A" "$INTEGRATION" "$INT_SHA"
+jq --slurpfile fragment "$CAND/qualification/ipv6-fragment.json" \
+    '.qualification.checks += $fragment[0].checks
+     | .qualification.ipv6 = $fragment[0].ipv6' \
+    "$CAND/release-candidate.json" > "$TMP/m2c"
+mv "$TMP/m2c" "$CAND/release-candidate.json"
 
 ID=$(candidate_id_from_manifest "$CAND/release-candidate.json")
 jq --arg id "$ID" '.candidate.id=$id' "$CAND/release-candidate.json" > "$TMP/m3"

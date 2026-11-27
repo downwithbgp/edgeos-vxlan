@@ -7,6 +7,8 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 # shellcheck source=../scripts/release-common.sh
 . "$ROOT/scripts/release-common.sh"
+# shellcheck source=lib/ipv6-qualification-fixture.sh
+. "$ROOT/test/lib/ipv6-qualification-fixture.sh"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/edgeos-vxlan-contracts.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 PASS=0
@@ -41,6 +43,21 @@ expect_fail_with()
         bad "failed for the wrong reason; wanted '$pattern': $*"
         sed 's/^/    /' "$TMP/err" | tail -8 >&2
     fi
+}
+
+# Recompute the immutable build identity and candidate ID after an adversarial
+# mutation that changes a build-identity input (artifacts, source, environment).
+reseal()
+{
+    local manifest=$1 identity id
+    identity=$(build_identity_from_manifest "$manifest")
+    jq --arg identity "$identity" \
+        '.build.identity=$identity | .qualification.ipv6.buildIdentity=$identity' \
+        "$manifest" > "$TMP/reseal.json"
+    mv "$TMP/reseal.json" "$manifest"
+    id=$(candidate_id_from_manifest "$manifest")
+    jq --arg id "$id" '.candidate.id=$id' "$manifest" > "$TMP/reseal.json"
+    mv "$TMP/reseal.json" "$manifest"
 }
 
 add_file()
@@ -129,6 +146,21 @@ make_candidate()
         "$(sha256_file "$dir/edgeos-vxlan-kmod_${version}_mipsel.deb")" "edgeos-vxlan-kmod_${version}_mipsel.deb" \
         > "$dir/SHA256SUMS"
 
+    # Immutable build identity and synthetic IPv6-only qualification evidence.
+    local identity
+    identity=$(build_identity_from_manifest "$dir/release-candidate.json")
+    jq --arg identity "$identity" '.build.identity=$identity' \
+        "$dir/release-candidate.json" > "$TMP/candidate.json"
+    mv "$TMP/candidate.json" "$dir/release-candidate.json"
+    ipv6_fixture_write "$dir" "$identity" "$SHA" \
+        "edgeos-vxlan_${version}_all.deb" \
+        "$(sha256_file "$dir/edgeos-vxlan_${version}_all.deb")"
+    jq --slurpfile fragment "$dir/qualification/ipv6-fragment.json" \
+        '.qualification.checks += $fragment[0].checks
+         | .qualification.ipv6 = $fragment[0].ipv6' \
+        "$dir/release-candidate.json" > "$TMP/candidate.json"
+    mv "$TMP/candidate.json" "$dir/release-candidate.json"
+
     local id
     id=$(candidate_id_from_manifest "$dir/release-candidate.json")
     jq --arg id "$id" '.candidate.id=$id' "$dir/release-candidate.json" > "$TMP/candidate.json"
@@ -165,10 +197,7 @@ cp -a "$CAND" "$TMP/missing-sbom"
 rm "$TMP/missing-sbom/sbom-edgeos-vxlan-kmod.spdx.json"
 jq '.artifacts |= map(select(.name != "sbom-edgeos-vxlan-kmod.spdx.json"))' \
     "$CAND/release-candidate.json" > "$TMP/missing-sbom/release-candidate.json"
-missing_id=$(candidate_id_from_manifest "$TMP/missing-sbom/release-candidate.json")
-jq --arg id "$missing_id" '.candidate.id=$id' \
-    "$TMP/missing-sbom/release-candidate.json" > "$TMP/missing-sbom/id.json"
-mv "$TMP/missing-sbom/id.json" "$TMP/missing-sbom/release-candidate.json"
+reseal "$TMP/missing-sbom/release-candidate.json"
 expect_fail_with "missing required artifact" \
     "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$TMP/missing-sbom" --release
 
@@ -261,9 +290,7 @@ WRONGREF=$TMP/wrong-ref
 cp -a "$CAND" "$WRONGREF"
 jq '.source.trustedWorkflow.ref="refs/heads/feature"' \
     "$CAND/release-candidate.json" > "$WRONGREF/release-candidate.json"
-id=$(candidate_id_from_manifest "$WRONGREF/release-candidate.json")
-jq --arg id "$id" '.candidate.id=$id' "$WRONGREF/release-candidate.json" > "$TMP/x"
-mv "$TMP/x" "$WRONGREF/release-candidate.json"
+reseal "$WRONGREF/release-candidate.json"
 expect_fail_with "workflow ref is not refs/heads/main" \
     "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$WRONGREF" --release
 
@@ -333,9 +360,7 @@ DUP=$TMP/duplicate
 cp -a "$CAND" "$DUP"
 jq '.artifacts += [.artifacts[0]]' "$CAND/release-candidate.json" \
     > "$DUP/release-candidate.json"
-dupid=$(candidate_id_from_manifest "$DUP/release-candidate.json")
-jq --arg id "$dupid" '.candidate.id=$id' "$DUP/release-candidate.json" > "$TMP/du1"
-mv "$TMP/du1" "$DUP/release-candidate.json"
+reseal "$DUP/release-candidate.json"
 expect_fail_with "duplicate artifact names" \
     "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$DUP" --release
 
@@ -479,9 +504,8 @@ b_entries=$(jq -r '.artifacts[] | [.name, .role] | @tsv' "$CONC_A/release-candid
 jq --argjson a "$b_entries" '.artifacts=$a' "$CONC_B/release-candidate.json" \
     > "$TMP/cb.json"
 mv "$TMP/cb.json" "$CONC_B/release-candidate.json"
-b_id=$(candidate_id_from_manifest "$CONC_B/release-candidate.json")
-jq --arg id "$b_id" '.candidate.id=$id' "$CONC_B/release-candidate.json" > "$TMP/cb2.json"
-mv "$TMP/cb2.json" "$CONC_B/release-candidate.json"
+reseal "$CONC_B/release-candidate.json"
+b_id=$(jq -r '.candidate.id' "$CONC_B/release-candidate.json")
 a_id=$(jq -r '.candidate.id' "$CONC_A/release-candidate.json")
 [ "$a_id" != "$b_id" ] && ok || bad "concurrent candidates shared an identity"
 # A stale ID from the other concurrent candidate cannot pass validation.

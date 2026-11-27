@@ -89,15 +89,59 @@ jq -n \
       build: {
         buildType: "type",
         command: "command",
-        reproducibility: {status: "passed", comparedArtifacts: ["a"]}
+        reproducibility: {status: "passed", comparedArtifacts: ["a"]},
+        identity: $hex
       },
       artifacts: [
         {name: "a", size: 1, sha256: $hex, role: "package"}
       ],
       qualification: {
         status: "passed",
-        checks: [{id: "check", status: "passed", evidenceSha256: $hex}],
-        hardware: {status: "not-required", required: false, evidence: []}
+        checks: [
+          {id: "check", status: "passed", evidenceSha256: $hex},
+          {id: "ipv6-only-isolation", status: "passed", evidenceSha256: $hex,
+           evidenceFile: "summary.txt"},
+          {id: "ipv6-only-dataplane", status: "passed", evidenceSha256: $hex,
+           evidenceFile: "topology-after.txt"},
+          {id: "ipv6-only-capture", status: "passed", evidenceSha256: $hex,
+           evidenceFile: "captures/analysis.txt"},
+          {id: "ipv6-only-reconciler", status: "passed", evidenceSha256: $hex,
+           evidenceFile: "reconciler-evidence.txt"}
+        ],
+        hardware: {status: "not-required", required: false, evidence: []},
+        ipv6: {
+          status: "passed",
+          level: "B",
+          buildIdentity: $hex,
+          sourceCommit: $sha1,
+          package: "edgeos-vxlan_0.3.1+edgeos3.0.1.e50_all.deb",
+          packageSha256: $hex,
+          reconcilerSha256: $hex,
+          addrHelperSha256: $hex,
+          workflow: {
+            runId: "123456789",
+            runAttempt: "1",
+            repository: "downwithbgp/edgeos-vxlan",
+            path: ".github/workflows/release.yml",
+            ref: "refs/heads/main",
+            commit: $sha2
+          },
+          harness: {
+            path: "test/ipv6-only-netns.sh",
+            commit: $sha2,
+            version: "1"
+          },
+          evidence: {dir: "qualification/ipv6-only", summarySha256: $hex},
+          capture: {
+            status: "executed",
+            underlaySha256: $hex,
+            overlaySha256: $hex,
+            analysisSha256: $hex
+          },
+          reconciler: {status: "executed", evidenceSha256: $hex},
+          skips: [],
+          workarounds: []
+        }
       },
       limitations: ["limited"]
     }' > "$VALID"

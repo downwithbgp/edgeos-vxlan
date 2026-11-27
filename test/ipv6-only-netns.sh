@@ -1893,6 +1893,7 @@ payload = {
     },
     "candidate": {
         "id": os.environ.get("IPV6_ONLY_CANDIDATE_ID", ""),
+        "buildIdentity": os.environ.get("IPV6_ONLY_BUILD_IDENTITY", ""),
         "sourceCommit": source_commit,
         "package": os.environ.get("CANDIDATE_PACKAGE_NAME", ""),
         "packageSha256": os.environ.get("CANDIDATE_PACKAGE_ACTUAL_SHA", ""),

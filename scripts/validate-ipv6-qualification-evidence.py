@@ -74,6 +74,7 @@ def main():
     parser.add_argument("--evidence-dir")
     parser.add_argument("--expected-source-commit")
     parser.add_argument("--expected-candidate-id")
+    parser.add_argument("--expected-build-identity")
     parser.add_argument("--expected-package-sha256")
     parser.add_argument("--expected-workflow-run-id")
     parser.add_argument("--expected-workflow-run-attempt")
@@ -195,6 +196,12 @@ def main():
         if not isinstance(candidate, dict):
             raise EvidenceError("candidate object is missing")
         require_commit(candidate.get("sourceCommit"), "candidate.sourceCommit")
+        if args.expected_build_identity:
+            require_sha(candidate.get("buildIdentity"), "candidate.buildIdentity")
+            if candidate["buildIdentity"] != args.expected_build_identity:
+                raise EvidenceError(
+                    "candidate build identity does not match the expected identity"
+                )
         if args.expected_source_commit and candidate["sourceCommit"] != args.expected_source_commit:
             raise EvidenceError(
                 f"candidate source commit {candidate['sourceCommit']} != {args.expected_source_commit}"
