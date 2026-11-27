@@ -23,6 +23,7 @@ EXPECTED_HEAD_SHA=
 EXPECTED_WORKFLOW_PATH=
 EXPECTED_NAME=
 MAX_BYTES=2147483648
+ALLOW_RUN_IN_PROGRESS=no
 GH_BIN=${GH_BIN:-gh}
 
 usage()
@@ -41,6 +42,7 @@ Options:
   --expected-workflow-path P    Expected workflow path (e.g. .github/workflows/release.yml)
   --expected-name NAME          Expected artifact name
   --max-uncompressed-bytes N    Extract size limit (default 2 GiB)
+  --allow-run-in-progress       Allow same-run artifact before the run completes
   --gh PATH                     GitHub CLI binary
   -h, --help                    Show this help
 EOF
@@ -57,6 +59,7 @@ while [ $# -gt 0 ]; do
         --expected-workflow-path) [ $# -ge 2 ] || { usage >&2; exit 2; }; EXPECTED_WORKFLOW_PATH=$2; shift 2 ;;
         --expected-name) [ $# -ge 2 ] || { usage >&2; exit 2; }; EXPECTED_NAME=$2; shift 2 ;;
         --max-uncompressed-bytes) [ $# -ge 2 ] || { usage >&2; exit 2; }; MAX_BYTES=$2; shift 2 ;;
+        --allow-run-in-progress) ALLOW_RUN_IN_PROGRESS=yes; shift ;;
         --gh) [ $# -ge 2 ] || { usage >&2; exit 2; }; GH_BIN=$2; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
@@ -122,10 +125,26 @@ fi
 
 RUN=$("$GH_BIN" api "repos/$REPO/actions/runs/$RUN_ID") ||
     fail "cannot read artifact workflow run $RUN_ID"
-[ "$(jq -r '.status' <<<"$RUN")" = "completed" ] ||
-    fail "artifact workflow run is not completed"
-[ "$(jq -r '.conclusion' <<<"$RUN")" = "success" ] ||
-    fail "artifact workflow run did not succeed"
+RUN_STATUS=$(jq -r '.status // empty' <<<"$RUN")
+RUN_CONCLUSION=$(jq -r '.conclusion // empty' <<<"$RUN")
+if [ "$ALLOW_RUN_IN_PROGRESS" = "yes" ]; then
+    case "$RUN_STATUS" in
+        in_progress)
+            ;;
+        completed)
+            [ "$RUN_CONCLUSION" = "success" ] ||
+                fail "artifact workflow run did not succeed"
+            ;;
+        *)
+            fail "artifact workflow run has an unexpected status: $RUN_STATUS"
+            ;;
+    esac
+else
+    [ "$RUN_STATUS" = "completed" ] ||
+        fail "artifact workflow run is not completed"
+    [ "$RUN_CONCLUSION" = "success" ] ||
+        fail "artifact workflow run did not succeed"
+fi
 [ "$(jq -r '.head_repository.full_name // empty' <<<"$RUN")" = "$REPO" ] ||
     fail "artifact workflow run repository mismatch"
 [ "$(jq -r '.head_sha' <<<"$RUN")" = "$HEAD_SHA" ] ||

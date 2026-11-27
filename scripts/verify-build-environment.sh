@@ -14,6 +14,9 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 ARCHIVE_DIR=
 SOURCE_ROOT=$ROOT
 TEST_BUILD=yes
+EXPECTED_MANIFEST_DIGEST=
+EXPECTED_CONFIG_DIGEST=
+EXPECTED_QUALIFICATION_SHA256=
 
 usage()
 {
@@ -24,6 +27,9 @@ Options:
   --archive-dir DIR   Directory containing image.oci.tar, image.docker.tar and evidence files
   --source-root DIR   Source tree for Dockerfile/CA/snapshot checks
   --skip-test-build   Do not run the image smoke test
+  --expected-manifest-digest DIGEST Require this OCI image manifest digest
+  --expected-config-digest DIGEST   Require this image config digest
+  --expected-qualification-sha256 SHA Require this qualification file hash
   -h, --help          Show this help
 EOF
 }
@@ -43,6 +49,21 @@ while [ $# -gt 0 ]; do
         --skip-test-build)
             TEST_BUILD=no
             shift
+            ;;
+        --expected-manifest-digest)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            EXPECTED_MANIFEST_DIGEST=$2
+            shift 2
+            ;;
+        --expected-config-digest)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            EXPECTED_CONFIG_DIGEST=$2
+            shift 2
+            ;;
+        --expected-qualification-sha256)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            EXPECTED_QUALIFICATION_SHA256=$2
+            shift 2
             ;;
         -h|--help)
             usage
@@ -100,6 +121,19 @@ require_sha256_field "inventory checksum" "$INVENTORY_SHA256"
 require_sha256_field "image SBOM checksum" "$IMAGE_SBOM_SHA256"
 require_sha256_field "vulnerability report checksum" "$VULN_SHA256"
 require_sha256_field "image config JSON checksum" "$IMAGE_CONFIG_JSON_SHA256"
+if [ -n "$EXPECTED_MANIFEST_DIGEST" ]; then
+    [ "$MANIFEST_DIGEST" = "$EXPECTED_MANIFEST_DIGEST" ] ||
+        fail "manifest digest does not match the expected digest"
+fi
+if [ -n "$EXPECTED_CONFIG_DIGEST" ]; then
+    [ "$CONFIG_DIGEST" = "$EXPECTED_CONFIG_DIGEST" ] ||
+        fail "config digest does not match the expected digest"
+fi
+if [ -n "$EXPECTED_QUALIFICATION_SHA256" ]; then
+    ACTUAL_QUALIFICATION_SHA256=$(sha256_file "$QUAL")
+    [ "$ACTUAL_QUALIFICATION_SHA256" = "$EXPECTED_QUALIFICATION_SHA256" ] ||
+        fail "qualification hash does not match the expected hash"
+fi
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/edgeos-vxlan-verify-image.XXXXXX") ||
     fail "cannot create temporary directory"

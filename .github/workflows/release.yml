@@ -9,13 +9,43 @@ on:
         default: candidate
         type: choice
         options: [candidate, promote]
-      source_ref:
-        description: Source commit/ref for a candidate (main for production)
+      source_commit:
+        description: Exact source commit for a production candidate
         required: false
-        default: main
+        default: ''
         type: string
       release_tag:
         description: Release tag (vMAJOR.MINOR.PATCH)
+        required: false
+        default: ''
+        type: string
+      image_artifact_id:
+        description: Qualified image artifact ID (production candidate)
+        required: false
+        default: ''
+        type: string
+      image_artifact_digest:
+        description: Qualified image ZIP digest (sha256:...)
+        required: false
+        default: ''
+        type: string
+      image_run_id:
+        description: Qualified image workflow run ID
+        required: false
+        default: ''
+        type: string
+      image_manifest_digest:
+        description: Expected OCI image manifest digest
+        required: false
+        default: ''
+        type: string
+      image_config_digest:
+        description: Expected image config digest
+        required: false
+        default: ''
+        type: string
+      image_qualification_sha256:
+        description: Expected image qualification file SHA-256
         required: false
         default: ''
         type: string
@@ -26,6 +56,16 @@ on:
         type: string
       artifact_digest:
         description: Candidate artifact ZIP digest (sha256:...)
+        required: false
+        default: ''
+        type: string
+      candidate_run_id:
+        description: Candidate workflow run ID
+        required: false
+        default: ''
+        type: string
+      candidate_head_sha:
+        description: Candidate workflow/source head SHA
         required: false
         default: ''
         type: string
@@ -61,15 +101,68 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  environment:
-    name: Qualify build image
-    if: github.event_name == 'push' || inputs.mode == 'candidate'
+  resolve:
+    name: Resolve immutable identities
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 10
+    outputs:
+      trusted_sha: ${{ steps.resolve.outputs.trusted_sha }}
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
+      non_release: ${{ steps.resolve.outputs.non_release }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Resolve trusted and source identities once
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
+          GIT_SHA: ${{ github.sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          MODE: ${{ inputs.mode }}
+          SOURCE_COMMIT_INPUT: ${{ inputs.source_commit }}
+        run: |
+          set -eu
+          trusted=$(git rev-parse HEAD)
+          [ "$trusted" = "$WORKFLOW_SHA" ] ||
+            { echo "ERROR: trusted checkout $trusted != workflow SHA $WORKFLOW_SHA" >&2; exit 1; }
+          if [ "$EVENT_NAME" = "push" ]; then
+            source=$GIT_SHA
+            non_release=true
+          elif [ "$MODE" = "promote" ]; then
+            [ "$GIT_REF" = "refs/heads/main" ] ||
+              { echo "ERROR: dispatch must run from refs/heads/main" >&2; exit 1; }
+            source=""
+            non_release=false
+          else
+            [ "$GIT_REF" = "refs/heads/main" ] ||
+              { echo "ERROR: dispatch must run from refs/heads/main" >&2; exit 1; }
+            [ -n "$SOURCE_COMMIT_INPUT" ] ||
+              { echo "ERROR: source_commit is required" >&2; exit 1; }
+            [ "$SOURCE_COMMIT_INPUT" = "$GIT_SHA" ] ||
+              { echo "ERROR: source_commit must equal the exact main run commit" >&2; exit 1; }
+            source=$SOURCE_COMMIT_INPUT
+            non_release=false
+          fi
+          printf 'trusted_sha=%s\nsource_sha=%s\nnon_release=%s\n' \
+            "$trusted" "$source" "$non_release" >> "$GITHUB_OUTPUT"
+
+  environment:
+    name: Qualify build image
+    needs: resolve
+    if: github.event_name == 'push' || inputs.mode == 'candidate'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.trusted_sha }}
           persist-credentials: false
           fetch-depth: 1
       - name: Install pinned release tools
@@ -77,14 +170,46 @@ jobs:
       - name: Add release tools to PATH
         run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
       - name: Set up Buildx OCI builder
+        if: github.event_name == 'push'
         run: |
           docker buildx create --name edgeos-oci --driver docker-container --use 2>/dev/null ||
             docker buildx use edgeos-oci
           docker buildx inspect --bootstrap
-
       - name: Build and qualify image
+        if: github.event_name == 'push'
         run: ./scripts/build-environment.sh --output-dir environment
-      - name: Verify image qualification
+      - name: Fetch explicitly selected image artifact
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          IMAGE_ARTIFACT_ID: ${{ inputs.image_artifact_id }}
+          IMAGE_ARTIFACT_DIGEST: ${{ inputs.image_artifact_digest }}
+          IMAGE_RUN_ID: ${{ inputs.image_run_id }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          MANIFEST_DIGEST: ${{ inputs.image_manifest_digest }}
+          CONFIG_DIGEST: ${{ inputs.image_config_digest }}
+          QUALIFICATION_SHA: ${{ inputs.image_qualification_sha256 }}
+        run: |
+          set -eu
+          for value in "$IMAGE_ARTIFACT_ID" "$IMAGE_ARTIFACT_DIGEST" "$IMAGE_RUN_ID" \
+                       "$MANIFEST_DIGEST" "$CONFIG_DIGEST" "$QUALIFICATION_SHA"; do
+            [ -n "$value" ] || { echo "ERROR: missing qualified-image input" >&2; exit 1; }
+          done
+          ./scripts/fetch-github-artifact.sh \
+            --repo "$REPO" --artifact-id "$IMAGE_ARTIFACT_ID" \
+            --expected-digest "$IMAGE_ARTIFACT_DIGEST" \
+            --destination environment \
+            --expected-run-id "$IMAGE_RUN_ID" \
+            --expected-head-sha "$SOURCE_SHA" \
+            --expected-workflow-path .github/workflows/build-environment.yml \
+            --expected-name build-environment-qualification
+          ./scripts/verify-build-environment.sh --archive-dir environment \
+            --expected-manifest-digest "$MANIFEST_DIGEST" \
+            --expected-config-digest "$CONFIG_DIGEST" \
+            --expected-qualification-sha256 "$QUALIFICATION_SHA"
+      - name: Verify built image (qualification path)
+        if: github.event_name == 'push'
         run: ./scripts/verify-build-environment.sh --archive-dir environment
       - name: Upload image qualification
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -97,24 +222,33 @@ jobs:
 
   candidate:
     name: Build candidate
-    needs: environment
+    needs: [resolve, environment]
     if: github.event_name == 'push' || inputs.mode == 'candidate'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
+      actions: read
       id-token: write
       attestations: write
+      artifact-metadata: write
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      candidate_id: ${{ steps.meta.outputs.candidate_id }}
+      manifest_sha256: ${{ steps.meta.outputs.manifest_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
+          ref: ${{ needs.resolve.outputs.trusted_sha }}
           persist-credentials: false
           fetch-depth: 0
       - name: Install pinned release tools
         run: ./scripts/install-supply-chain-tools.sh "$RUNNER_TEMP/release-tools"
       - name: Add release tools to PATH
         run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+      - name: Install pinned schema validator
+        run: ./scripts/install-schema-validator.sh
       - name: Download qualified image
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.0.0
         with:
@@ -122,10 +256,13 @@ jobs:
           path: environment
       - name: Build release candidate
         env:
-          PRODUCTION: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate' && github.ref == 'refs/heads/main' }}
+          PRODUCTION: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate' }}
           RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
-          WORKFLOW_REF_INPUT: ${{ github.ref }}
-          WORKFLOW_COMMIT_INPUT: ${{ github.sha }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          TRUSTED_SHA: ${{ needs.resolve.outputs.trusted_sha }}
+          IMAGE_MANIFEST: ${{ inputs.image_manifest_digest }}
+          IMAGE_CONFIG: ${{ inputs.image_config_digest }}
+          IMAGE_QUALIFICATION: ${{ inputs.image_qualification_sha256 }}
         run: |
           set -eu
           if [ "$PRODUCTION" = "true" ]; then
@@ -134,13 +271,25 @@ jobs:
               --image-archive-dir environment \
               --production \
               --release-tag "$RELEASE_TAG_INPUT" \
-              --workflow-ref "$WORKFLOW_REF_INPUT" \
-              --workflow-commit "$WORKFLOW_COMMIT_INPUT"
+              --workflow-ref refs/heads/main \
+              --workflow-commit "$TRUSTED_SHA" \
+              --expected-source-commit "$SOURCE_SHA" \
+              --expected-workflow-commit "$TRUSTED_SHA" \
+              --expected-image-manifest-digest "$IMAGE_MANIFEST" \
+              --expected-image-config-digest "$IMAGE_CONFIG" \
+              --expected-image-qualification-sha256 "$IMAGE_QUALIFICATION"
           else
             ./scripts/build-release-candidate.sh \
               --output-dir candidate \
-              --image-archive-dir environment
+              --image-archive-dir environment \
+              --expected-source-commit "$SOURCE_SHA" \
+              --expected-workflow-commit "$TRUSTED_SHA"
           fi
+          echo "candidate_id=$(jq -r .candidate.id candidate/release-candidate.json)" \
+            >> "$GITHUB_OUTPUT"
+          echo "manifest_sha256=$(sha256sum candidate/release-candidate.json | awk '{print $1}')" \
+            >> "$GITHUB_OUTPUT"
+        id: meta
       - name: Attest candidate provenance
         id: provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -181,7 +330,27 @@ jobs:
             printf '\n'
           } > candidate/release-attestation.jsonl
           sha256sum candidate/release-attestation.jsonl
+      - name: Verify attestations and reject a wrong source ref
+        env:
+          SOURCE_REF: ${{ needs.resolve.outputs.non_release == 'true' && github.ref || 'refs/heads/main' }}
+        run: |
+          set -eu
+          gh attestation trusted-root > "$RUNNER_TEMP/trusted-root.jsonl"
+          ./scripts/verify-attestations.sh \
+            --candidate-dir candidate \
+            --bundle candidate/release-attestation.jsonl \
+            --trusted-root "$RUNNER_TEMP/trusted-root.jsonl" \
+            --source-ref "$SOURCE_REF"
+          if ./scripts/verify-attestations.sh \
+              --candidate-dir candidate \
+              --bundle candidate/release-attestation.jsonl \
+              --trusted-root "$RUNNER_TEMP/trusted-root.jsonl" \
+              --source-ref refs/heads/definitely-wrong >/dev/null 2>&1; then
+            echo "ERROR: wrong source ref accepted" >&2
+            exit 1
+          fi
       - name: Upload candidate artifact
+        id: upload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-candidate
@@ -190,11 +359,12 @@ jobs:
           compression-level: 0
           retention-days: 90
 
-  promote-dry-run:
-    name: Promotion dry-run
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'promote' && inputs.dry_run
+  qualification-dry-run:
+    name: Qualification dry-run
+    needs: [resolve, candidate]
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     permissions:
       contents: read
       actions: read
@@ -202,44 +372,146 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.release_tag }}
+          ref: ${{ needs.resolve.outputs.trusted_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install pinned release tools
+        run: ./scripts/install-supply-chain-tools.sh "$RUNNER_TEMP/release-tools"
+      - name: Add release tools to PATH
+        run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+      - name: Install pinned schema validator
+        run: ./scripts/install-schema-validator.sh
+      - name: Fetch candidate artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ARTIFACT_ID: ${{ needs.candidate.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.candidate.outputs.artifact_digest }}
+          HEAD_SHA: ${{ needs.resolve.outputs.source_sha }}
+        run: |
+          ./scripts/fetch-github-artifact.sh \
+            --repo "$REPO" --artifact-id "$ARTIFACT_ID" \
+            --expected-digest "$ARTIFACT_DIGEST" \
+            --destination candidate \
+            --expected-run-id "$GITHUB_RUN_ID" \
+            --expected-head-sha "$HEAD_SHA" \
+            --expected-workflow-path .github/workflows/release.yml \
+            --expected-name release-candidate \
+            --allow-run-in-progress
+      - name: Exercise qualification promotion planning
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.candidate.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.candidate.outputs.artifact_digest }}
+          CANDIDATE_ID: ${{ needs.candidate.outputs.candidate_id }}
+          MANIFEST_SHA: ${{ needs.candidate.outputs.manifest_sha256 }}
+        run: |
+          ./scripts/promote-release.sh \
+            --candidate-dir candidate \
+            --qualification --dry-run \
+            --artifact-id "$ARTIFACT_ID" \
+            --artifact-digest "$ARTIFACT_DIGEST" \
+            --candidate-id "$CANDIDATE_ID" \
+            --manifest-sha256 "$MANIFEST_SHA"
+
+  preflight:
+    name: Promotion preflight
+    needs: resolve
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'promote'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      tag_commit: ${{ steps.meta.outputs.tag_commit }}
+      source_commit: ${{ steps.meta.outputs.source_commit }}
+      workflow_commit: ${{ steps.meta.outputs.workflow_commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.trusted_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Check out tagged source as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.release_tag }}
+          path: tagged-source
           persist-credentials: false
           fetch-depth: 0
       - name: Install pinned release tools
         run: ./scripts/install-supply-chain-tools.sh "$RUNNER_TEMP/release-tools"
       - name: Add release tools to PATH
         run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
-      - name: Download explicit candidate artifact
+      - name: Install pinned schema validator
+        run: ./scripts/install-schema-validator.sh
+      - name: Fetch candidate artifact
         env:
           GH_TOKEN: ${{ github.token }}
-          ARTIFACT_ID_INPUT: ${{ inputs.artifact_id }}
+          REPO: ${{ github.repository }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ inputs.artifact_digest }}
+          RUN_ID: ${{ inputs.candidate_run_id }}
+          HEAD_SHA: ${{ inputs.candidate_head_sha }}
         run: |
           set -eu
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID_INPUT/zip" > candidate.zip
-          mkdir -p candidate
-          unzip -q candidate.zip -d candidate
-
-      - name: Verify candidate and print plan
+          for value in "$ARTIFACT_ID" "$ARTIFACT_DIGEST" "$RUN_ID" "$HEAD_SHA"; do
+            [ -n "$value" ] || { echo "ERROR: missing candidate artifact input" >&2; exit 1; }
+          done
+          ./scripts/fetch-github-artifact.sh \
+            --repo "$REPO" --artifact-id "$ARTIFACT_ID" \
+            --expected-digest "$ARTIFACT_DIGEST" \
+            --destination candidate \
+            --expected-run-id "$RUN_ID" \
+            --expected-head-sha "$HEAD_SHA" \
+            --expected-workflow-path .github/workflows/release.yml \
+            --expected-name release-candidate
+      - name: Verify candidate and write preflight evidence
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_INPUT: ${{ inputs.release_tag }}
-          CANDIDATE_ID_INPUT: ${{ inputs.candidate_id }}
-          MANIFEST_SHA_INPUT: ${{ inputs.manifest_sha256 }}
-          ARTIFACT_ID_INPUT: ${{ inputs.artifact_id }}
-          ARTIFACT_DIGEST_INPUT: ${{ inputs.artifact_digest }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ inputs.artifact_digest }}
+          CANDIDATE_ID: ${{ inputs.candidate_id }}
+          MANIFEST_SHA: ${{ inputs.manifest_sha256 }}
         run: |
           ./scripts/promote-release.sh \
             --candidate-dir candidate \
             --tag "$TAG_INPUT" \
-            --candidate-id "$CANDIDATE_ID_INPUT" \
-            --manifest-sha256 "$MANIFEST_SHA_INPUT" \
-            --artifact-id "$ARTIFACT_ID_INPUT" \
-            --artifact-digest "$ARTIFACT_DIGEST_INPUT" \
-            --source-root . \
-            --dry-run
+            --candidate-id "$CANDIDATE_ID" \
+            --manifest-sha256 "$MANIFEST_SHA" \
+            --artifact-id "$ARTIFACT_ID" \
+            --artifact-digest "$ARTIFACT_DIGEST" \
+            --source-root tagged-source \
+            --dry-run --preflight
+      - name: Record preflight identities
+        id: meta
+        run: |
+          file=candidate/promotion-verification.json
+          {
+            echo "tag_commit=$(jq -r .tagCommit "$file")"
+            echo "source_commit=$(jq -r .sourceCommit "$file")"
+            echo "workflow_commit=$(jq -r .workflowCommit "$file")"
+          } >> "$GITHUB_OUTPUT"
+      - name: Upload preflight evidence
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: promotion-verification
+          path: |
+            candidate/promotion-verification.json
+            candidate/promotion-plan.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
 
   publish:
     name: Authorized publication
+    needs: [resolve, preflight]
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.mode == 'promote' &&
@@ -255,54 +527,99 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.release_tag }}
+          ref: ${{ needs.resolve.outputs.trusted_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Check out tagged source as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.release_tag }}
+          path: tagged-source
           persist-credentials: false
           fetch-depth: 0
       - name: Install pinned release tools
         run: ./scripts/install-supply-chain-tools.sh "$RUNNER_TEMP/release-tools"
       - name: Add release tools to PATH
         run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
-      - name: Download explicit candidate artifact
+      - name: Install pinned schema validator
+        run: ./scripts/install-schema-validator.sh
+      - name: Fetch candidate artifact again
         env:
           GH_TOKEN: ${{ github.token }}
-          ARTIFACT_ID_INPUT: ${{ inputs.artifact_id }}
+          REPO: ${{ github.repository }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ inputs.artifact_digest }}
+          RUN_ID: ${{ inputs.candidate_run_id }}
+          HEAD_SHA: ${{ inputs.candidate_head_sha }}
         run: |
-          set -eu
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID_INPUT/zip" > candidate.zip
-          mkdir -p candidate
-          unzip -q candidate.zip -d candidate
-
+          ./scripts/fetch-github-artifact.sh \
+            --repo "$REPO" --artifact-id "$ARTIFACT_ID" \
+            --expected-digest "$ARTIFACT_DIGEST" \
+            --destination candidate \
+            --expected-run-id "$RUN_ID" \
+            --expected-head-sha "$HEAD_SHA" \
+            --expected-workflow-path .github/workflows/release.yml \
+            --expected-name release-candidate
+      - name: Fetch preflight evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ARTIFACT_ID: ${{ needs.preflight.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.preflight.outputs.artifact_digest }}
+        run: |
+          ./scripts/fetch-github-artifact.sh \
+            --repo "$REPO" --artifact-id "$ARTIFACT_ID" \
+            --expected-digest "$ARTIFACT_DIGEST" \
+            --destination preflight \
+            --expected-run-id "$GITHUB_RUN_ID" \
+            --expected-head-sha "$GITHUB_SHA" \
+            --expected-workflow-path .github/workflows/release.yml \
+            --expected-name promotion-verification
+      - name: Assert tag did not move after preflight
+        env:
+          TAG_INPUT: ${{ inputs.release_tag }}
+          EXPECTED_TAG_COMMIT: ${{ needs.preflight.outputs.tag_commit }}
+        run: |
+          actual=$(git -C tagged-source rev-parse "$TAG_INPUT^{commit}")
+          [ "$actual" = "$EXPECTED_TAG_COMMIT" ] ||
+            { echo "ERROR: tag moved after preflight" >&2; exit 1; }
       - name: Publish exact candidate
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_ENVIRONMENT: release-publication
           RELEASE_PUBLICATION_ENABLED: ${{ vars.RELEASE_PUBLICATION_ENABLED }}
           IMMUTABLE_RELEASES_CONFIRMED: ${{ vars.IMMUTABLE_RELEASES_CONFIRMED }}
-          IMMUTABLE_RELEASES_ADMIN_TOKEN: ${{ secrets.IMMUTABLE_RELEASES_ADMIN_TOKEN }}
           CONFIRM_PUBLISH: ${{ inputs.confirm_publish }}
           TAG_INPUT: ${{ inputs.release_tag }}
-          CANDIDATE_ID_INPUT: ${{ inputs.candidate_id }}
-          MANIFEST_SHA_INPUT: ${{ inputs.manifest_sha256 }}
-          ARTIFACT_ID_INPUT: ${{ inputs.artifact_id }}
-          ARTIFACT_DIGEST_INPUT: ${{ inputs.artifact_digest }}
+          CANDIDATE_ID: ${{ inputs.candidate_id }}
+          MANIFEST_SHA: ${{ inputs.manifest_sha256 }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ inputs.artifact_digest }}
+          TAG_COMMIT: ${{ needs.preflight.outputs.tag_commit }}
+          SOURCE_COMMIT: ${{ needs.preflight.outputs.source_commit }}
+          WORKFLOW_COMMIT: ${{ needs.preflight.outputs.workflow_commit }}
         run: |
           ./scripts/promote-release.sh \
             --candidate-dir candidate \
             --tag "$TAG_INPUT" \
-            --candidate-id "$CANDIDATE_ID_INPUT" \
-            --manifest-sha256 "$MANIFEST_SHA_INPUT" \
-            --artifact-id "$ARTIFACT_ID_INPUT" \
-            --artifact-digest "$ARTIFACT_DIGEST_INPUT" \
-            --source-root .
-
-      - name: Verify published release explicitly
+            --candidate-id "$CANDIDATE_ID" \
+            --manifest-sha256 "$MANIFEST_SHA" \
+            --artifact-id "$ARTIFACT_ID" \
+            --artifact-digest "$ARTIFACT_DIGEST" \
+            --source-root tagged-source \
+            --preflight-file preflight/promotion-verification.json \
+            --expected-tag-commit "$TAG_COMMIT" \
+            --expected-source-commit "$SOURCE_COMMIT" \
+            --expected-workflow-commit "$WORKFLOW_COMMIT"
+      - name: Explicitly verify the published release
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
           TAG_INPUT: ${{ inputs.release_tag }}
         run: |
           mkdir -p published
-          gh release download "$TAG_INPUT" --repo "$GITHUB_REPOSITORY" --dir published
+          gh release download "$TAG_INPUT" --repo "$REPO" --dir published
           ./scripts/verify-release.sh \
             --asset-dir published \
-            --source-dir . \
+            --source-dir tagged-source \
             --tag "$TAG_INPUT"

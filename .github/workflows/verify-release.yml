@@ -61,6 +61,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Install pinned schema validator
+        run: ./scripts/install-schema-validator.sh
+
       - name: Download published release assets
         env:
           GH_TOKEN: ${{ github.token }}
