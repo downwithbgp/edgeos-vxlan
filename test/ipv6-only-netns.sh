@@ -95,9 +95,21 @@ L_V4A="c4a$SUFFIX"
 L_V4B="c4b$SUFFIX"
 ALL_LINKS=("$L_TA" "$L_UA" "$L_TB" "$L_UB" "$L_HA" "$L_HBA" "$L_HB" "$L_HBB" "$L_V4A" "$L_V4B")
 
+CANDIDATE_PACKAGE=${IPV6_ONLY_CANDIDATE_PACKAGE:-}
+CANDIDATE_PACKAGE_SHA256=${IPV6_ONLY_CANDIDATE_PACKAGE_SHA256:-}
+CANDIDATE_ID=${IPV6_ONLY_CANDIDATE_ID:-}
+CANDIDATE_SOURCE_COMMIT=${IPV6_ONLY_SOURCE_COMMIT:-}
+CANDIDATE_PACKAGE_NAME=
+CANDIDATE_PACKAGE_ACTUAL_SHA=
+CANDIDATE_RECONCILER_SHA=
+CANDIDATE_ADDR_SHA=
+CANDIDATE_PACKAGE_EXECUTED=0
+RECONCILER_BIN=
 PASS=0
 FAIL=0
 SKIP=0
+SKIP_REASONS=()
+WORKAROUNDS=()
 PIDS=()
 CAPTURE_PIDS=()
 CREATED_NS=()
@@ -123,6 +135,7 @@ bad()
 skip()
 {
     SKIP=$((SKIP + 1))
+    SKIP_REASONS+=("$*")
     printf 'SKIP: %s\n' "$*"
 }
 
@@ -647,7 +660,7 @@ test_host_escape()
 
     case "$host_v4" in
         192.0.2.* | 198.51.100.* | 203.0.113.*)
-            skip "host IPv4 address is in a documentation range; escape control not applicable"
+            skip "host-ipv4-escape-not-applicable: host IPv4 address is in a documentation range"
             host_v4=
             ;;
     esac
@@ -655,7 +668,7 @@ test_host_escape()
         if ping -4 -c 1 -W 1 -q "$host_v4" >/dev/null 2>&1; then
             ok "host IPv4 destination is reachable from the host"
         else
-            skip "host IPv4 destination is not reachable from the host"
+            skip "host-ipv4-escape-unreachable: host IPv4 destination is not reachable"
         fi
         if nsrun "$NS_A" ping -4 -c 1 -W 1 -q "$host_v4" >/dev/null 2>&1; then
             bad "vtep-a reached the host's IPv4 address"
@@ -663,12 +676,12 @@ test_host_escape()
             ok "vtep-a cannot reach the host's IPv4 address"
         fi
     else
-        skip "host has no global IPv4 address for the escape control"
+        skip "host-ipv4-escape-unavailable: host has no global IPv4 address"
     fi
 
     case "$host_v6" in
         2001:db8:*)
-            skip "host IPv6 address is in a documentation range; escape control not applicable"
+            skip "host-ipv6-escape-not-applicable: host IPv6 address is in a documentation range"
             host_v6=
             ;;
     esac
@@ -679,7 +692,7 @@ test_host_escape()
             ok "vtep-a cannot reach the host's global IPv6 address"
         fi
     else
-        skip "host has no global IPv6 address for the escape control"
+        skip "host-global-ipv6-escape-unavailable: host has no global IPv6 address"
     fi
 }
 
@@ -1249,8 +1262,45 @@ if [ "\$1" = "-j" ] && [ "\$2" = "-d" ]; then
 fi
 exec "$ip_bin" "\$@"
 EOF
-    cp "$ROOT/src/vyatta-vxlan-addr" "$HARNESS/sbin/vyatta-vxlan-addr" || return 1
+    if [ -n "$CANDIDATE_PACKAGE" ]; then
+        command -v dpkg-deb >/dev/null 2>&1 || {
+            echo "ERROR: dpkg-deb is required for candidate-package mode" >&2
+            return 1
+        }
+        [ -f "$CANDIDATE_PACKAGE" ] || {
+            echo "ERROR: candidate package not found: $CANDIDATE_PACKAGE" >&2
+            return 1
+        }
+        CANDIDATE_PACKAGE_ACTUAL_SHA=$(sha256sum "$CANDIDATE_PACKAGE" | awk '{print $1}') ||
+            return 1
+        if [ -n "$CANDIDATE_PACKAGE_SHA256" ] &&
+            [ "$CANDIDATE_PACKAGE_ACTUAL_SHA" != "$CANDIDATE_PACKAGE_SHA256" ]; then
+            echo "ERROR: candidate package hash $CANDIDATE_PACKAGE_ACTUAL_SHA != $CANDIDATE_PACKAGE_SHA256" >&2
+            return 1
+        fi
+        mkdir -p "$HARNESS/package-root" || return 1
+        dpkg-deb -x "$CANDIDATE_PACKAGE" "$HARNESS/package-root" || return 1
+        RECONCILER_BIN="$HARNESS/package-root/opt/vyatta/sbin/vyatta-vxlan"
+        [ -f "$RECONCILER_BIN" ] || {
+            echo "ERROR: candidate package has no vyatta-vxlan reconciler" >&2
+            return 1
+        }
+        cp "$HARNESS/package-root/opt/vyatta/sbin/vyatta-vxlan-addr" \
+            "$HARNESS/sbin/vyatta-vxlan-addr" || return 1
+        CANDIDATE_PACKAGE_NAME=${CANDIDATE_PACKAGE##*/}
+        CANDIDATE_RECONCILER_SHA=$(sha256sum "$RECONCILER_BIN" | awk '{print $1}') ||
+            return 1
+        CANDIDATE_ADDR_SHA=$(sha256sum "$HARNESS/sbin/vyatta-vxlan-addr" | awk '{print $1}') ||
+            return 1
+        CANDIDATE_PACKAGE_EXECUTED=1
+    else
+        RECONCILER_BIN="$ROOT/src/vyatta-vxlan"
+        cp "$ROOT/src/vyatta-vxlan-addr" "$HARNESS/sbin/vyatta-vxlan-addr" || return 1
+    fi
     chmod +x "$HARNESS/bin"/* "$HARNESS/sbin"/* || return 1
+    export CANDIDATE_PACKAGE_NAME CANDIDATE_PACKAGE_ACTUAL_SHA
+    export CANDIDATE_RECONCILER_SHA CANDIDATE_ADDR_SHA RECONCILER_BIN
+    export CANDIDATE_ID CANDIDATE_SOURCE_COMMIT CANDIDATE_PACKAGE_EXECUTED
 }
 
 set_reconciler_config()
@@ -1283,7 +1333,7 @@ run_reconciler()
         CONF_EFFECTIVE="$conf" \
         vyatta_sbindir="$HARNESS/sbin" \
         vxlan_bin_modprobe="$HARNESS/bin/modprobe" \
-        bash "$ROOT/src/vyatta-vxlan" "$action" vxlan900
+        bash "$RECONCILER_BIN" "$action" vxlan900
 }
 
 reconciler_identity_ok()
@@ -1305,7 +1355,7 @@ test_reconciler_integration()
         if [ "$REQUIRE_RECONCILER" = "1" ]; then
             bad "reconciler integration is required but Perl JSON::PP is unavailable"
         else
-            skip "reconciler integration: Perl JSON::PP unavailable"
+            skip "reconciler-json-pp-unavailable: Perl JSON::PP unavailable"
         fi
         RECONCILER_STATUS=skipped
         return
@@ -1486,7 +1536,8 @@ test_reconciler_integration()
     fi
 
     if grep -q 'iproute2-json-normalized' "$HARNESS/log"/*.log 2>/dev/null; then
-        skip "reconciler integration: normalized a modern iproute2 JSON diagnostic"
+        WORKAROUNDS+=("iproute2-json-normalization")
+        skip "iproute2-json-normalization: normalized a modern iproute2 JSON diagnostic"
     fi
     cp "$HARNESS/log"/*.log "$EVIDENCE_DIR/" 2>/dev/null || true
     if [ "$FAIL" -gt "$fail_before" ]; then
@@ -1536,7 +1587,7 @@ test_packet_capture()
     local fail_before
 
     if ! command -v tcpdump >/dev/null 2>&1; then
-        skip "packet capture: tcpdump unavailable"
+        skip "capture-tool-unavailable: tcpdump unavailable"
         CAPTURE_STATUS=skipped
         [ "$REQUIRE_CAPTURE" = "1" ] &&
             bad "packet capture is required but tcpdump is unavailable"
@@ -1701,6 +1752,13 @@ write_summary()
         echo "require_netns_test=$REQUIRE_NETNS_TEST"
         echo "require_capture=$REQUIRE_CAPTURE"
         echo "require_reconciler=$REQUIRE_RECONCILER"
+        echo "candidate_package=$CANDIDATE_PACKAGE_NAME"
+        echo "candidate_package_sha256=$CANDIDATE_PACKAGE_ACTUAL_SHA"
+        echo "candidate_reconciler_sha256=$CANDIDATE_RECONCILER_SHA"
+        echo "candidate_addr_helper_sha256=$CANDIDATE_ADDR_SHA"
+        echo "candidate_package_executed=$CANDIDATE_PACKAGE_EXECUTED"
+        echo "workflow_run_id=${GITHUB_RUN_ID:-}"
+        echo "workflow_run_attempt=${GITHUB_RUN_ATTEMPT:-}"
         echo "evidence_dir=$EVIDENCE_DIR"
     } >"$EVIDENCE_DIR/summary.txt"
 }
@@ -1709,6 +1767,14 @@ write_json_summary()
 {
     local result=passed
     [ "$FAIL" -eq 0 ] || result=failed
+    : >"$EVIDENCE_DIR/skips.txt"
+    if [ "${#SKIP_REASONS[@]}" -gt 0 ]; then
+        printf '%s\n' "${SKIP_REASONS[@]}" >"$EVIDENCE_DIR/skips.txt"
+    fi
+    : >"$EVIDENCE_DIR/workarounds.txt"
+    if [ "${#WORKAROUNDS[@]}" -gt 0 ]; then
+        printf '%s\n' "${WORKAROUNDS[@]}" >"$EVIDENCE_DIR/workarounds.txt"
+    fi
     python3 - "$EVIDENCE_DIR" "$result" "$PASS" "$FAIL" "$SKIP" \
         "$CAPTURE_STATUS" "$RECONCILER_STATUS" "$ROOT" <<'PY'
 import hashlib
@@ -1754,16 +1820,34 @@ reconciler_logs = b"".join(
     for path in sorted(evidence.glob("reconciler-*.log"))
     if path.is_file()
 )
+reconciler_evidence = evidence / "reconciler-evidence.txt"
+reconciler_evidence.write_bytes(reconciler_logs)
 reconciler_sha = hashlib.sha256(reconciler_logs).hexdigest() if reconciler_logs else ""
+
+
+def lines(path):
+    try:
+        return [line for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines() if line]
+    except OSError:
+        return []
+
+
+skips = lines(evidence / "skips.txt")
+workarounds = [{"id": item, "applied": True} for item in lines(evidence / "workarounds.txt")]
+commit = os.environ.get("GITHUB_SHA") or git("rev-parse", "HEAD")
+branch = os.environ.get("GITHUB_REF_NAME") or git("rev-parse", "--abbrev-ref", "HEAD")
+source_commit = os.environ.get("IPV6_ONLY_SOURCE_COMMIT") or commit
 
 payload = {
     "schemaVersion": "edgeos-vxlan.ipv6-only-qualification/v1",
     "suite": "test/ipv6-only-netns.sh",
-    "commit": os.environ.get("GITHUB_SHA") or git("rev-parse", "HEAD"),
-    "branch": os.environ.get("GITHUB_REF_NAME") or git("rev-parse", "--abbrev-ref", "HEAD"),
+    "commit": commit,
+    "branch": branch,
     "generatedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     "level": "B",
-    "evidenceClasses": ["N6", "N6-R"],
+    "evidenceClasses": ["N6", "N6-R"] + (
+        ["N6-R-P"] if os.environ.get("CANDIDATE_PACKAGE_EXECUTED", "0") == "1" else []
+    ),
     "result": result,
     "counts": {
         "pass": int(pass_count),
@@ -1774,21 +1858,25 @@ payload = {
         {
             "id": "ipv6-only-isolation",
             "status": "passed" if result == "passed" else "failed",
+            "evidenceFile": "summary.txt",
             "evidenceSha256": sha256(evidence / "summary.txt"),
         },
         {
             "id": "ipv6-only-dataplane",
             "status": "passed" if result == "passed" else "failed",
+            "evidenceFile": "topology-after.txt",
             "evidenceSha256": sha256(evidence / "topology-after.txt"),
         },
         {
             "id": "ipv6-only-capture",
             "status": status_for(capture, {"executed"}, {"failed"}),
+            "evidenceFile": "captures/analysis.txt",
             "evidenceSha256": sha256(evidence / "captures" / "analysis.txt"),
         },
         {
             "id": "ipv6-only-reconciler",
             "status": status_for(reconciler, {"executed", "passed"}, {"failed"}),
+            "evidenceFile": "reconciler-evidence.txt",
             "evidenceSha256": reconciler_sha,
         },
     ],
@@ -1800,8 +1888,33 @@ payload = {
     },
     "reconciler": {
         "status": reconciler,
+        "evidenceFile": "reconciler-evidence.txt",
         "evidenceSha256": reconciler_sha,
     },
+    "candidate": {
+        "id": os.environ.get("IPV6_ONLY_CANDIDATE_ID", ""),
+        "sourceCommit": source_commit,
+        "package": os.environ.get("CANDIDATE_PACKAGE_NAME", ""),
+        "packageSha256": os.environ.get("CANDIDATE_PACKAGE_ACTUAL_SHA", ""),
+        "packageExecuted": os.environ.get("CANDIDATE_PACKAGE_EXECUTED", "0") == "1",
+        "reconcilerSha256": os.environ.get("CANDIDATE_RECONCILER_SHA", ""),
+        "addrHelperSha256": os.environ.get("CANDIDATE_ADDR_SHA", ""),
+    },
+    "workflow": {
+        "runId": os.environ.get("GITHUB_RUN_ID", ""),
+        "runAttempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+        "repository": os.environ.get("GITHUB_REPOSITORY", ""),
+        "path": os.environ.get("GITHUB_WORKFLOW_REF", ""),
+        "ref": os.environ.get("GITHUB_REF", ""),
+        "commit": os.environ.get("GITHUB_SHA", ""),
+    },
+    "harness": {
+        "commit": commit,
+        "path": "test/ipv6-only-netns.sh",
+        "version": "1",
+    },
+    "skips": skips,
+    "workarounds": workarounds,
     "hardware": {
         "status": "not-qualified",
         "required": False,
@@ -1814,7 +1927,10 @@ payload = {
         "The host and CI runner are dual-stack; Level D is not achieved.",
         "No PMTUD/ICMPv6 Packet Too Big test across a real routed path is included.",
         "Modern iproute2/kernel combinations can add a non-JSON fan-map token; the N6-R harness normalizes only that known environment artifact.",
-    ],
+    ] + (
+        ["Candidate-packaged userspace was executed; the x86 Linux kernel does not qualify the candidate MIPS kernel module."]
+        if os.environ.get("CANDIDATE_PACKAGE_EXECUTED", "0") == "1" else []
+    ),
 }
 (evidence / "summary.json").write_text(
     json.dumps(payload, indent=2, sort_keys=True) + "\n",
