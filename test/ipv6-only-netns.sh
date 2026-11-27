@@ -100,6 +100,9 @@ FAIL=0
 SKIP=0
 PIDS=()
 CAPTURE_PIDS=()
+CREATED_NS=()
+CREATED_LINKS=()
+PROBE_NS=
 CAPTURE_STATUS=not-run
 RECONCILER_STATUS=not-run
 HARNESS=
@@ -157,13 +160,19 @@ cleanup()
             kill "$pid" 2>/dev/null || true
         done
     fi
-    for ns in "${ALL_NS[@]}"; do
-        ip netns del "$ns" 2>/dev/null || true
-    done
-    ip netns del "v6probe$SUFFIX" 2>/dev/null || true
-    for link in "${ALL_LINKS[@]}"; do
-        ip link del "$link" 2>/dev/null || true
-    done
+    if [ "${#CREATED_NS[@]}" -gt 0 ]; then
+        for ns in "${CREATED_NS[@]}"; do
+            ip netns del "$ns" 2>/dev/null || true
+        done
+    fi
+    if [ -n "$PROBE_NS" ]; then
+        ip netns del "$PROBE_NS" 2>/dev/null || true
+    fi
+    if [ "${#CREATED_LINKS[@]}" -gt 0 ]; then
+        for link in "${CREATED_LINKS[@]}"; do
+            ip link del "$link" 2>/dev/null || true
+        done
+    fi
     if [ -n "$HARNESS" ]; then
         rm -rf "$HARNESS"
     fi
@@ -283,12 +292,19 @@ preflight()
     fi
 
     probe="v6probe$SUFFIX"
-    if ! ip netns add "$probe" 2>/dev/null; then
+    if ip netns list 2>/dev/null | awk '{print $1}' | grep -qx "$probe"; then
+        echo "SKIP: probe namespace $probe already exists; refusing to delete it"
+        [ "$REQUIRE_NETNS_TEST" = "1" ] && exit 1
+        exit 0
+    fi
+    PROBE_NS=$probe
+    if ! ip netns add "$PROBE_NS" 2>/dev/null; then
         echo "SKIP: network namespaces are unavailable (CAP_SYS_ADMIN or mount propagation)"
         [ "$REQUIRE_NETNS_TEST" = "1" ] && exit 1
         exit 0
     fi
-    ip netns del "$probe" 2>/dev/null || true
+    ip netns del "$PROBE_NS" 2>/dev/null || true
+    PROBE_NS=
 
     if [ ! -d /sys/module/vxlan ]; then
         if command -v modprobe >/dev/null 2>&1; then
@@ -337,6 +353,7 @@ create_ns()
 {
     local ns=$1
     ip netns add "$ns" || die "cannot create namespace $ns"
+    CREATED_NS+=("$ns")
     nsrun "$ns" ip link set lo up || die "cannot bring up lo in $ns"
     set_sysctl "$ns" net.ipv4.conf.all.forwarding 0
     set_sysctl "$ns" net.ipv4.conf.default.forwarding 0
@@ -349,6 +366,7 @@ veth_pair()
 {
     local h1=$1 ns1=$2 n1=$3 h2=$4 ns2=$5 n2=$6
     ip link add "$h1" type veth peer name "$h2" || return 1
+    CREATED_LINKS+=("$h1" "$h2")
     ip link set "$h1" netns "$ns1" || return 1
     ip link set "$h2" netns "$ns2" || return 1
     ip -n "$ns1" link set "$h1" name "$n1" || return 1
@@ -391,11 +409,14 @@ setup_topology()
 {
     local ns link
     for ns in "${ALL_NS[@]}"; do
-        ip netns del "$ns" 2>/dev/null || true
+        if ip netns list 2>/dev/null | awk '{print $1}' | grep -qx "$ns"; then
+            die "refusing to reuse existing namespace $ns; use --cleanup with its evidence directory"
+        fi
     done
-    ip netns del "v6probe$SUFFIX" 2>/dev/null || true
     for link in "${ALL_LINKS[@]}"; do
-        ip link del "$link" 2>/dev/null || true
+        if ip link show dev "$link" >/dev/null 2>&1; then
+            die "refusing to reuse existing host link $link"
+        fi
     done
     for ns in "${ALL_NS[@]}"; do
         create_ns "$ns"
@@ -500,6 +521,35 @@ record_topology()
     } >"$EVIDENCE_DIR/$file" 2>&1
 }
 
+expect_veth_peer()
+{
+    local phase=$1 ns=$2 iface=$3 expected=$4 actual
+    actual=$(nsrun "$ns" ip -d -o link show dev "$iface" 2>/dev/null |
+        grep -o 'link-netns [^ ]*' | awk '{print $2; exit}')
+    if [ "$actual" = "$expected" ]; then
+        ok "$phase veth peer $ns/$iface is $expected"
+    else
+        bad "$phase veth peer $ns/$iface is '${actual:-missing}', expected $expected"
+    fi
+}
+
+check_host_sysctls()
+{
+    local current
+    current=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo unknown)
+    if [ "$current" = "$HOST_IPV4_FORWARDING_BEFORE" ]; then
+        ok "host IPv4 forwarding unchanged ($current)"
+    else
+        bad "host IPv4 forwarding changed ($HOST_IPV4_FORWARDING_BEFORE -> $current)"
+    fi
+    current=$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null || echo unknown)
+    if [ "$current" = "$HOST_IPV6_FORWARDING_BEFORE" ]; then
+        ok "host IPv6 forwarding unchanged ($current)"
+    else
+        bad "host IPv6 forwarding changed ($HOST_IPV6_FORWARDING_BEFORE -> $current)"
+    fi
+}
+
 check_isolation()
 {
     local phase=$1 spec ns label
@@ -562,6 +612,17 @@ check_isolation()
     else
         bad "$phase namespace boundaries are not distinct from the host"
     fi
+
+    expect_veth_peer "$phase" "$NS_A" eth0 "$NS_T"
+    expect_veth_peer "$phase" "$NS_A" eth1 "$NS_HA"
+    expect_veth_peer "$phase" "$NS_B" eth0 "$NS_T"
+    expect_veth_peer "$phase" "$NS_B" eth1 "$NS_HB"
+    expect_veth_peer "$phase" "$NS_T" ta0 "$NS_A"
+    expect_veth_peer "$phase" "$NS_T" tb0 "$NS_B"
+    expect_veth_peer "$phase" "$NS_HA" eth0 "$NS_A"
+    expect_veth_peer "$phase" "$NS_HB" eth0 "$NS_B"
+    expect_veth_peer "$phase" "$NS_V4A" eth0 "$NS_V4B"
+    expect_veth_peer "$phase" "$NS_V4B" eth0 "$NS_V4A"
 
     local leftover=() link
     for link in "${ALL_LINKS[@]}"; do
@@ -860,6 +921,93 @@ test_tcp_udp()
     drop_pid "$server_pid"
 }
 
+write_reconciler_python_helpers()
+{
+    cat >"$WORK/recon-tcp-server.py" <<'EOF'
+import socket
+
+sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind(("2001:db8:900::b", 8090))
+sock.listen(1)
+sock.settimeout(10)
+conn, _ = sock.accept()
+conn.sendall(b"reconciler-ok")
+conn.close()
+sock.close()
+EOF
+    cat >"$WORK/recon-tcp-client.py" <<'EOF'
+import socket
+
+sock = socket.create_connection(("2001:db8:900::b", 8090), 5)
+data = b""
+while len(data) < 14:
+    part = sock.recv(14 - len(data))
+    if not part:
+        break
+    data += part
+assert data == b"reconciler-ok", data
+sock.close()
+EOF
+    cat >"$WORK/recon-udp-server.py" <<'EOF'
+import socket
+
+sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+sock.bind(("2001:db8:900::b", 8091))
+sock.settimeout(10)
+data, peer = sock.recvfrom(64)
+assert data == b"recon-ping", data
+sock.sendto(b"recon-pong", peer)
+sock.close()
+EOF
+    cat >"$WORK/recon-udp-client.py" <<'EOF'
+import socket
+
+sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+sock.settimeout(5)
+sock.sendto(b"recon-ping", ("2001:db8:900::b", 8091))
+data, _ = sock.recvfrom(64)
+assert data == b"recon-pong", data
+sock.close()
+EOF
+}
+
+test_reconciler_tcp_udp()
+{
+    local server_pid
+    write_reconciler_python_helpers
+
+    ip netns exec "$NS_B" python3 "$WORK/recon-tcp-server.py" \
+        >"$EVIDENCE_DIR/reconciler-tcp-server.log" 2>&1 &
+    server_pid=$!
+    PIDS+=("$server_pid")
+    sleep 0.5
+    if nsrun "$NS_A" timeout 8 python3 "$WORK/recon-tcp-client.py" \
+        >"$EVIDENCE_DIR/reconciler-tcp-client.log" 2>&1; then
+        ok "actual reconciler-created VXLAN carries IPv6 TCP"
+    else
+        bad "actual reconciler-created VXLAN did not carry IPv6 TCP"
+    fi
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+    drop_pid "$server_pid"
+
+    ip netns exec "$NS_B" python3 "$WORK/recon-udp-server.py" \
+        >"$EVIDENCE_DIR/reconciler-udp-server.log" 2>&1 &
+    server_pid=$!
+    PIDS+=("$server_pid")
+    sleep 0.5
+    if nsrun "$NS_A" timeout 8 python3 "$WORK/recon-udp-client.py" \
+        >"$EVIDENCE_DIR/reconciler-udp-client.log" 2>&1; then
+        ok "actual reconciler-created VXLAN carries IPv6 UDP"
+    else
+        bad "actual reconciler-created VXLAN did not carry IPv6 UDP"
+    fi
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+    drop_pid "$server_pid"
+}
+
 drop_pid()
 {
     local target=$1 pid
@@ -1118,7 +1266,7 @@ reconciler_identity_ok()
 
 test_reconciler_integration()
 {
-    local mac_before ifindex_before rc
+    local mac_before ifindex_before rc fail_before
     if ! command -v perl >/dev/null 2>&1 ||
         ! perl -MJSON::PP -e 1 >/dev/null 2>&1; then
         if [ "$REQUIRE_RECONCILER" = "1" ]; then
@@ -1134,6 +1282,7 @@ test_reconciler_integration()
         RECONCILER_STATUS=failed
         return
     fi
+    fail_before=$FAIL
 
     set_reconciler_config "$HARNESS/conf-a" \
         2001:db8:10:1::a1 2001:db8:10:2::b1 2001:db8:900::a/64 900 1430 ||
@@ -1170,6 +1319,48 @@ test_reconciler_integration()
         ok "reconciler-created IPv6 VXLAN carries overlay traffic"
     else
         bad "reconciler-created IPv6 VXLAN did not carry overlay traffic"
+    fi
+    test_reconciler_tcp_udp
+
+    # The actual reconciler must reject invalid endpoint families/classes
+    # before it mutates the live interface.
+    reject_reconciler_endpoint()
+    {
+        local label=$1 remote=$2
+        local log="$EVIDENCE_DIR/reconciler-vtep-a-reject-${label}.log"
+        set_reconciler_config "$HARNESS/conf-a" \
+            2001:db8:10:1::a1 "$remote" 2001:db8:900::a/64 900 1430
+        if run_reconciler "$NS_A" "$HARNESS/conf-a" UPDATE >"$log" 2>&1; then
+            bad "actual reconciler accepted invalid endpoint $label"
+        else
+            ok "actual reconciler rejected invalid endpoint $label"
+        fi
+        if grep -qE 'ERROR.*(same family|multicast|not a valid)' "$log"; then
+            ok "invalid endpoint $label failed with an endpoint-validation error"
+        else
+            bad "invalid endpoint $label failed for an unexpected reason"
+        fi
+        if reconciler_identity_ok "$NS_A" 900 1430 '2001:db8:900::a/64'; then
+            ok "invalid endpoint $label left the live interface unchanged"
+        else
+            bad "invalid endpoint $label mutated the live interface"
+        fi
+    }
+
+    reject_reconciler_endpoint "mixed-family" "192.0.2.1"
+    reject_reconciler_endpoint "ipv6-multicast" "ff02::1"
+    set_reconciler_config "$HARNESS/conf-a" \
+        2001:db8:10:1::a1 2001:db8:10:2::b1 2001:db8:900::a/64 900 1430
+    if run_reconciler "$NS_A" "$HARNESS/conf-a" UPDATE \
+        >"$EVIDENCE_DIR/reconciler-vtep-a-valid-restore.log" 2>&1; then
+        ok "actual reconciler accepted the valid endpoint after rejections"
+    else
+        bad "actual reconciler rejected the valid endpoint after rejections"
+    fi
+    if ping6_ok "$NS_A" 2001:db8:900::b; then
+        ok "overlay connectivity survives endpoint-validation rejections"
+    else
+        bad "overlay connectivity was disrupted by endpoint-validation rejections"
     fi
 
     mac_before=$(nsrun "$NS_A" cat /sys/class/net/vxlan900/address 2>/dev/null || echo missing)
@@ -1250,7 +1441,27 @@ test_reconciler_integration()
     fi
 
     cp "$HARNESS/log"/*.log "$EVIDENCE_DIR/" 2>/dev/null || true
-    RECONCILER_STATUS=executed
+    if [ "$FAIL" -gt "$fail_before" ]; then
+        RECONCILER_STATUS=failed
+    else
+        RECONCILER_STATUS=executed
+    fi
+}
+
+wait_for_capture_start()
+{
+    local pid=$1 log=$2 iface=$3 i=0
+    while [ "$i" -lt 50 ]; do
+        if grep -q "listening on $iface" "$log" 2>/dev/null; then
+            return 0
+        fi
+        if ! kill -0 "$pid" 2>/dev/null; then
+            return 1
+        fi
+        sleep 0.1
+        i=$((i + 1))
+    done
+    return 1
 }
 
 pcap_count()
@@ -1271,7 +1482,10 @@ test_packet_capture()
 {
     local underlay="$EVIDENCE_DIR/captures/underlay.pcap"
     local overlay="$EVIDENCE_DIR/captures/overlay.pcap"
-    local pid
+    local underlay_log="$EVIDENCE_DIR/captures/underlay.log"
+    local overlay_log="$EVIDENCE_DIR/captures/overlay.log"
+    local underlay_pid overlay_pid pid
+    local fail_before
 
     if ! command -v tcpdump >/dev/null 2>&1; then
         skip "packet capture: tcpdump unavailable"
@@ -1280,33 +1494,61 @@ test_packet_capture()
             bad "packet capture is required but tcpdump is unavailable"
         return
     fi
+    fail_before=$FAIL
 
-    ip netns exec "$NS_T" tcpdump -i ta0 -nn -s 0 -w "$underlay" \
-        >"$EVIDENCE_DIR/captures/underlay.log" 2>&1 &
-    pid=$!
-    PIDS+=("$pid")
-    CAPTURE_PIDS+=("$pid")
-    ip netns exec "$NS_A" tcpdump -i vxlan200 -nn -s 0 -w "$overlay" \
-        >"$EVIDENCE_DIR/captures/overlay.log" 2>&1 &
-    pid=$!
-    PIDS+=("$pid")
-    CAPTURE_PIDS+=("$pid")
-    sleep 0.5
+    ip netns exec "$NS_T" tcpdump -U -i ta0 -nn -s 0 -w "$underlay" \
+        >"$underlay_log" 2>&1 &
+    underlay_pid=$!
+    PIDS+=("$underlay_pid")
+    CAPTURE_PIDS+=("$underlay_pid")
+    ip netns exec "$NS_A" tcpdump -U -i vxlan200 -nn -s 0 -w "$overlay" \
+        >"$overlay_log" 2>&1 &
+    overlay_pid=$!
+    PIDS+=("$overlay_pid")
+    CAPTURE_PIDS+=("$overlay_pid")
+
+    if ! wait_for_capture_start "$underlay_pid" "$underlay_log" ta0 ||
+        ! wait_for_capture_start "$overlay_pid" "$overlay_log" vxlan200; then
+        bad "packet capture did not start cleanly"
+        echo "--- underlay tcpdump log ---" >&2
+        cat "$underlay_log" >&2 2>/dev/null || true
+        echo "--- overlay tcpdump log ---" >&2
+        cat "$overlay_log" >&2 2>/dev/null || true
+        for pid in "${CAPTURE_PIDS[@]}"; do
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            drop_pid "$pid"
+        done
+        CAPTURE_PIDS=()
+        CAPTURE_STATUS=failed
+        return
+    fi
 
     nsrun "$NS_A" ip -6 neigh flush dev eth0
     ping6_ok "$NS_A" 2001:db8:10:1::1
     nsrun "$NS_A" ip -6 neigh flush dev vxlan200
     ping6_ok "$NS_A" 2001:db8:200::b
     test_tcp_udp yes
-    sleep 0.5
+    sleep 2
 
     for pid in "${CAPTURE_PIDS[@]}"; do
-        kill "$pid" 2>/dev/null || true
+        kill -INT "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
         drop_pid "$pid"
     done
     CAPTURE_PIDS=()
     sleep 0.2
+
+    if ! grep -q 'packets captured' "$underlay_log" ||
+        ! grep -q 'packets captured' "$overlay_log"; then
+        bad "tcpdump did not report capture completion"
+        echo "--- underlay tcpdump log ---" >&2
+        cat "$underlay_log" >&2 2>/dev/null || true
+        echo "--- overlay tcpdump log ---" >&2
+        cat "$overlay_log" >&2 2>/dev/null || true
+        CAPTURE_STATUS=failed
+        return
+    fi
 
     if [ ! -s "$underlay" ] || [ ! -s "$overlay" ]; then
         bad "packet capture produced an empty capture file"
@@ -1318,10 +1560,11 @@ test_packet_capture()
         return
     fi
 
-    local underlay_ipv4 underlay_vxlan underlay_nd overlay_ipv6 overlay_tcp overlay_udp overlay_vxlan overlay_nd
+    local underlay_ipv4 underlay_vxlan underlay_nd overlay_ipv4 overlay_ipv6 overlay_tcp overlay_udp overlay_vxlan overlay_nd
     if ! underlay_ipv4=$(pcap_count "$underlay" 'ether proto 0x0800 or ether proto 0x0806') ||
         ! underlay_vxlan=$(pcap_count "$underlay" 'ip6 and udp port 4789') ||
         ! underlay_nd=$(pcap_count "$underlay" 'icmp6 and (ip6[40] == 135 or ip6[40] == 136)') ||
+        ! overlay_ipv4=$(pcap_count "$overlay" 'ether proto 0x0800 or ether proto 0x0806') ||
         ! overlay_ipv6=$(pcap_count "$overlay" 'ip6') ||
         ! overlay_tcp=$(pcap_count "$overlay" 'tcp') ||
         ! overlay_udp=$(pcap_count "$overlay" 'udp') ||
@@ -1336,6 +1579,7 @@ test_packet_capture()
         echo "underlay_ipv4_or_arp=$underlay_ipv4"
         echo "underlay_vxlan_udp4789=$underlay_vxlan"
         echo "underlay_nd=$underlay_nd"
+        echo "overlay_ipv4_or_arp=$overlay_ipv4"
         echo "overlay_ipv6=$overlay_ipv6"
         echo "overlay_tcp=$overlay_tcp"
         echo "overlay_udp=$overlay_udp"
@@ -1357,6 +1601,11 @@ test_packet_capture()
         ok "underlay capture contains IPv6 Neighbor Discovery"
     else
         bad "underlay capture contains no IPv6 Neighbor Discovery"
+    fi
+    if [ "$overlay_ipv4" -eq 0 ]; then
+        ok "overlay capture contains no IPv4 Ethernet frames or ARP"
+    else
+        bad "overlay capture contains $overlay_ipv4 IPv4/ARP frame(s)"
     fi
     if [ "$overlay_ipv6" -gt 0 ]; then
         ok "overlay capture contains decapsulated inner IPv6 traffic"
@@ -1383,7 +1632,11 @@ test_packet_capture()
     else
         bad "overlay capture contains no inner IPv6 Neighbor Discovery"
     fi
-    CAPTURE_STATUS=executed
+    if [ "$FAIL" -gt "$fail_before" ]; then
+        CAPTURE_STATUS=failed
+    else
+        CAPTURE_STATUS=executed
+    fi
 }
 
 write_summary()
@@ -1404,6 +1657,123 @@ write_summary()
     } >"$EVIDENCE_DIR/summary.txt"
 }
 
+write_json_summary()
+{
+    local result=passed
+    [ "$FAIL" -eq 0 ] || result=failed
+    python3 - "$EVIDENCE_DIR" "$result" "$PASS" "$FAIL" "$SKIP" \
+        "$CAPTURE_STATUS" "$RECONCILER_STATUS" "$ROOT" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+evidence_dir, result, pass_count, fail_count, skip_count, capture, reconciler, root = sys.argv[1:9]
+evidence = pathlib.Path(evidence_dir)
+
+
+def sha256(path):
+    try:
+        return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def git(*args):
+    try:
+        return subprocess.check_output(
+            ["git", "-c", "safe.directory=*", "-C", root, *args],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
+def status_for(value, ok_values, failed_values):
+    if value in ok_values:
+        return "passed"
+    if value in failed_values:
+        return "failed"
+    return "not-performed"
+
+
+reconciler_logs = b"".join(
+    path.read_bytes()
+    for path in sorted(evidence.glob("reconciler-*.log"))
+    if path.is_file()
+)
+reconciler_sha = hashlib.sha256(reconciler_logs).hexdigest() if reconciler_logs else ""
+
+payload = {
+    "schemaVersion": "edgeos-vxlan.ipv6-only-qualification/v1",
+    "suite": "test/ipv6-only-netns.sh",
+    "commit": os.environ.get("GITHUB_SHA") or git("rev-parse", "HEAD"),
+    "branch": os.environ.get("GITHUB_REF_NAME") or git("rev-parse", "--abbrev-ref", "HEAD"),
+    "generatedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    "level": "B",
+    "evidenceClasses": ["N6", "N6-R"],
+    "result": result,
+    "counts": {
+        "pass": int(pass_count),
+        "fail": int(fail_count),
+        "skip": int(skip_count),
+    },
+    "checks": [
+        {
+            "id": "ipv6-only-isolation",
+            "status": "passed" if result == "passed" else "failed",
+            "evidenceSha256": sha256(evidence / "summary.txt"),
+        },
+        {
+            "id": "ipv6-only-dataplane",
+            "status": "passed" if result == "passed" else "failed",
+            "evidenceSha256": sha256(evidence / "topology-after.txt"),
+        },
+        {
+            "id": "ipv6-only-capture",
+            "status": status_for(capture, {"executed"}, {"failed"}),
+            "evidenceSha256": sha256(evidence / "captures" / "analysis.txt"),
+        },
+        {
+            "id": "ipv6-only-reconciler",
+            "status": status_for(reconciler, {"executed", "passed"}, {"failed"}),
+            "evidenceSha256": reconciler_sha,
+        },
+    ],
+    "capture": {
+        "status": capture,
+        "underlaySha256": sha256(evidence / "captures" / "underlay.pcap"),
+        "overlaySha256": sha256(evidence / "captures" / "overlay.pcap"),
+        "analysisSha256": sha256(evidence / "captures" / "analysis.txt"),
+    },
+    "reconciler": {
+        "status": reconciler,
+        "evidenceSha256": reconciler_sha,
+    },
+    "hardware": {
+        "status": "not-qualified",
+        "required": False,
+        "evidence": [],
+    },
+    "limitations": [
+        "N6/N6-R are general-Linux namespace evidence, not ER-X hardware evidence.",
+        "The EdgeOS configuration API, firewall dispatch, bridge helper and address helper are test doubles in N6-R.",
+        "The generic bridge section is not ENG-IPV6-04 hardware qualification.",
+        "The host and CI runner are dual-stack; Level D is not achieved.",
+        "No PMTUD/ICMPv6 Packet Too Big test across a real routed path is included.",
+    ],
+}
+(evidence / "summary.json").write_text(
+    json.dumps(payload, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
 main()
 {
     preflight
@@ -1411,6 +1781,8 @@ main()
     WORK=$(mktemp -d "${TMPDIR:-/tmp}/ipv6-only-work.XXXXXX") ||
         die "cannot create work directory"
 
+    HOST_IPV4_FORWARDING_BEFORE=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo unknown)
+    HOST_IPV6_FORWARDING_BEFORE=$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null || echo unknown)
     setup_topology
     record_topology topology-before.txt
     check_isolation preflight
@@ -1418,7 +1790,7 @@ main()
     test_ipv4_negative_controls
     test_underlay_and_overlay
     test_ndp
-    test_tcp_udp
+    test_tcp_udp no
     test_encapsulation_counters
     test_mtu_boundary
     test_recreation
@@ -1427,8 +1799,10 @@ main()
     test_reconciler_integration
     test_packet_capture
     check_isolation runtime
+    check_host_sysctls
     record_topology topology-after.txt
     write_summary
+    write_json_summary
 
     echo "ipv6-only: pass=$PASS fail=$FAIL skip=$SKIP capture=$CAPTURE_STATUS reconciler=$RECONCILER_STATUS"
     [ "$FAIL" -eq 0 ]
