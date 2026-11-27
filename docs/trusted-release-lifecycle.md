@@ -379,22 +379,66 @@ Recorded code-level limitations:
   kernel source-to-binary reproducibility and Internet-facing probes remain
   separate workstreams and are not claimed here.
 
-## 11. Maintainer decisions before activation
+## 11. Maintainer policy decisions (recorded 2026-11-27)
 
-1. Enable immutable releases, then set `IMMUTABLE_RELEASES_CONFIRMED=true`.
-2. Create and protect `release-publication`; restrict deployments to
-   `main`/`v*`.
-3. Set `RELEASE_PUBLICATION_ENABLED=true` in that environment.
-4. Signed production tags are deferred to a separate operational workstream.
-   No tag-signature control exists in this lifecycle, so enabling publication
-   does not imply signature enforcement.
-5. Approve GHCR image publication, visibility and retention. Registry
-   publication now requires a `refs/heads/main` dispatch.
-6. Approve the A→B pin commit/tag sequence and who may create tags.
-7. Approve the first canonical version (>= 0.3.1).
-8. Decide whether unresolved critical vulnerabilities block publication.
-9. Approve hardware evidence requirements.
-10. Approve any SLSA claim beyond provenance-attested GitHub build provenance.
+These are decisions, not open questions. None has been implemented as a
+repository setting; see the activation runbook for what remains to be applied.
+
+1. **Immutable releases** are approved for future activation. Publication
+   requires the setting to be enabled *before* `IMMUTABLE_RELEASES_CONFIRMED`
+   is set, because the actual state is only verified after `draft=false`.
+2. **Protected environments are mandatory**: `release-publication` and
+   `build-image-publication` must exist with required reviewers before either
+   publication path may run.
+3. **Privileged workflow execution is restricted to protected `main`**, unless a
+   separately reviewed requirement establishes otherwise. Both publish paths
+   already refuse any other ref.
+4. **Release tags must be protected** against unauthorised creation, movement
+   and deletion. The workflow re-resolves the tag immediately before publishing
+   and refuses a moved or conflicting tag, but tag protection itself is a
+   repository setting the workflow cannot enforce.
+5. **Explicit human deployment approval is required** for both publication
+   environments.
+6. **Self-review is permitted** for this single-maintainer project. This is not
+   independent two-person approval and must not be described as such. The
+   independent reviews recorded in section 14 were performed by separate
+   reviewing agents, which is a review of the change, not a second human
+   approver.
+7. **Signed production tags are deferred** to a separate operational
+   workstream. This lifecycle verifies no tag signature and exposes no control
+   implying otherwise.
+8. **Unresolved critical vulnerabilities block publication** unless covered by
+   an explicit, documented, artifact-bound exception. The image verifier
+   already fails on an unresolved critical finding and accepts only an
+   exception with a matching id and an expiry that has not passed; binding each
+   exception to the image digest is part of first-release qualification.
+9. **Hardware evidence requirements must reflect the actual scope of the
+   change.** A candidate that does not change kernel modules, templates or
+   runtime semantics does not require a hardware session; the manifest records
+   `hardware.required` and the evidence class must be stated, not implied.
+10. **No SLSA level or certification claim is authorised.** The attestations
+    provide provenance-attested GitHub build provenance; they do not establish
+    a SLSA level, bit-for-bit reproducibility of the kernel module, or hardware
+    compatibility.
+
+### 11.1 Publication qualification stages
+
+The stages are distinct and are not interchangeable as evidence. A result at
+one stage does not establish the next.
+
+| # | Stage | Status at this head | Evidence class |
+|---|---|---|---|
+| 1 | Qualification candidate construction | **Exercised** | automated, run 46043324448 |
+| 2 | Real cryptographic attestation | **Exercised** | automated, Sigstore attestations + offline verification |
+| 3 | Qualification promotion dry-run | **Exercised** | automated, same run, `promotion-plan.json` |
+| 4 | Production promotion preflight | **Not exercised** — requires a production dispatch and a protected environment | — |
+| 5 | Actual privileged publication | **Not exercised** — requires activation | — |
+| 6 | Post-publication independent verification | **Not exercised** on a real release; the job exists and the historical fixture path is green | — (fixture only) |
+
+Stages 4–6 must be exercised and recorded during activation and first-release
+qualification. The mocked publication suite is not evidence of stage 5: it stops
+at draft verification because a real draft verification needs real Debian
+packages and real Sigstore signatures.
 
 ## 12. Cross-project reuse
 
