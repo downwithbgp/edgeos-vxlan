@@ -43,7 +43,7 @@
   "attestation": {
     "workflowPath": ".github/workflows/release.yml",
     "provenancePredicate": "https://slsa.dev/provenance/v1",
-    "sbomPredicate": "https://spdx.dev/Document"
+    "sbomPredicate": "https://spdx.dev/Document/v2.3"
   },
   "pinCommit": {
     "allowlist": [

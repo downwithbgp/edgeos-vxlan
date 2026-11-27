@@ -23,7 +23,7 @@ WORKFLOW=
 SIGNER_DIGEST=
 SOURCE_DIGEST=
 SOURCE_REF=
-PREDICATE=https://slsa.dev/provenance/v1
+PREDICATE=
 VERIFY_SBOM=yes
 
 usage()
@@ -126,6 +126,12 @@ POLICY=$ROOT/release/release-policy.json
 [ -z "$SOURCE_DIGEST" ] && SOURCE_DIGEST=$(manifest_get "$MANIFEST" '.source.commit')
 [ -z "$SOURCE_REF" ] && SOURCE_REF=$(manifest_get "$MANIFEST" '.source.trustedWorkflow.ref')
 EXPECTED_REPO_ID=$(jq -r '.project.repositoryId' "$POLICY")
+[ -z "$PREDICATE" ] && PREDICATE=$(jq -r '.attestation.provenancePredicate' "$POLICY")
+SBOM_PREDICATE=$(jq -r '.attestation.sbomPredicate' "$POLICY")
+printf '%s\n' "$PREDICATE" | grep -Eq '^https://slsa\.dev/provenance/v[0-9]+' ||
+    fail "unsupported provenance predicate type: $PREDICATE"
+printf '%s\n' "$SBOM_PREDICATE" | grep -Eq '^https://spdx\.dev/Document/v[0-9]+\.[0-9]+$' ||
+    fail "unsupported SBOM predicate type: $SBOM_PREDICATE"
 
 require_commit_field "signer digest" "$SIGNER_DIGEST"
 require_commit_field "source digest" "$SOURCE_DIGEST"
@@ -183,9 +189,19 @@ if [ "$VERIFY_SBOM" = "yes" ]; then
     PKG_VERSION=$(manifest_get "$MANIFEST" '.project.packageVersion')
     INTEGRATION="edgeos-vxlan_${PKG_VERSION}_all.deb"
     KMOD="edgeos-vxlan-kmod_${PKG_VERSION}_mipsel.deb"
-    for package in "$INTEGRATION" "$KMOD"; do
+    for spec in "$INTEGRATION:sbom-edgeos-vxlan.spdx.json" \
+                "$KMOD:sbom-edgeos-vxlan-kmod.spdx.json"; do
+        package=${spec%%:*}
+        sbom=${spec#*:}
         [ -f "$DIR/$package" ] || fail "missing package for SBOM attestation: $package"
-        verify_subject "$DIR/$package" "https://spdx.dev/Document"
+        [ -f "$DIR/$sbom" ] || fail "missing SBOM for attestation binding: $sbom"
+        verify_subject "$DIR/$package" "$SBOM_PREDICATE"
+        "$ROOT/scripts/verify-sbom-predicate.sh" \
+            --bundle "$BUNDLE" \
+            --package "$DIR/$package" \
+            --sbom "$DIR/$sbom" \
+            --predicate-type "$SBOM_PREDICATE" >/dev/null ||
+            fail "SBOM predicate binding failed for $package"
     done
 fi
 
