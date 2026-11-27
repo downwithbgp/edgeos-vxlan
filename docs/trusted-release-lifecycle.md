@@ -339,9 +339,14 @@ Recorded code-level limitations:
   them. A mutated runner toolchain would weaken independent verification.
 - The post-publication verifier runs inside the `contents: write` publish job.
   Splitting it into a read-only job is the safer shape.
-- `release-policy.json` keys `signedTagsVariable` and `pinCommit.allowlist` are
-  read by no script; tag signatures are never verified. Either implement or
-  remove them, otherwise they imply a control that does not exist.
+- Decorative policy controls were removed rather than retained: the
+  `signedTagsVariable` key, the `pinCommit.allowlist` and the
+  `packagingInputs.exclude` copy. None was read by any script, so each implied
+  a guarantee that did not exist. Signed production tags are deferred to a
+  separate operational workstream; the enforced packaging-input and pin-only
+  contracts live in `scripts/packaging-inputs.sh` and
+  `scripts/check-pin-commit.sh`, and `test/unit-release-policy.sh` fails if an
+  unimplemented policy key is reintroduced.
 - The production "newer than published" check compares against the static
   `baselinePublishedVersion` (0.3.0), not the newest published release, so a
   candidate between the baseline and the actual latest could be promoted.
@@ -355,9 +360,9 @@ Recorded code-level limitations:
 2. Create and protect `release-publication`; restrict deployments to
    `main`/`v*`.
 3. Set `RELEASE_PUBLICATION_ENABLED=true` in that environment.
-4. Decide whether published tags must be signed. If yes, implement tag
-   signature verification first: `RELEASE_REQUIRE_SIGNED_TAG` currently has no
-   effect.
+4. Signed production tags are deferred to a separate operational workstream.
+   No tag-signature control exists in this lifecycle, so enabling publication
+   does not imply signature enforcement.
 5. Approve GHCR image publication, visibility and retention. Registry
    publication now requires a `refs/heads/main` dispatch.
 6. Approve the A→B pin commit/tag sequence and who may create tags.

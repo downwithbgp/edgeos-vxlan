@@ -353,8 +353,9 @@ Layers:
    `update-release-pins.sh --check` renders exactly B's
    `install.sh`/`SHA256SUMS`. A version at or below the latest published
    version is rejected as historical reuse.
-7. Signed tags are enforced only if `RELEASE_REQUIRE_SIGNED_TAG=true`; Phase
-   III creates no keys.
+7. Signed production tags are out of scope for Phase III and are deferred to
+   a separate operational workstream. This lifecycle verifies no tag signature
+   and exposes no control that implies otherwise.
 
 Publication sequence:
 

@@ -156,18 +156,31 @@ jobs:
           name: build-environment-qualification
           path: downloaded
 
+      - name: Resolve image reference from policy
+        id: image
+        run: |
+          set -eu
+          registry=$(jq -er '.image.registry' release/release-policy.json)
+          repository=$(jq -er '.image.repository' release/release-policy.json)
+          {
+            echo "registry=$registry"
+            echo "name=$registry/$repository"
+            echo "ref=$registry/$repository:${GITHUB_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Log in to GHCR
         env:
           ACTOR: ${{ github.actor }}
           GH_TOKEN: ${{ github.token }}
+          REGISTRY: ${{ steps.image.outputs.registry }}
         run: |
           printf '%s' "$GH_TOKEN" |
-            docker login ghcr.io -u "$ACTOR" --password-stdin
+            docker login "$REGISTRY" -u "$ACTOR" --password-stdin
 
       - name: Push the retained OCI archive and verify its digest
         id: push
         env:
-          IMAGE: ghcr.io/${{ github.repository }}-build:${{ github.sha }}
+          IMAGE: ${{ steps.image.outputs.ref }}
         run: |
           set -eu
           qualified=$(jq -r .manifestDigest downloaded/build-environment-qualification.json)
@@ -189,7 +202,7 @@ jobs:
       - name: Attest and publish the image SBOM
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-name: ghcr.io/${{ github.repository }}-build
+          subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.push.outputs.remote }}
           sbom-path: downloaded/image.spdx.json
           push-to-registry: true
