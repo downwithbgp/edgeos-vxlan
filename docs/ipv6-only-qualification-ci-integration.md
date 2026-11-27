@@ -2,8 +2,9 @@
 
 **Status:** integration record, 2026-11-27. PR #8 (`Phase III: trusted release lifecycle`) merged
 to `main` at `0771455504056fcf45b6fc041cc541e20e12f0f2`. PR #9 integrated that main and ports
-the IPv6-only job into the canonical `ci.yml`; the final branch HEAD is
-`92336a3840d167ff475d5422755c3570ef65421a`.
+the IPv6-only job into the canonical `ci.yml`. The latest HEAD verified by hosted CI is
+`8d952e0033f03405ef96b53fe6d3bb98a4a8d8f0`; later documentation-only commits do not change the
+workflow, tests or package payload recorded here.
 **Scope:** CI integration and candidate-bound evidence. This document does **not** modify the
 publication policy, release workflows, historical assets or release gates.
 **Related:** [`ipv6-only-qualification.md`](ipv6-only-qualification.md),
@@ -18,7 +19,7 @@ publication policy, release workflows, historical assets or release gates.
 | Recoverable backup | `backup/pr9-pre-phase3-integration` = `a7bc214520c17a3567f3d0f4d7d1c820388ce3c0` |
 | Merged Phase III main (integration base) | `0771455504056fcf45b6fc041cc541e20e12f0f2` |
 | Reviewed integration tree | `251c1cb` (rebase result); tree `eee30a20361c2d3111b2cb2eea6aeb548dc52845` |
-| Final branch HEAD | `92336a3840d167ff475d5422755c3570ef65421a` |
+| Latest HEAD verified by hosted CI | `8d952e0033f03405ef96b53fe6d3bb98a4a8d8f0` (runs 46062441889 / 46062447034) |
 | Integration model | The reviewed rebase result was recorded as a merge commit with parents `a7bc214` and `0771455`. The merged tree is byte-identical to the reviewed rebase tree (`eee30a2…`), so review applies unchanged and no force-push of the published branch was required. |
 | Obsolete workflow | `release-validation.yml` removed; not resurrected |
 | APT helper | Main's masking implementation replaced by the stricter transient source-selection implementation; all main call sites use the same path |
@@ -195,10 +196,12 @@ The package payload is unchanged: the integration `.deb` is still
 
 | Run | Event | Result |
 |---|---|---|
-| [46060990232](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46060990232) | push, `ci/ipv6-native-qualification` at `92336a3` | **success** — Static analysis, Build and validate packages, Reproducibility verification, Published-release fixtures, Network-namespace dataplane and IPv6-only qualification all passed |
-| [46060996251](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46060996251) | pull_request, head `92336a3` | **success** — Static analysis, Build and validate packages and Reproducibility verification passed; Published-release fixtures, Network-namespace dataplane and IPv6-only qualification skipped by their event guards |
+| [46062441889](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46062441889) | push, `ci/ipv6-native-qualification` at `8d952e0` | **success** — Static analysis, Build and validate packages, Reproducibility verification, Published-release fixtures, Network-namespace dataplane and IPv6-only qualification all passed |
+| [46062447034](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46062447034) | pull_request, head `8d952e0` | **success** — Static analysis, Build and validate packages and Reproducibility verification passed; Published-release fixtures, Network-namespace dataplane and IPv6-only qualification skipped by their event guards |
+| [46060990232](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46060990232) | push at `92336a3` | **success** — all six jobs passed |
+| [46060996251](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46060996251) | pull_request at `92336a3` | **success** — privileged jobs skipped by their event guards |
 
-The PR run confirms the trust boundary: untrusted PR code never reaches the privileged jobs. The
+The PR runs confirm the trust boundary: untrusted PR code never reaches the privileged jobs. The
 skips are event guards, not qualifications, and are not reported as IPv6 evidence.
 
 ### 9.1 Candidate-bound evidence from the integrated push run
@@ -244,7 +247,21 @@ python3 scripts/validate-ipv6-qualification-evidence.py \
 Local gates at `92336a3`: `bash test/run.sh` **376 checks passed** (11 build + 64 helper + 122
 firewall + 93 templates + 70 mock + 16 qualification-evidence contract); `shellcheck -x -e
 SC1091,SC2015` clean; `perl -c src/vyatta-vxlan-addr` OK; `actionlint` 1.7.12 clean; `zizmor
---offline --collect all` 1.33.1 no findings; `git diff --check` clean.
+--offline --collect all` 1.33.1 no findings; `git diff --check` clean. The same gates pass at
+`8d952e0`.
+
+### 9.2 Reproduction at the final verified HEAD
+
+Run [46062441889](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46062441889) at
+`8d952e0` reproduced the result: 113 pass, 0 fail, 2 skip; the same integration package
+`6afa3f25…`; `capture=executed`, `reconciler=executed`, `packageExecuted=true`. Re-validating that
+artifact returned **PASS** with the same two permitted skips. Its `summary.json` is
+`02038888ddaaeb29ac44bf9d1c5b6ab976a4cb03ca34b36790f014ccf390025f`; the capture analysis and
+reconciler evidence hashes are unchanged, because those bytes depend on the package and topology,
+not on the run timestamp.
+
+This is a **documentation-only** commit on top of the integration merge; it changes no workflow,
+test or package input, so the `8d952e0` verification applies to the branch content described here.
 
 ## 10. Integration recommendation
 
