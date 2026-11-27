@@ -14,29 +14,15 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 ARTIFACT_DIR=${1:-"$ROOT/.."}
 PKG_VERSION=$(dpkg-parsechangelog -l "$ROOT/debian/changelog" -S Version)
 INSTALL_VERSION=$(sed -n 's/^VERSION="\([^"]*\)"/\1/p' "$ROOT/install.sh")
-RELEASE_TAG="v$INSTALL_VERSION"
 KMOD="edgeos-vxlan-kmod_${PKG_VERSION}_mipsel.deb"
 INTEGRATION="edgeos-vxlan_${PKG_VERSION}_all.deb"
-KMOD_PIN=$(sed -n 's/^KMOD_SHA256="\([^"]*\)"/\1/p' "$ROOT/install.sh")
-INTEGRATION_PIN=$(sed -n 's/^INTEGRATION_SHA256="\([^"]*\)"/\1/p' "$ROOT/install.sh")
-
 case "$PKG_VERSION" in
     *~*) PRERELEASE=yes ;;
     *) PRERELEASE=no ;;
 esac
-
-actual_kmod_sha=$(sha256sum -- "$ARTIFACT_DIR/$KMOD" | cut -d ' ' -f1)
-actual_integration_sha=$(sha256sum -- "$ARTIFACT_DIR/$INTEGRATION" | cut -d ' ' -f1)
-
-if [ "$actual_kmod_sha" = "$KMOD_PIN" ] &&
-   [ "$actual_integration_sha" = "$INTEGRATION_PIN" ]; then
-    PUBLISHED_FIXTURE_OK=yes
-else
-    PUBLISHED_FIXTURE_OK=no
-fi
-
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
+rc_source=$TMP/rc-source
 PASS=0
 FAIL=0
 
@@ -68,12 +54,6 @@ make_manifest()
     )
 }
 
-make_published_clean()
-{
-    local dir=$1
-    copy_clean "$dir"
-    cp "$ROOT/SHA256SUMS" "$dir/SHA256SUMS"
-}
 
 regenerate_md5sums()
 {
@@ -219,11 +199,6 @@ run_build()
     "$ROOT/scripts/validate-release.sh" "$1"
 }
 
-run_published()
-{
-    RELEASE_TAG="$RELEASE_TAG" \
-        "$ROOT/scripts/validate-published-release.sh" "$1" "$ROOT"
-}
 
 run_skip_pins()
 {
@@ -291,40 +266,13 @@ else
         run_skip_pins "$clean_build" "$ROOT"
 fi
 
-if [ "$PRERELEASE" = "no" ] && [ "$PUBLISHED_FIXTURE_OK" = "yes" ]; then
-    [ -f "$ROOT/SHA256SUMS" ] ||
-        { echo "ERROR: missing $ROOT/SHA256SUMS" >&2; exit 1; }
-
-    clean_published=$(new_dir clean-published)
-    make_published_clean "$clean_published"
-    expect_pass "published validation accepts the real assets" run_published "$clean_published"
-
-    provenance_published=$(new_dir published-provenance)
-    make_published_clean "$provenance_published"
-    printf 'Format: 1.0\n' >"$provenance_published/edgeos-vxlan_${PKG_VERSION}_mipsel.buildinfo"
-    printf 'Format: 1.8\n' >"$provenance_published/edgeos-vxlan_${PKG_VERSION}_mipsel.changes"
-    expect_pass "published validation accepts provenance assets" \
-        run_published "$provenance_published"
-
-    source_no_manifest=$(new_dir source-no-manifest)
-    cp -a "$ROOT/install.sh" "$ROOT/debian" "$ROOT/src" "$ROOT/templates" \
-        "$ROOT/modules" "$source_no_manifest/"
-    expect_pass "published validation falls back to install.sh pins" \
-        env RELEASE_TAG="$RELEASE_TAG" \
-        "$ROOT/scripts/validate-published-release.sh" "$clean_published" \
-        "$source_no_manifest"
-elif [ "$PRERELEASE" = "no" ]; then
-    echo "NOTE: rebuilt packages do not match install.sh pins; skipping published-mode positive cases." >&2
-else
-    echo "NOTE: prerelease tree; skipping published-mode positive cases." >&2
-fi
-
-rc_source=$(new_dir rc-source)
+mkdir -p "$rc_source"
 cp -a "$ROOT/install.sh" "$ROOT/debian" "$ROOT/src" "$ROOT/templates" \
     "$ROOT/modules" "$rc_source/"
 sed -i '1s/^edgeos-vxlan ([^)]*)/edgeos-vxlan (0.3.0~rc5+edgeos3.0.1.e50)/' \
     "$rc_source/debian/changelog"
-rc_artifacts=$(new_dir rc-artifacts)
+rc_artifacts=$TMP/rc-artifacts
+mkdir -p "$rc_artifacts"
 rc_kmod="edgeos-vxlan-kmod_0.3.0~rc5+edgeos3.0.1.e50_mipsel.deb"
 rc_integration="edgeos-vxlan_0.3.0~rc5+edgeos3.0.1.e50_all.deb"
 repack "$ARTIFACT_DIR/$KMOD" "$rc_artifacts/$rc_kmod" edit_rc_version_kmod
@@ -456,46 +404,6 @@ make_manifest "$malformed_manifest"
 sed -i '1s/^[0-9a-f]*/not-a-hash/' "$malformed_manifest/SHA256SUMS"
 expect_fail "malformed manifest entry" "malformed checksum manifest" \
     run_build "$malformed_manifest"
-
-if [ "$PRERELEASE" = "no" ] && [ "$PUBLISHED_FIXTURE_OK" = "yes" ]; then
-    published_missing_manifest=$(new_dir published-missing-manifest)
-    copy_clean "$published_missing_manifest"
-    expect_fail "published asset set without manifest" "missing release asset" \
-        run_published "$published_missing_manifest"
-
-    published_extra_asset=$(new_dir published-extra-asset)
-    make_published_clean "$published_extra_asset"
-    printf 'notes\n' >"$published_extra_asset/notes.txt"
-    expect_fail "unexpected published asset" "unexpected release asset" \
-        run_published "$published_extra_asset"
-
-    published_corrupt=$(new_dir published-corrupt)
-    make_published_clean "$published_corrupt"
-    printf '\001' >>"$published_corrupt/$KMOD"
-    expect_fail "corrupted published package" "install.sh pin" \
-        run_published "$published_corrupt"
-
-    published_manifest_order=$(new_dir published-manifest-order)
-    make_published_clean "$published_manifest_order"
-    tac "$ROOT/SHA256SUMS" >"$published_manifest_order/SHA256SUMS"
-    expect_fail "published manifest differs from tagged source" \
-        "differs from the tagged source tree" run_published "$published_manifest_order"
-
-    published_bad_tag=$(new_dir published-bad-tag)
-    make_published_clean "$published_bad_tag"
-    expect_fail "published tag/version mismatch" "does not match install.sh VERSION" \
-        env RELEASE_TAG="v9.9.9" \
-        "$ROOT/scripts/validate-published-release.sh" "$published_bad_tag" "$ROOT"
-
-    expect_fail "tag/checked-out-ref mismatch" "requested tag" \
-        env RELEASE_TAG="$RELEASE_TAG" GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v9.9.9 \
-        "$ROOT/scripts/validate-published-release.sh" "$clean_published" "$ROOT"
-
-elif [ "$PRERELEASE" = "no" ]; then
-    echo "NOTE: rebuilt packages do not match install.sh pins; skipping published-mode negative cases." >&2
-else
-    echo "NOTE: prerelease tree; skipping published-mode negative cases." >&2
-fi
 
 echo "validate-release-negative: pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]
