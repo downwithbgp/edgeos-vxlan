@@ -21,7 +21,7 @@ usage()
 Usage: verify-build-environment.sh --archive-dir DIR [options]
 
 Options:
-  --archive-dir DIR   Directory containing image.oci.tar and evidence files
+  --archive-dir DIR   Directory containing image.oci.tar, image.docker.tar and evidence files
   --source-root DIR   Source tree for Dockerfile/CA/snapshot checks
   --skip-test-build   Do not run the image smoke test
   -h, --help          Show this help
@@ -59,6 +59,7 @@ done
 require_cmd docker jq sha256sum tar stat awk sed
 require_dir "$ARCHIVE_DIR"
 require_file "$ARCHIVE_DIR/image.oci.tar"
+require_file "$ARCHIVE_DIR/image.docker.tar"
 require_file "$ARCHIVE_DIR/build-environment-qualification.json"
 require_file "$ARCHIVE_DIR/image.spdx.json"
 require_file "$ARCHIVE_DIR/image-vulnerabilities.json"
@@ -72,6 +73,7 @@ MANIFEST_DIGEST=$(jq -er '.manifestDigest' "$QUAL")
 CONFIG_DIGEST=$(jq -er '.configDigest' "$QUAL")
 OCI_INDEX_DIGEST=$(jq -er '.ociIndexDigest' "$QUAL")
 OCI_ARCHIVE_SHA256=$(jq -er '.ociArchiveSha256' "$QUAL")
+DOCKER_ARCHIVE_SHA256=$(jq -er '.dockerArchiveSha256' "$QUAL")
 DOCKERFILE_SHA256=$(jq -er '.dockerfileSha256' "$QUAL")
 CA_BUNDLE_SHA256=$(jq -er '.caBundleSha256' "$QUAL")
 BASE_IMAGE=$(jq -er '.baseImage' "$QUAL")
@@ -90,6 +92,7 @@ require_digest_field "OCI index digest" "$OCI_INDEX_DIGEST"
 require_digest_field "manifest digest" "$MANIFEST_DIGEST"
 require_digest_field "config digest" "$CONFIG_DIGEST"
 require_sha256_field "OCI archive checksum" "$OCI_ARCHIVE_SHA256"
+require_sha256_field "Docker archive checksum" "$DOCKER_ARCHIVE_SHA256"
 require_sha256_field "Dockerfile checksum" "$DOCKERFILE_SHA256"
 require_sha256_field "CA bundle checksum" "$CA_BUNDLE_SHA256"
 require_sha256_field "inventory checksum" "$INVENTORY_SHA256"
@@ -112,6 +115,8 @@ trap 'rm -rf "$TMP"' EXIT HUP INT TERM
     fail "config digest does not match the qualification"
 [ "$(jq -r '.archiveSha256' "$TMP/identity.json")" = "$OCI_ARCHIVE_SHA256" ] ||
     fail "OCI archive checksum does not match the qualification"
+[ "$(sha256_file "$ARCHIVE_DIR/image.docker.tar")" = "$DOCKER_ARCHIVE_SHA256" ] ||
+    fail "Docker archive checksum does not match the qualification"
 
 [ "$(sha256_file "$SOURCE_ROOT/containers/reproducible-build/Dockerfile")" = "$DOCKERFILE_SHA256" ] ||
     fail "Dockerfile hash does not match the qualification"
@@ -133,8 +138,8 @@ SOURCE_SNAPSHOT=$(sed -n 's/^ARG UBUNTU_SNAPSHOT=//p' \
 [ "$(sha256_file "$ARCHIVE_DIR/dependency-inventory.txt")" = "$INVENTORY_SHA256" ] ||
     fail "inventory file hash does not match the qualification"
 
-docker load -i "$ARCHIVE_DIR/image.oci.tar" > "$TMP/docker-load.log" 2>&1 ||
-    fail "cannot load OCI archive"
+docker load -i "$ARCHIVE_DIR/image.docker.tar" > "$TMP/docker-load.log" 2>&1 ||
+    { cat "$TMP/docker-load.log" >&2; fail "cannot load Docker archive"; }
 RUN_REF=$(docker image inspect "$IMAGE_NAME" \
     --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null |
     awk -v d="$MANIFEST_DIGEST" 'index($0, d) { print; exit }')

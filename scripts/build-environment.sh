@@ -16,7 +16,6 @@ OUTPUT_DIR=
 IMAGE_NAME=${BUILD_IMAGE_NAME:-edgeos-vxlan-reproducible:qualified}
 CONTEXT=${BUILD_CONTEXT:-"$ROOT/containers/reproducible-build"}
 SKIP_VULNERABILITY=no
-DOCKER_ARCHIVE=no
 EXCEPTIONS=${VULNERABILITY_EXCEPTIONS:-"$ROOT/containers/reproducible-build/vulnerability-exceptions.json"}
 POLICY="$ROOT/release/release-policy.json"
 
@@ -30,7 +29,6 @@ Options:
   --image-name NAME       Local image name (default: edgeos-vxlan-reproducible:qualified)
   --context DIR           Docker build context (default: containers/reproducible-build)
   --skip-vulnerability    Skip Grype (test-only; recorded as skipped)
-  --docker-archive        Also write a Docker archive and record its checksum
   --exceptions FILE       Vulnerability exceptions JSON
   -h, --help              Show this help
 EOF
@@ -55,10 +53,6 @@ while [ $# -gt 0 ]; do
             ;;
         --skip-vulnerability)
             SKIP_VULNERABILITY=yes
-            shift
-            ;;
-        --docker-archive)
-            DOCKER_ARCHIVE=yes
             shift
             ;;
         --exceptions)
@@ -106,6 +100,7 @@ echo "Snapshot:                 $SNAPSHOT"
 
 if ! docker buildx build \
     --output "type=oci,dest=$OUTPUT_DIR/image.oci.tar" \
+    --output "type=docker,dest=$OUTPUT_DIR/image.docker.tar" \
     --metadata-file "$OUTPUT_DIR/build-metadata.json" \
     --build-arg "UBUNTU_SNAPSHOT=$SNAPSHOT" \
     --tag "$IMAGE_NAME" \
@@ -116,6 +111,8 @@ fi
 
 [ -f "$OUTPUT_DIR/image.oci.tar" ] ||
     fail "Buildx did not produce image.oci.tar"
+[ -f "$OUTPUT_DIR/image.docker.tar" ] ||
+    fail "Buildx did not produce image.docker.tar"
 
 "$ROOT/scripts/oci-image-identity.sh" \
     --archive "$OUTPUT_DIR/image.oci.tar" \
@@ -131,8 +128,8 @@ require_digest_field "manifest digest" "$MANIFEST_DIGEST"
 require_digest_field "config digest" "$CONFIG_DIGEST"
 require_sha256_field "OCI archive checksum" "$OCI_ARCHIVE_SHA256"
 
-docker load -i "$OUTPUT_DIR/image.oci.tar" > "$OUTPUT_DIR/docker-load.log" 2>&1 ||
-    fail "docker load failed for $OUTPUT_DIR/image.oci.tar"
+docker load -i "$OUTPUT_DIR/image.docker.tar" > "$OUTPUT_DIR/docker-load.log" 2>&1 ||
+    { cat "$OUTPUT_DIR/docker-load.log" >&2; fail "docker load failed for $OUTPUT_DIR/image.docker.tar"; }
 
 RUN_REF=$(docker image inspect "$IMAGE_NAME" \
     --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null |
@@ -168,13 +165,8 @@ printf '%s\n' "$MANIFEST_DIGEST" > "$OUTPUT_DIR/manifest-digest.txt"
 printf '%s\n' "$CONFIG_DIGEST" > "$OUTPUT_DIR/config-digest.txt"
 printf '%s\n' "$OCI_ARCHIVE_SHA256" > "$OUTPUT_DIR/oci-archive.sha256"
 
-if [ "$DOCKER_ARCHIVE" = "yes" ]; then
-    docker save "$RUN_REF" -o "$OUTPUT_DIR/image.docker.tar"
-    docker_archive_sha=$(sha256_file "$OUTPUT_DIR/image.docker.tar")
-    printf '%s\n' "$docker_archive_sha" > "$OUTPUT_DIR/docker-archive.sha256"
-else
-    docker_archive_sha=
-fi
+docker_archive_sha=$(sha256_file "$OUTPUT_DIR/image.docker.tar")
+printf '%s\n' "$docker_archive_sha" > "$OUTPUT_DIR/docker-archive.sha256"
 
 require_cmd syft
 echo "Generating image SBOM"
@@ -253,6 +245,7 @@ jq -n \
         manifestDigest: $manifestDigest,
         configDigest: $configDigest,
         ociArchiveSha256: $ociArchiveSha256,
+        dockerArchiveSha256: $dockerArchiveSha256,
         dockerfileSha256: $dockerfileSha256,
         caBundleSha256: $caBundleSha256,
         baseImage: $baseImage,

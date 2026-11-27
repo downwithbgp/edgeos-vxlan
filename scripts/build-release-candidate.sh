@@ -107,6 +107,7 @@ require_file "$ROOT/scripts/validate-build-metadata.py"
 require_file "$ROOT/scripts/validate-artifacts.sh"
 require_dir "$IMAGE_DIR"
 require_file "$IMAGE_DIR/image.oci.tar"
+require_file "$IMAGE_DIR/image.docker.tar"
 require_file "$IMAGE_DIR/build-environment-qualification.json"
 require_file "$IMAGE_DIR/image.spdx.json"
 
@@ -196,15 +197,18 @@ MANIFEST_DIGEST=$(jq -er '.manifestDigest' "$QUAL")
 OCI_INDEX_DIGEST=$(jq -er '.ociIndexDigest' "$QUAL")
 CONFIG_DIGEST=$(jq -er '.configDigest' "$QUAL")
 OCI_ARCHIVE_SHA=$(jq -er '.ociArchiveSha256' "$QUAL")
+DOCKER_ARCHIVE_SHA=$(jq -er '.dockerArchiveSha256' "$QUAL")
 DOCKERFILE_SHA=$(jq -er '.dockerfileSha256' "$QUAL")
 CA_BUNDLE_SHA=$(jq -er '.caBundleSha256' "$QUAL")
 DEPENDENCY_SNAPSHOT=$(jq -er '.dependencySnapshot' "$QUAL")
 DEPENDENCY_INVENTORY_SHA=$(jq -er '.dependencyInventorySha256' "$QUAL")
 QUALIFICATION_SHA=$(sha256_file "$QUAL")
 IMAGE_SBOM_SHA=$(sha256_file "$IMAGE_DIR/image.spdx.json")
+[ "$(sha256_file "$IMAGE_DIR/image.docker.tar")" = "$DOCKER_ARCHIVE_SHA" ] ||
+    fail "Docker archive checksum does not match the qualification"
 
-docker load -i "$IMAGE_DIR/image.oci.tar" > "$WORK/docker-load.log" 2>&1 ||
-    fail "cannot load qualified image"
+docker load -i "$IMAGE_DIR/image.docker.tar" > "$WORK/docker-load.log" 2>&1 ||
+    { cat "$WORK/docker-load.log" >&2; fail "cannot load qualified Docker archive"; }
 RUN_REF=$(docker image inspect "$IMAGE_NAME" \
     --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null |
     awk -v d="$MANIFEST_DIGEST" 'index($0, d) { print; exit }')
@@ -400,6 +404,7 @@ jq -n \
     --arg manifestDigest "$MANIFEST_DIGEST" \
     --arg configDigest "$CONFIG_DIGEST" \
     --arg ociArchiveSha "$OCI_ARCHIVE_SHA" \
+    --arg dockerArchiveSha "$DOCKER_ARCHIVE_SHA" \
     --arg dockerfileSha "$DOCKERFILE_SHA" \
     --arg caBundleSha "$CA_BUNDLE_SHA" \
     --arg dependencySnapshot "$DEPENDENCY_SNAPSHOT" \
@@ -420,6 +425,7 @@ jq -n \
       buildEnvironment:{image:$image, ociIndexDigest:$ociIndexDigest,
               manifestDigest:$manifestDigest, configDigest:$configDigest,
               ociArchiveSha256:$ociArchiveSha,
+              dockerArchiveSha256:$dockerArchiveSha,
               dockerfileSha256:$dockerfileSha,
               caBundleSha256:$caBundleSha,
               dependencySnapshot:$dependencySnapshot,

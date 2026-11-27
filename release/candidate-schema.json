@@ -93,6 +93,7 @@
         "manifestDigest",
         "configDigest",
         "ociArchiveSha256",
+        "dockerArchiveSha256",
         "dockerfileSha256",
         "caBundleSha256",
         "dependencySnapshot",

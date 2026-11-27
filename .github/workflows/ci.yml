@@ -62,7 +62,7 @@ jobs:
         run: ./scripts/check-whitespace.sh
       - name: Install build and validation dependencies
         run: |
-          sudo apt-get update
+          ./scripts/apt-update-ubuntu-only.sh
           sudo apt-get install -y --no-install-recommends \
             build-essential debhelper dpkg-dev fakeroot kmod lintian python3
       - name: Run off-device test suite
@@ -103,7 +103,7 @@ jobs:
           fetch-depth: 1
       - name: Install build dependencies
         run: |
-          sudo apt-get update
+          ./scripts/apt-update-ubuntu-only.sh
           sudo apt-get install -y --no-install-recommends \
             build-essential debhelper dpkg-dev fakeroot
       - name: Build twice and compare
@@ -155,7 +155,7 @@ jobs:
           fetch-depth: 1
       - name: Install dataplane test tools
         run: |
-          sudo apt-get update
+          ./scripts/apt-update-ubuntu-only.sh
           sudo apt-get install -y --no-install-recommends \
             iproute2 iptables iputils-ping python3
       - name: Enable VXLAN modules
