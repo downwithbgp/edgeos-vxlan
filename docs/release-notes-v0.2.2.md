@@ -82,8 +82,7 @@ the repository; the kernel module hashes are unchanged from v0.2.1.
   underlay addressing (SLAAC/DHCPv6) at boot has not been validated.
 * **EdgeOS commits are not universally atomic.** A failed commit can leave partially applied
   configuration in some cases — after a failed VXLAN commit, do not `save`; compare the active
-  configuration with the kernel and re-converge first (`README.md`, "Failed commits and partial
-  configuration").
+  configuration with the kernel and re-converge first ([failed commits and partial configuration](interface-lifecycle.md#failed-commits-and-partial-configuration)).
 * **Existing live IPv4 VXLAN upgrade compatibility has not been directly hardware-tested.**
 * **Firewall configuration is the operator's responsibility.** The package does not create or modify
   firewall policy, and `remote-ip` is not an ingress allowlist.
@@ -119,5 +118,5 @@ curl -fsSL \
   sudo sh
 ```
 
-For the manual procedure, upgrade notes, security guidance and removal instructions, see
-`README.md`.
+For the manual procedure and upgrade notes, see `README.md`. For security guidance and removal
+instructions, see `native-firewall.md` and `interface-lifecycle.md`.
