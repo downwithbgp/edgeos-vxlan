@@ -12,9 +12,12 @@ what has actually been exercised.
 |---|---|---|
 | **I** | Implementation | Code, templates, or configuration grammar supports the combination. |
 | **L** | Inferred from Linux VXLAN | Expected from the Linux VXLAN dataplane where no direct hardware dataplane result exists. It is not a substitute for **H**; use it only with the corresponding note. |
-| **A** | Automated off-device | Unit, template, or mocked-reconciler tests in `test/` (349 checks on the current suite). |
+| **A** | Automated off-device | Unit, template, or mocked-reconciler tests in `test/` (376 checks on the current suite: 11 build + 64 helper + 122 firewall + 93 templates + 70 mock + 16 qualification-evidence contract). |
 | **S** | Simulated EdgeOS | The vendor EdgeOS 3.0.1 configuration engine under qemu, or the documented emulated-engine scenarios. Not hardware. |
 | **N** | Linux network namespace | General-Linux dataplane semantics in `test/integration-netns.sh`. Not EdgeOS. |
+| **N6** | Isolated IPv6-only Linux network namespace | The Level B topology in `test/ipv6-only-netns.sh`: no usable external IPv4 connectivity in the workload namespaces. General Linux, not EdgeOS. |
+| **N6-R** | Isolated IPv6-only namespace, actual reconciler | The N6 topology with the actual `src/vyatta-vxlan` reconciler. The EdgeOS config API, firewall dispatch and bridge helper are test doubles; kernel/`ip`/sysfs are real. Partial by design. |
+| **N6-R-P** | Candidate-packaged userspace | The hash-checked packaged `vyatta-vxlan` and `vyatta-vxlan-addr` extracted from a candidate `.deb` are executed in the same topology. Not MIPS-kernel or hardware evidence. |
 | **H** | Physical hardware | Demonstrated on the supported ER-X; the evidence document is cited. |
 | **—** | Not exercised | No evidence at that class. Do not infer a pass from another row. |
 
@@ -38,8 +41,9 @@ Notes:
 
 1. **IPv6/IPv6.** Hardware: RC2 post-reboot IPv6 overlay traffic over an IPv6 underlay, 5/5 each
    direction; see `docs/issue-3-hardware-evidence.md`. Automated: helper, mock, template and
-   namespace coverage; the namespace test creates an IPv6 VXLAN over IPv6 and passes overlay IPv6
-   traffic.
+   namespace coverage; the dual-stack namespace test creates an IPv6 VXLAN over IPv6 and passes
+   overlay IPv6 traffic. The N6 suite adds an isolated IPv6-only topology with a routed underlay,
+   host-to-host TCP/UDP, NDP, MTU boundaries and negative controls; it is not hardware evidence.
 2. **IPv6/bridged.** Hardware: bridge membership, path cost, and port priority survived recreation
    and rollback on the ER-X; packets over the bridged tunnel were not part of that run. Automated:
    mock bridge scenarios. Firewall attachments on bridge ports are rejected by design.
@@ -61,6 +65,27 @@ Notes:
    VXLAN. The hardware `vxlan903` matrix exercised dual-family overlay policy, but the sanitized
    record omits the underlay family. Do not claim a separately qualified IPv4-underlay dual-stack
    dataplane.
+
+### IPv6-only isolated qualification (Level B)
+
+The N6 suite establishes the workload environment without usable external IPv4 connectivity; see
+[`ipv6-only-qualification.md`](ipv6-only-qualification.md). The N6-R row is the actual reconciler
+path with the EdgeOS configuration API and firewall dispatch replaced by test doubles. The
+authoritative CI job requires packet capture; local developer runs may leave it optional. The
+future candidate-manifest integration is in
+[`ipv6-only-qualification-ci-integration.md`](ipv6-only-qualification-ci-integration.md).
+
+| Area | N6 | N6-R | Claim |
+|---|---|---|---|
+| IPv6 underlay, IPv6 overlay, VTEP-to-VTEP (VNI 100) | yes | — | Bidirectional ICMPv6 over a routed underlay |
+| Routed host-to-host overlay (VNI 200) | yes | — | Bidirectional ICMPv6, TCP and UDP across the tunnel |
+| IPv6 Neighbor Discovery (underlay and overlay) | yes | — | Neighbor caches resolve after flush |
+| VXLAN encapsulation/decapsulation counters | yes | — | TX/RX counters increase; capture shows outer UDP/4789 and inner IPv6 |
+| MTU boundary (1430-byte VXLAN MTU) | yes | — | 1382-byte payload passes; 1383-byte payload is rejected with `-M do` |
+| Deletion and recreation | yes | yes | Overlay traffic resumes |
+| Reconciler create/update/rollback/delete | — | partial | Real reconciler, kernel and sysfs; config API/firewall/bridge/address are test doubles |
+| Generic Linux bridge (VNI 300) | yes | — | Bridge and ND work; **not** ENG-IPV6-04 hardware evidence |
+| Isolation assertions and negative controls | yes | — | IPv4 address/route/policy canaries detected; IPv4 control pair reachable; isolated hosts cannot reach it |
 
 ### Bridged Ethernet independently of overlay Layer 3
 
@@ -98,16 +123,23 @@ separate policy on the physical/VLAN interface and must use the family of the ou
 
 | Area | Implementation | Automated | Simulated | Hardware | Claim |
 |---|---|---|---|---|---|
-| VXLAN dataplane with IPv6 underlay and IPv6 overlay | yes | yes | partial | yes | Validated with static endpoints |
+| VXLAN dataplane with IPv6 underlay and IPv6 overlay | yes | yes | partial | yes | Validated with static endpoints; N6 adds isolated IPv6-only namespace evidence |
+| Isolated IPv6-only namespace dataplane (Level B) | yes | yes (N6) | — | — | Level B achieved at N6; not hardware |
+| Actual reconciler in the isolated topology (N6-R) | yes | partial (N6-R) | — | — | Reconciler lifecycle, endpoint rejection, and reconciler-created TCP/UDP exercised; config API/firewall/bridge are test doubles |
+| Candidate-packaged userspace (N6-R-P) | yes | yes (N6-R-P, same-run CI package) | — | — | Exact integration `.deb` hash-checked, extracted and exercised in `ci.yml`; release candidate manifest/gate wiring remains future |
+| IPv6-only CI runner and control plane (Level D) | — | — | — | — | Not achieved; GitHub-hosted runner and control plane are dual-stack |
+| IPv6-only CI job with isolated namespaces | yes | yes (N6; hosted run 46044226321) | — | — | Hosted trusted run 46044226321 passed with 113/0/2; capture and reconciler executed. CI requires packet capture and installs tcpdump separately if absent. |
 | VXLAN dataplane with IPv6 underlay and IPv4 overlay | yes | yes | — | yes | Validated on RC1/RC2 |
 | Dual-stack overlay over IPv6 underlay | yes | yes | partial | yes | Validated on RC2 (20/20) |
 | Router management over IPv6 only | n/a (EdgeOS) | — | — | — | Not validated by this project |
 | Package acquisition over IPv6 only | installer is family-neutral | — | — | — | Not validated; HTTPS/DNS dependency |
-| CI and test environment IPv6-only | tests configure both families | — | — | — | No IPv6-only CI job |
+| CI and test environment IPv6-only | Level B namespace topology; dual-stack runner | yes (N6; hosted run 46044226321) | — | — | Level B implemented and hosted-run; Level D not achieved |
 | Diagnostics over IPv6 only | platform tools exist | — | — | partial | `ip -j` required; `ip -d` defective |
 
-The supported IPv6-only claim is limited to the VXLAN dataplane with static endpoints. Complete
-IPv6-only installation, management, and CI remain engineering gaps.
+The supported IPv6-only claim is limited to the VXLAN dataplane with static endpoints and the
+Level B isolated namespace environment. Complete IPv6-only installation (Level C) and IPv6-only
+CI infrastructure (Level D) remain engineering gaps. A dual-stack runner that creates IPv6-only
+namespaces is Level B, not Level D.
 
 ## 5. Test coverage inventory
 
@@ -117,11 +149,15 @@ IPv6-only installation, management, and CI remain engineering gaps.
 | `test/unit-firewall.sh` | 122 | IPv4/IPv6 attachment validation, dispatch, verification, restore, fail-closed paths |
 | `test/unit-templates.sh` | 93 | Template structure, `type: ipv4,ipv6`, family checks, MTU bounds, firewall leaves |
 | `test/mock.sh` | 70 | Reconciler lifecycle, IPv6 creation, identity changes, rollback, bridge state, firewall snapshot/restore |
-| `test/integration-netns.sh` | separate | General-Linux IPv4 and IPv6 VXLAN dataplanes, firewall directions, NDP, multiple interfaces, recreation under traffic; root/CAP_NET_ADMIN required |
-| CI workflow | — | Runs the 349-check suite, ShellCheck, package build, release validation, and the namespace test |
+| `test/unit-build.sh` | 11 | Reproducible-build contract and guard tests |
+| `test/unit-ipv6-evidence.sh` | 16 | Candidate-bound qualification-evidence acceptance/rejection, identity/hash binding, permitted skips/workarounds |
+| `test/integration-netns.sh` | separate | General-Linux dual-stack IPv4 and IPv6 VXLAN dataplanes, firewall directions, NDP, multiple interfaces, recreation under traffic; root/CAP_NET_ADMIN required |
+| `test/ipv6-only-netns.sh` | separate | Level B isolated IPv6-only topology: routed underlay, two VTEPs, host-to-host ICMPv6/TCP/UDP, NDP, MTU, recreation, bridge feasibility, isolation assertions and negative controls; optional candidate-package mode (N6-R-P); root/CAP_NET_ADMIN required |
+| CI workflow | — | Runs the 376-check suite, ShellCheck, package build, release validation, the dual-stack namespace test, and the IPv6-only qualification job |
 
-The 349-check suite is the current off-device baseline. It is not a hardware substitute. The
-namespace test is general-Linux evidence and is labelled as such; it is not EdgeOS validation.
+The 376-check suite is the current off-device baseline. It is not a hardware substitute. Both
+namespace suites are general-Linux evidence and are labelled as such; neither is EdgeOS
+validation. The N6 suite is additionally labelled N6/N6-R, not H.
 
 ## 6. Gaps and unverified behaviour
 
@@ -134,8 +170,9 @@ Ordered by significance for the current documentation claims:
    dual-family policy matrix, but not a separately classified hardware dataplane run.
 3. **Bridged VXLAN dataplane over an IPv6 underlay** has bridge-state evidence, not packet
    evidence. Add a bridged-traffic run before claiming the bridged model is fully validated.
-4. **IPv6-only management, package acquisition, and CI** are not validated. The dataplane result
-   must not be generalized to them.
+4. **IPv6-only management and package acquisition (Level C)** are not validated, and **IPv6-only
+   CI infrastructure (Level D)** is not achieved. The Level B namespace dataplane result must not
+   be generalized to them. See [`ipv6-only-qualification.md`](ipv6-only-qualification.md).
 5. **Dynamic underlay addressing (SLAAC/DHCPv6) at boot** is not validated, including prefix-change
    and late-address-arrival timing.
 6. **PMTUD/ICMPv6 Packet Too Big interaction** is documented but not covered by a dedicated
@@ -151,6 +188,13 @@ Ordered by significance for the current documentation claims:
 11. **Alternate-source IPv6 underlay filtering** was not separately produced in the published
     hardware record. The IPv6 underlay was validated with an extension of the existing local IPv6
     policy in place; the alternate-source drop path for IPv6 is an evidence gap, not a claim.
+12. **Family-selective firewall state capture.** The firewall helper reads both `iptables` and
+    `ip6tables` tables for every capture. On the supported platform both exist; on an IPv4-less
+    platform this would be a hard dependency for an IPv6-only attachment. Tracked as
+    [ENG-IPV6-08](engineering-backlog.md#eng-ipv6-08-family-selective-firewall-state-capture).
+13. **The N6 bridge section is generic Linux only.** It demonstrates topology feasibility and ND,
+    not the physical EdgeOS bridged dataplane required by
+    [ENG-IPV6-04](engineering-backlog.md#eng-ipv6-04-ipv6-underlay-bridged-ethernet-dataplane-validation).
 
 ## 7. Reproducing the off-device evidence
 
@@ -166,8 +210,18 @@ all pass. The namespace test requires root/CAP_NET_ADMIN and `ip`, `iptables`, `
 sudo REQUIRE_NETNS_TEST=1 bash test/integration-netns.sh
 ```
 
-The namespace test is not an EdgeOS test. Hardware evidence is in the cited records; do not
-reconstruct a hardware result from the namespace or emulated-engine output.
+The IPv6-only Level B suite requires root/CAP_NET_ADMIN, iproute2, iputils-ping, Python 3 and
+(optionally) tcpdump. The N6-R reconciler section also requires Perl with `JSON::PP`:
+
+```bash
+sudo REQUIRE_NETNS_TEST=1 REQUIRE_CAPTURE=1 REQUIRE_RECONCILER=1 \
+  EVIDENCE_DIR=/tmp/ipv6-only-evidence \
+  bash test/ipv6-only-netns.sh
+```
+
+The namespace tests are not EdgeOS tests. Hardware evidence is in the cited records; do not
+reconstruct a hardware result from the namespace or emulated-engine output. The N6 suite is
+Level B evidence only; Level C and Level D remain unachieved.
 
 ## 8. Related documents
 
@@ -176,6 +230,11 @@ reconstruct a hardware result from the namespace or emulated-engine output.
 * [`audit/2026-11-documentation-audit.md`](audit/2026-11-documentation-audit.md) — point-in-time
   audit and final-review record.
 * [`engineering-backlog.md`](engineering-backlog.md) — repository-local engineering proposals.
+* [`ipv6-only-qualification.md`](ipv6-only-qualification.md) — Level A–D model, isolation contract,
+  threat model and CI integration.
+* [`ipv4-dependency-inventory.md`](ipv4-dependency-inventory.md) — repository-wide IPv4 dependency
+  audit and external service limitations.
+* [`ipv6-only-qualification-evidence.md`](ipv6-only-qualification-evidence.md) — validation record.
 * [`issue-3-hardware-evidence.md`](issue-3-hardware-evidence.md) — IPv6 underlay hardware evidence.
 * [`v0.3.0-hardware-qualification-report.md`](v0.3.0-hardware-qualification-report.md) — RC5
   qualification record.

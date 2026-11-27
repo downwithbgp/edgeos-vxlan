@@ -1,43 +1,49 @@
 #!/bin/sh
-# Update APT metadata using Ubuntu sources only.
+# Refresh only the distribution's own APT source file.
 #
-# GitHub's ubuntu-24.04 runner image includes a Microsoft repository that has
-# intermittently returned 403. The product has no Microsoft dependency, so
-# temporarily mask only sources that reference packages.microsoft.com, run
-# apt-get update, and restore the masked files on exit. Signature and TLS
-# verification remain enabled.
+# The GitHub-hosted runner image enables additional third-party repositories.
+# A plain `apt-get update` therefore depends on unrelated services (for
+# example packages.microsoft.com) that are not required to install the
+# project's build or dataplane tools.  A transient 403 from such a repository
+# must not fail a source-validation job.
+#
+# This helper keeps the shared runner configuration unchanged: it passes
+# transient APT options that read exactly one trusted distribution source
+# file and disable the source-parts directory.  Signature verification and
+# TLS behaviour are not changed.  If the distribution source itself is
+# unavailable, the command fails; that is a real infrastructure failure and
+# is not hidden.
 #
 # Usage: apt-update-ubuntu-only.sh
 set -eu
 
+[ "$#" -eq 0 ] ||
+    { echo "usage: $0" >&2; exit 2; }
+
 if [ "$(id -u)" -eq 0 ]; then
-    SUDO=
+    apt_get()
+    {
+        apt-get "$@"
+    }
 else
-    SUDO=sudo
+    command -v sudo >/dev/null 2>&1 ||
+        { echo "ERROR: sudo is required to refresh APT" >&2; exit 1; }
+    apt_get()
+    {
+        sudo apt-get "$@"
+    }
 fi
 
-MASKED=$(mktemp) || {
-    echo "ERROR: cannot create mask list" >&2
+if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+    source=/etc/apt/sources.list.d/ubuntu.sources
+elif [ -f /etc/apt/sources.list ]; then
+    source=/etc/apt/sources.list
+else
+    echo "ERROR: no Ubuntu APT source file found" >&2
     exit 1
-}
+fi
 
-restore()
-{
-    while IFS= read -r file; do
-        [ -n "$file" ] || continue
-        $SUDO mv "$file.disabled" "$file" 2>/dev/null || true
-    done < "$MASKED"
-    rm -f "$MASKED"
-}
-trap restore EXIT HUP INT TERM
-
-for file in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
-    [ -f "$file" ] || continue
-    if grep -q 'packages\.microsoft\.com' "$file"; then
-        echo "Temporarily masking non-Ubuntu APT source: $file" >&2
-        $SUDO mv "$file" "$file.disabled"
-        printf '%s\n' "$file" >> "$MASKED"
-    fi
-done
-
-$SUDO apt-get update
+echo "Refreshing only the distribution APT source: $source"
+apt_get update \
+    -o Dir::Etc::sourceparts="-" \
+    -o Dir::Etc::sourcelist="$source"

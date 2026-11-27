@@ -28,4 +28,7 @@ if [ -f "$ROOT/test/mock.sh" ]; then
     bash "$ROOT/test/mock.sh"
 fi
 
+echo "== unit: IPv6 qualification evidence =="
+bash "$ROOT/test/unit-ipv6-evidence.sh"
+
 echo "ALL TESTS PASSED"
