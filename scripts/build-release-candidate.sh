@@ -172,8 +172,11 @@ if [ -n "$DIRTY" ]; then
     note "working tree is dirty; building archived revision $COMMIT"
 fi
 
-WORK=$OUTPUT_DIR/.work
-mkdir -p "$WORK"
+# Transient build state must live outside the candidate directory: the
+# candidate contract rejects every unexpected top-level entry.
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/edgeos-vxlan-candidate.XXXXXX") ||
+    fail "cannot create candidate work directory"
+trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 SOURCE_TAR=$OUTPUT_DIR/source.tar
 git -C "$REPO" archive --format=tar "$COMMIT" > "$SOURCE_TAR" ||
     fail "git archive failed for $COMMIT"
@@ -519,8 +522,6 @@ else
     "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$OUTPUT_DIR" \
         --source-root "$REPO" --rev "$COMMIT"
 fi
-
-rm -rf "$WORK"
 
 echo
 echo "Release candidate: PASS"

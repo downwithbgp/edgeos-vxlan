@@ -146,6 +146,12 @@ jq --arg id "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 expect_fail_with "candidate ID mismatch" \
     "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$TMP/manifest-sub" --release
 
+# Unexpected top-level entry (transient build state) must be rejected.
+cp -a "$CAND" "$TMP/unexpected-file"
+mkdir -p "$TMP/unexpected-file/.work"
+expect_fail_with "unexpected candidate file: .work" \
+    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$TMP/unexpected-file" --release
+
 # Artifact substitution.
 cp -a "$CAND" "$TMP/artifact-sub"
 printf 'x' >> "$TMP/artifact-sub/edgeos-vxlan_0.3.1+edgeos3.0.1.e50_all.deb"
