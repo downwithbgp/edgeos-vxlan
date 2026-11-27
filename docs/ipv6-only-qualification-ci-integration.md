@@ -197,18 +197,22 @@ The package payload is unchanged: the integration `.deb` is still
 
 ## 9. Hosted verification of the integrated workflow
 
+Selected runs. Every documentation-only commit on this branch has passed the same workflows; the
+table records the integration merge and the commits that carried verification-relevant changes.
+
 | Run | Event | Result |
 |---|---|---|
+| [46064486700](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46064486700) | push at `a53fb0d` | **success** — all six jobs passed, including IPv6-only qualification |
+| [46064492288](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46064492288) | pull_request at `a53fb0d` | **success** — Static analysis, Build and validate packages and Reproducibility verification passed; the three privileged jobs skipped |
+| [46063740562](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46063740562) | push at `c315fa1` | **success** — all six jobs passed, including IPv6-only qualification |
+| [46063748970](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46063748970) | pull_request at `c315fa1` | **success** — the three privileged jobs skipped |
 | [46063199151](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46063199151) | push at `ec1a5c2` | **success** — all six jobs passed, including IPv6-only qualification |
-| [46063207150](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46063207150) | pull_request at `ec1a5c2` | **success** — Static analysis, Build and validate packages and Reproducibility verification passed; the three privileged jobs skipped |
-| [46062441889](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46062441889) | push, `ci/ipv6-native-qualification` at `8d952e0` | **success** — Static analysis, Build and validate packages, Reproducibility verification, Published-release fixtures, Network-namespace dataplane and IPv6-only qualification all passed |
-| [46062447034](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46062447034) | pull_request, head `8d952e0` | **success** — Static analysis, Build and validate packages and Reproducibility verification passed; Published-release fixtures, Network-namespace dataplane and IPv6-only qualification skipped by their event guards |
-| [46060990232](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46060990232) | push at `92336a3` | **success** — all six jobs passed |
-| [46060996251](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46060996251) | pull_request at `92336a3` | **success** — privileged jobs skipped by their event guards |
+| [46063207150](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46063207150) | pull_request at `ec1a5c2` | **success** — the three privileged jobs skipped |
+| [46062441889](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46062441889) | push at `8d952e0` | **success** — all six jobs passed |
+| [46060990232](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46060990232) | push at `92336a3` (integration merge) | **success** — all six jobs passed |
 
 The PR runs confirm the trust boundary: untrusted PR code never reaches the privileged jobs. The
-skips are event guards, not qualifications, and are not reported as IPv6 evidence. Documentation
-commits after `ec1a5c2` run the same workflows; they change no workflow, test or package input.
+skips are event guards, not qualifications, and are not reported as IPv6 evidence.
 
 ### 9.1 Candidate-bound evidence from the integrated push run
 
