@@ -199,7 +199,7 @@ external VTEP qualification over routed networks.
 |---|---|
 | Branch | `docs/ipv6-first` |
 | Base | `origin/main` `f182a64` |
-| Divergence | Three initial documentation commits plus the final-review commit; final HEAD reported at handoff |
+| Divergence | Five commits on top of `origin/main`: three initial documentation commits, the final-review restructure, and a release-note reference fix; final HEAD reported at handoff |
 | Runtime/CLI/kernel/package changes | None |
 | Installer change | Printed example only; install logic unchanged |
 | Merge/tag/publish | None performed |
