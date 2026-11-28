@@ -1,8 +1,11 @@
 # Release-candidate IPv6 qualification
 
-**Status:** implemented on `ci/ipv6-release-qualification`; PR pending maintainer review. Release
-publication remains **disabled**. This document is the canonical description of how IPv6-only
-qualification is bound to a trusted release candidate.
+**Status:** merged to `main` as `fffdedd` (PR #10). The development-branch hosted non-publication
+qualification is recorded in §11. A production candidate cannot currently be constructed at the
+published `0.3.0` version, so main-branch candidate qualification, attestation and
+production-policy promotion validation are **not demonstrated**; the blocked run and its cause are
+recorded in §12. Release publication remains **disabled**. This document is the canonical
+description of how IPv6-only qualification is bound to a trusted release candidate.
 **Scope:** the trusted release lifecycle (`release.yml`, `release/candidate-schema.json`,
 `scripts/build-release-candidate.sh`, `scripts/validate-candidate.sh`,
 `scripts/check-release-gates.sh`, `scripts/promote-release.sh`) and the qualification harness.
@@ -265,8 +268,9 @@ for this work.
 2. **Levels C and D:** IPv6-only installation, management, runner and control plane remain
    unachieved (ENG-IPV6-01/02).
 3. **Hosted qualification:** the hosted non-publication run of the combined path on the development
-   branch is recorded in §11. A production-candidate run from `refs/heads/main` still requires the
-   merge and remains gated behind the disabled publication controls.
+   branch is recorded in §11. The merged `main` revision has post-merge CI and image-qualification
+   evidence, but a production candidate cannot be constructed at the published `0.3.0` version; the
+   blocked main-branch run and its cause are recorded in §12.
 4. **`iproute2-json-normalization`:** still a test-only compatibility layer (ENG-IPV6-10).
 5. **Release publication:** disabled. This integration does not authorize a release.
 6. **Repository protections:** not configured (§8).
@@ -357,3 +361,64 @@ substitute for this combined release-qualification demonstration.
 
 This record was committed after the qualifying run; the record commit changes documentation only
 and does not alter the workflow, scripts, tests or package payload that were qualified.
+
+## 12. Main-branch integration record (2026-11-28): candidate construction blocked
+
+PR #10 was merged into `main` as merge commit `fffdedd45ccf73d45f19692ea2057e63fed69334`
+(parents `f1cec1580501bcb53b8aa370b49e8e72ea6b77ef` and
+`66715cf226bb6a0427fe6186e7da482e3642ffd8`). The approved head was
+`dc9a993f926d6832508f7daa3e0da2285213e925`; `66715cf` removed the temporary
+qualification-branch push trigger before the merge and changed no product payload.
+
+Post-merge evidence on `fffdedd`:
+
+| Run | Purpose | Result |
+|---|---|---|
+| [46102648705](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46102648705) | Canonical `ci.yml` push run | success — Static analysis, Build and validate packages, Reproducibility verification, Published-release fixtures, Network-namespace dataplane, IPv6-only qualification |
+| [46102947016](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46102947016) | `build-environment.yml`, `publish_image=false` | success — Build and qualify image, Independent image qualification; Publish image to GHCR (gated) skipped |
+
+Qualified build environment, from artifact `15245653394`
+(`sha256:d14ce32e6017bc4fdedef1114299565013cf0554b2aeba0c9b6f5a952581b34a`):
+
+| Item | Value |
+|---|---|
+| Image manifest digest | `sha256:19d599d997f5b19481215a0352b3c2099b806ca230322a0e1c2dac702bb05338` |
+| Image config digest | `sha256:918567448616065c6538bbe70080754a686560a4ac5834b32e7fe5db94259a0f` |
+| OCI index digest | `sha256:de163615a4c0d5068788ef241732b59c03ff506d93e293344b2b3b30fb86b8c1` |
+| Qualification file SHA-256 | `c7fa53476e923a83ac59ae6c1961cfb85e66a009aba660bba159a1bc592da9e1` |
+
+Candidate construction was dispatched against `main` at `fffdedd` as run
+[46103291407](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46103291407)
+(`workflow_dispatch`, `mode=candidate`, attempt 1). `Resolve immutable identities` and
+`Qualify build image` succeeded. `Build candidate` failed in "Build candidate artifacts and
+establish the build identity":
+
+```
+ERROR: production version 0.3.0 is not newer than published 0.3.0
+```
+
+`workflow_dispatch` `mode=candidate` always sets `PRODUCTION=true`, and
+`build-release-candidate.sh` requires the production version to be strictly newer than
+`release.baselinePublishedVersion` (`0.3.0` in `release/release-policy.json`). The package version
+is `0.3.0` and `v0.3.0` is published, so the gate behaves as designed. A version increment is
+outside this assignment. The only non-release candidate path is a `push` event on a branch listed in
+`release.yml`, which `main` is not; the temporary development-branch trigger was deliberately
+removed in `66715cf`. The downstream jobs (`IPv6-only candidate qualification`,
+`Finalize qualified candidate`, `Qualification dry-run`) were therefore skipped.
+
+Consequences, stated explicitly:
+
+- No qualified main-branch release candidate exists. Candidate identity, main-branch attestations,
+  main-branch IPv6 candidate qualification and production-policy promotion validation could not be
+  exercised and are **not** claimed.
+- The post-merge CI and image-qualification runs above are real main-branch evidence, but they are
+  not release-candidate qualification and are not a substitute for it.
+- `ENG-IPV6-11` remains open and remains a precondition for enabling production publication.
+- Publication controls are unchanged: no repository variables are configured
+  (`RELEASE_PUBLICATION_ENABLED` unset), the repository API reports no configured environments, no
+  release, draft or tag was created, `v0.3.0` remains the latest published release, and no tag
+  contains `fffdedd`.
+
+**Revision distinction.** The evidence above belongs to `fffdedd`. An evidence-record commit that
+records this boundary advances `main` afterwards and is documentation-only; it does not qualify the
+later revision, and the blocker applies equally to it.
