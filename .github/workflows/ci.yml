@@ -47,6 +47,7 @@ jobs:
           bash test/unit-candidate-schema.sh
           bash test/unit-release-contracts.sh
           bash test/unit-release-publication.sh
+          bash test/unit-release-ipv6-gate.sh
           bash test/unit-release-policy.sh
           bash test/unit-release-version.sh
           bash test/unit-release-image-publish.sh

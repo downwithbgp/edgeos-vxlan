@@ -158,6 +158,41 @@ candidate_id_from_manifest()
     canonical_identity "$1" | sha256sum | awk '{print "sha256:" $1}'
 }
 
+# Immutable build identity: everything that determines the distributed
+# artifacts, excluding qualification results and the candidate identity.
+# It is established after build A (artifacts and their hashes exist) and
+# before any qualification runs, so qualification evidence can bind to a
+# stable identity instead of the not-yet-computed candidate ID.
+canonical_build_identity()
+{
+    jq -cS '{
+        project: .project,
+        source: .source,
+        buildEnvironment: .buildEnvironment,
+        build: {
+            buildType: .build.buildType,
+            command: .build.command,
+            reproducibility: .build.reproducibility
+        },
+        artifacts: (.artifacts | sort_by(.name))
+    }' "$1"
+}
+
+build_identity_from_manifest()
+{
+    canonical_build_identity "$1" | sha256sum | awk '{print $1}'
+}
+
+check_build_identity()
+{
+    _expected=$(manifest_get "$1" '.build.identity')
+    is_sha256 "$_expected" ||
+        fail "build identity is not a SHA-256: $_expected"
+    _actual=$(build_identity_from_manifest "$1")
+    [ "$_expected" = "$_actual" ] ||
+        fail "build identity mismatch: manifest has $_expected, identity computes $_actual"
+}
+
 check_candidate_id()
 {
     _expected=$(manifest_get "$1" '.candidate.id')

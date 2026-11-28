@@ -220,9 +220,235 @@ jobs:
           compression-level: 0
           retention-days: 90
 
-  candidate:
+  candidate-build:
     name: Build candidate
     needs: [resolve, environment]
+    if: github.event_name == 'push' || inputs.mode == 'candidate'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # Build-only: no OIDC token or attestation write permission. The
+    # privileged IPv6 qualification and attestation run in later jobs.
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      build_identity: ${{ steps.meta.outputs.build_identity }}
+      package_name: ${{ steps.meta.outputs.package_name }}
+      package_sha256: ${{ steps.meta.outputs.package_sha256 }}
+      source_commit: ${{ steps.meta.outputs.source_commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.trusted_sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install pinned release tools
+        run: ./scripts/install-supply-chain-tools.sh "$RUNNER_TEMP/release-tools"
+      - name: Add release tools to PATH
+        run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
+      - name: Download qualified image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.0.0
+        with:
+          name: release-build-environment
+          path: environment
+      - name: Build candidate artifacts and establish the build identity
+        env:
+          PRODUCTION: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate' }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          TRUSTED_SHA: ${{ needs.resolve.outputs.trusted_sha }}
+          IMAGE_MANIFEST: ${{ inputs.image_manifest_digest }}
+          IMAGE_CONFIG: ${{ inputs.image_config_digest }}
+          IMAGE_QUALIFICATION: ${{ inputs.image_qualification_sha256 }}
+        run: |
+          set -eu
+          if [ "$PRODUCTION" = "true" ]; then
+            ./scripts/build-release-candidate.sh \
+              --stage build \
+              --output-dir candidate \
+              --image-archive-dir environment \
+              --production \
+              --release-tag "$RELEASE_TAG_INPUT" \
+              --workflow-ref refs/heads/main \
+              --workflow-commit "$TRUSTED_SHA" \
+              --expected-source-commit "$SOURCE_SHA" \
+              --expected-workflow-commit "$TRUSTED_SHA" \
+              --expected-image-manifest-digest "$IMAGE_MANIFEST" \
+              --expected-image-config-digest "$IMAGE_CONFIG" \
+              --expected-image-qualification-sha256 "$IMAGE_QUALIFICATION"
+          else
+            ./scripts/build-release-candidate.sh \
+              --stage build \
+              --output-dir candidate \
+              --image-archive-dir environment \
+              --expected-source-commit "$SOURCE_SHA" \
+              --expected-workflow-commit "$TRUSTED_SHA"
+          fi
+          RECORD=candidate/qualification/build-record.json
+          VERSION=$(jq -r .project.packageVersion "$RECORD")
+          INTEGRATION="edgeos-vxlan_${VERSION}_all.deb"
+          {
+            echo "build_identity=$(jq -r .build.identity "$RECORD")"
+            echo "source_commit=$(jq -r .source.commit "$RECORD")"
+            echo "package_name=$INTEGRATION"
+            echo "package_sha256=$(sha256sum "candidate/$INTEGRATION" | awk '{print $1}')"
+          } >> "$GITHUB_OUTPUT"
+        id: meta
+      - name: Upload candidate build
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-candidate-build
+          path: candidate/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+  ipv6-qualification:
+    name: IPv6-only candidate qualification
+    needs: [resolve, candidate-build]
+    if: github.event_name == 'push' || inputs.mode == 'candidate'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Privileged network-namespace execution: read-only repository and
+    # artifact access. No OIDC token, no attestation write, no secrets.
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.trusted_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify qualification tooling
+        run: |
+          missing=0
+          for cmd in ip ping python3 timeout awk sed grep gh jq dpkg-deb; do
+            if ! command -v "$cmd" >/dev/null 2>&1; then
+              echo "ERROR: required tool missing from the runner image: $cmd" >&2
+              missing=1
+            fi
+          done
+          if command -v tcpdump >/dev/null 2>&1; then
+            echo "Packet capture: tcpdump is available."
+          else
+            echo "Packet capture: tcpdump is absent; the dependency-preparation step will install it."
+          fi
+          exit "$missing"
+      - name: Fetch the candidate build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ARTIFACT_ID: ${{ needs.candidate-build.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.candidate-build.outputs.artifact_digest }}
+          HEAD_SHA: ${{ needs.candidate-build.outputs.source_commit }}
+        run: |
+          ./scripts/fetch-github-artifact.sh \
+            --repo "$REPO" \
+            --artifact-id "$ARTIFACT_ID" \
+            --expected-digest "$ARTIFACT_DIGEST" \
+            --destination candidate-build \
+            --expected-run-id "$GITHUB_RUN_ID" \
+            --expected-head-sha "$HEAD_SHA" \
+            --expected-workflow-path .github/workflows/release.yml \
+            --expected-name release-candidate-build \
+            --allow-run-in-progress
+      - name: Verify the build record and select the exact candidate package
+        env:
+          EXPECTED_BUILD_IDENTITY: ${{ needs.candidate-build.outputs.build_identity }}
+          EXPECTED_PACKAGE: ${{ needs.candidate-build.outputs.package_name }}
+          EXPECTED_PACKAGE_SHA: ${{ needs.candidate-build.outputs.package_sha256 }}
+        run: |
+          set -eu
+          cd candidate-build
+          sha256sum --strict --quiet -c SHA256SUMS
+          RECORD=qualification/build-record.json
+          BUILD_IDENTITY=$(jq -r .build.identity "$RECORD")
+          SOURCE_COMMIT=$(jq -r .source.commit "$RECORD")
+          [ "$BUILD_IDENTITY" = "$EXPECTED_BUILD_IDENTITY" ] ||
+            { echo "ERROR: build identity mismatch" >&2; exit 1; }
+          [ "$(jq -r .candidate.status "$RECORD")" = "built" ] ||
+            { echo "ERROR: build record is not in the built state" >&2; exit 1; }
+          [ -f "$EXPECTED_PACKAGE" ] ||
+            { echo "ERROR: candidate package is missing: $EXPECTED_PACKAGE" >&2; exit 1; }
+          [ "$(sha256sum "$EXPECTED_PACKAGE" | awk '{print $1}')" = "$EXPECTED_PACKAGE_SHA" ] ||
+            { echo "ERROR: candidate package hash mismatch" >&2; exit 1; }
+          {
+            echo "BUILD_IDENTITY=$BUILD_IDENTITY"
+            echo "SOURCE_COMMIT=$SOURCE_COMMIT"
+            echo "CANDIDATE_PACKAGE=$PWD/$EXPECTED_PACKAGE"
+            echo "CANDIDATE_PACKAGE_SHA256=$EXPECTED_PACKAGE_SHA"
+          } >> "$GITHUB_ENV"
+      - name: Prepare packet-capture tooling
+        run: |
+          if command -v tcpdump >/dev/null 2>&1; then
+            echo "tcpdump is already present; no package acquisition."
+            exit 0
+          fi
+          ./scripts/apt-update-ubuntu-only.sh
+          sudo apt-get install -y --no-install-recommends tcpdump
+      - name: Enable VXLAN modules
+        run: sudo modprobe vxlan udp_tunnel ip6_udp_tunnel
+      - name: Qualify the exact candidate package in the isolated IPv6-only topology
+        env:
+          REQUIRE_NETNS_TEST: "1"
+          REQUIRE_CAPTURE: "1"
+          REQUIRE_RECONCILER: "1"
+          EVIDENCE_DIR: ${{ runner.temp }}/ipv6-only-evidence
+        run: |
+          set -eu
+          sudo -E env \
+            IPV6_ONLY_BUILD_IDENTITY="$BUILD_IDENTITY" \
+            IPV6_ONLY_SOURCE_COMMIT="$SOURCE_COMMIT" \
+            IPV6_ONLY_CANDIDATE_PACKAGE="$CANDIDATE_PACKAGE" \
+            IPV6_ONLY_CANDIDATE_PACKAGE_SHA256="$CANDIDATE_PACKAGE_SHA256" \
+            REQUIRE_NETNS_TEST=1 \
+            REQUIRE_CAPTURE=1 \
+            REQUIRE_RECONCILER=1 \
+            EVIDENCE_DIR="$EVIDENCE_DIR" \
+            bash test/ipv6-only-netns.sh
+          python3 scripts/validate-ipv6-qualification-evidence.py \
+            --summary "$EVIDENCE_DIR/summary.json" \
+            --evidence-dir "$EVIDENCE_DIR" \
+            --expected-source-commit "$SOURCE_COMMIT" \
+            --expected-build-identity "$BUILD_IDENTITY" \
+            --expected-package-sha256 "$CANDIDATE_PACKAGE_SHA256" \
+            --expected-workflow-run-id "$GITHUB_RUN_ID" \
+            --expected-workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --expected-workflow-path "$GITHUB_WORKFLOW_REF" \
+            --expected-workflow-ref "$GITHUB_REF" \
+            --expected-workflow-commit "$GITHUB_SHA" \
+            --expected-harness-commit "$GITHUB_SHA" \
+            --require-workflow-binding \
+            --require-package-execution \
+            --allow-skip host-global-ipv6-escape-unavailable \
+            --allow-skip iproute2-json-normalization \
+            --allow-workaround iproute2-json-normalization
+      - name: Upload IPv6-only qualification evidence
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-candidate-ipv6-evidence
+          path: ${{ runner.temp }}/ipv6-only-evidence
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 90
+      - name: Clean up isolated namespaces
+        if: always()
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/ipv6-only-evidence
+        run: sudo -E bash test/ipv6-only-netns.sh --cleanup
+
+  candidate:
+    name: Finalize qualified candidate
+    needs: [resolve, candidate-build, ipv6-qualification]
     if: github.event_name == 'push' || inputs.mode == 'candidate'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -249,42 +475,59 @@ jobs:
         run: printf '%s\n' "$RUNNER_TEMP/release-tools" >> "$GITHUB_PATH"
       - name: Install pinned schema validator
         run: ./scripts/install-schema-validator.sh
-      - name: Download qualified image
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.0.0
-        with:
-          name: release-build-environment
-          path: environment
-      - name: Build release candidate
+      - name: Fetch the candidate build
         env:
-          PRODUCTION: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate' }}
-          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
-          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
-          TRUSTED_SHA: ${{ needs.resolve.outputs.trusted_sha }}
-          IMAGE_MANIFEST: ${{ inputs.image_manifest_digest }}
-          IMAGE_CONFIG: ${{ inputs.image_config_digest }}
-          IMAGE_QUALIFICATION: ${{ inputs.image_qualification_sha256 }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ARTIFACT_ID: ${{ needs.candidate-build.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.candidate-build.outputs.artifact_digest }}
+          HEAD_SHA: ${{ needs.candidate-build.outputs.source_commit }}
+        run: |
+          ./scripts/fetch-github-artifact.sh \
+            --repo "$REPO" \
+            --artifact-id "$ARTIFACT_ID" \
+            --expected-digest "$ARTIFACT_DIGEST" \
+            --destination candidate \
+            --expected-run-id "$GITHUB_RUN_ID" \
+            --expected-head-sha "$HEAD_SHA" \
+            --expected-workflow-path .github/workflows/release.yml \
+            --expected-name release-candidate-build \
+            --allow-run-in-progress
+      - name: Fetch the qualification evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ARTIFACT_ID: ${{ needs.ipv6-qualification.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.ipv6-qualification.outputs.artifact_digest }}
+          HEAD_SHA: ${{ needs.candidate-build.outputs.source_commit }}
+        run: |
+          ./scripts/fetch-github-artifact.sh \
+            --repo "$REPO" \
+            --artifact-id "$ARTIFACT_ID" \
+            --expected-digest "$ARTIFACT_DIGEST" \
+            --destination evidence \
+            --expected-run-id "$GITHUB_RUN_ID" \
+            --expected-head-sha "$HEAD_SHA" \
+            --expected-workflow-path .github/workflows/release.yml \
+            --expected-name release-candidate-ipv6-evidence \
+            --allow-run-in-progress
+      - name: Attach IPv6 qualification evidence and finalize the candidate
+        env:
+          EXPECTED_BUILD_IDENTITY: ${{ needs.candidate-build.outputs.build_identity }}
         run: |
           set -eu
-          if [ "$PRODUCTION" = "true" ]; then
-            ./scripts/build-release-candidate.sh \
-              --output-dir candidate \
-              --image-archive-dir environment \
-              --production \
-              --release-tag "$RELEASE_TAG_INPUT" \
-              --workflow-ref refs/heads/main \
-              --workflow-commit "$TRUSTED_SHA" \
-              --expected-source-commit "$SOURCE_SHA" \
-              --expected-workflow-commit "$TRUSTED_SHA" \
-              --expected-image-manifest-digest "$IMAGE_MANIFEST" \
-              --expected-image-config-digest "$IMAGE_CONFIG" \
-              --expected-image-qualification-sha256 "$IMAGE_QUALIFICATION"
-          else
-            ./scripts/build-release-candidate.sh \
-              --output-dir candidate \
-              --image-archive-dir environment \
-              --expected-source-commit "$SOURCE_SHA" \
-              --expected-workflow-commit "$TRUSTED_SHA"
-          fi
+          ./scripts/build-release-candidate.sh \
+            --stage finalize \
+            --repo . \
+            --output-dir candidate \
+            --ipv6-evidence-dir evidence \
+            --expected-build-identity "$EXPECTED_BUILD_IDENTITY" \
+            --expected-workflow-run-id "$GITHUB_RUN_ID" \
+            --expected-workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --expected-workflow-path "$GITHUB_WORKFLOW_REF" \
+            --expected-evidence-ref "$GITHUB_REF" \
+            --expected-evidence-commit "$GITHUB_SHA" \
+            --expected-harness-commit "$GITHUB_SHA"
           echo "candidate_id=$(jq -r .candidate.id candidate/release-candidate.json)" \
             >> "$GITHUB_OUTPUT"
           echo "manifest_sha256=$(sha256sum candidate/release-candidate.json | awk '{print $1}')" \
@@ -302,6 +545,7 @@ jobs:
             candidate/sbom-*.spdx.json
             candidate/build-environment-qualification.json
             candidate/build-environment-image.spdx.json
+            candidate/qualification/build-record.json
       - name: Attest integration SBOM
         id: sbom-int
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2

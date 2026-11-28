@@ -312,7 +312,10 @@ artifact_json=$("$GH_BIN" api "repos/$(jq -r '.project.repository' "$POLICY")/ac
 [ "$(jq -r '.digest' <<<"$artifact_json")" = "$ARTIFACT_DIGEST" ] ||
     fail "candidate artifact digest mismatch"
 
+# The gate re-validates the candidate, including IPv6-only qualification, so
+# no promotion mode can publish an unqualified candidate.
 "$ROOT/scripts/check-release-gates.sh" --tag "$TAG" \
+    --candidate-dir "$DIR" \
     --confirm "${CONFIRM_PUBLISH:-}"
 
 REPO=$(jq -r '.project.repository' "$POLICY")

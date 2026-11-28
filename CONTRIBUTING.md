@@ -133,11 +133,14 @@ not normalized; compare member contents and record the distinction between publi
 canonical reproducibility and payload equivalence. The current reconciliation is in
 `docs/ipv6-only-qualification-evidence.md`.
 
-PR #8 is merged. The `ipv6-only` job is in `ci.yml` and binds its evidence to the same-run package
-artifact by artifact ID/digest, source commit, workflow run/attempt/path/ref/commit and packaged
-reconciler hashes. Its `summary.json` is not yet wired into the Phase III candidate manifest or
-publication gate; that is a separate focused change. Do not modify publication policy as part of a
-qualification change. See `docs/ipv6-only-qualification-ci-integration.md`.
+The `ipv6-only` job in `ci.yml` qualifies a non-release CI package and binds its evidence to the
+same-run artifact by ID/digest, source commit, workflow run/attempt/path/ref/commit and packaged
+reconciler hashes. Release-candidate qualification is a separate path in `release.yml`: it
+qualifies the exact candidate package, attaches the four required checks to the candidate manifest
+under an immutable `build.identity`, and is enforced by `validate-candidate.sh` and
+`check-release-gates.sh --candidate-dir`. Do not modify publication policy as part of a
+qualification change. See `docs/release-candidate-ipv6-qualification.md` and
+`docs/ipv6-only-qualification-ci-integration.md`.
 
 ## 5. Documentation
 

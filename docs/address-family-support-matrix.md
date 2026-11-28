@@ -126,7 +126,7 @@ separate policy on the physical/VLAN interface and must use the family of the ou
 | VXLAN dataplane with IPv6 underlay and IPv6 overlay | yes | yes | partial | yes | Validated with static endpoints; N6 adds isolated IPv6-only namespace evidence |
 | Isolated IPv6-only namespace dataplane (Level B) | yes | yes (N6) | — | — | Level B achieved at N6; not hardware |
 | Actual reconciler in the isolated topology (N6-R) | yes | partial (N6-R) | — | — | Reconciler lifecycle, endpoint rejection, and reconciler-created TCP/UDP exercised; config API/firewall/bridge are test doubles |
-| Candidate-packaged userspace (N6-R-P) | yes | yes (N6-R-P, same-run CI package) | — | — | Exact integration `.deb` hash-checked, extracted and exercised in `ci.yml`; release candidate manifest/gate wiring remains future |
+| Candidate-packaged userspace (N6-R-P) | yes | yes (N6-R-P, release candidate) | — | — | The exact candidate integration `.deb` is hash-checked, extracted and exercised in `release.yml`; the four checks are bound to the candidate manifest under `build.identity` and enforced by the candidate validator and publication gate. Hosted non-publication run [46096392548](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46096392548) recorded on the development branch; production publication remains disabled. See [`release-candidate-ipv6-qualification.md`](release-candidate-ipv6-qualification.md) |
 | IPv6-only CI runner and control plane (Level D) | — | — | — | — | Not achieved; GitHub-hosted runner and control plane are dual-stack |
 | IPv6-only CI job with isolated namespaces | yes | yes (N6; hosted run 46044226321) | — | — | Hosted trusted run 46044226321 passed with 113/0/2; capture and reconciler executed. CI requires packet capture and installs tcpdump separately if absent. |
 | VXLAN dataplane with IPv6 underlay and IPv4 overlay | yes | yes | — | yes | Validated on RC1/RC2 |
@@ -151,6 +151,7 @@ namespaces is Level B, not Level D.
 | `test/mock.sh` | 70 | Reconciler lifecycle, IPv6 creation, identity changes, rollback, bridge state, firewall snapshot/restore |
 | `test/unit-build.sh` | 11 | Reproducible-build contract and guard tests |
 | `test/unit-ipv6-evidence.sh` | 16 | Candidate-bound qualification-evidence acceptance/rejection, identity/hash binding, permitted skips/workarounds |
+| `test/unit-release-ipv6-gate.sh` | 28 | Release-candidate and promotion gates: build identity, retained evidence, workflow provenance, artifact replacement, evidence substitution, permitted exceptions |
 | `test/integration-netns.sh` | separate | General-Linux dual-stack IPv4 and IPv6 VXLAN dataplanes, firewall directions, NDP, multiple interfaces, recreation under traffic; root/CAP_NET_ADMIN required |
 | `test/ipv6-only-netns.sh` | separate | Level B isolated IPv6-only topology: routed underlay, two VTEPs, host-to-host ICMPv6/TCP/UDP, NDP, MTU, recreation, bridge feasibility, isolation assertions and negative controls; optional candidate-package mode (N6-R-P); root/CAP_NET_ADMIN required |
 | CI workflow | — | Runs the 376-check suite, ShellCheck, package build, release validation, the dual-stack namespace test, and the IPv6-only qualification job |
