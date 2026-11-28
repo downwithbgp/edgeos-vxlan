@@ -271,24 +271,32 @@ for this work.
 5. **Release publication:** disabled. This integration does not authorize a release.
 6. **Repository protections:** not configured (§8).
 
-## 10. Local qualification record (2026-11-27)
+## 10. Local qualification record (2026-11-28)
 
-Local, non-release evidence; not hosted CI and not hardware.
+**Classification: local contract test, not authenticated hosted provenance.** The N6-R-P workload
+ran in a privileged local container against the exact package built by the local build stage. The
+workflow identity fields in the evidence (`workflow.runId = 1`, `runAttempt = 1`) were supplied
+synthetically as environment variables so the binding logic could be exercised; **they do not
+correspond to any GitHub Actions execution**. The finalize stage, candidate validator, promotion
+planner and gates were exercised against that clearly synthetic identity. This demonstrates the
+contract, not hosted provenance; hosted qualification must establish the real workflow identity
+independently (see the hosted run recorded in the pull request).
 
 | Item | Value |
 |---|---|
-| Branch HEAD | `68b2212` (`ci/ipv6-release-qualification`) |
+| Branch HEAD (qualification source) | `3554a36` (`ci/ipv6-release-qualification`; later commits are CI/test/documentation only) |
 | Base commit | `f1cec15` (`origin/main`) |
 | Environment image | `edgeos-vxlan-reproducible@sha256:82993432c25c191cbd812d8672bc5f4fd13f04a035793323e52c4b50b8ba1b79` |
-| Build identity | `07b769dc3deea5d3594a60ffe18862cd4c4bd9e2a78739879949837df1b77997` |
+| Build identity | `3fd1d8ebab63bc521d85e6dba266943a0483b33d3ca42721cba2f35cf9b09461` |
 | Integration package | `edgeos-vxlan_0.3.0+edgeos3.0.1.e50_all.deb`, `6afa3f25e8145a6ebf31a947ab104b223b351aa615b51aa2a97389364a133e2a` |
 | Kernel module | `7ffe10f611932f6543b96b3ce5683b93b6c678a51ac1b63bcdb3d630e58c7827` (identical at base and branch) |
 | N6-R-P result | 113 pass, 0 fail, 1 skip (`host-global-ipv6-escape-unavailable`); `capture=executed`, `reconciler=executed` |
-| Candidate ID | `sha256:8ced729262850fed5e41a911a2ab1d8e43a5369c80f2c1d6922a45eda89722ea` |
-| Manifest SHA-256 | `dafa2bba923d5ceabbd937cd4c2dbe65ca7d3814513249687fcc47b86da9d098` |
+| Candidate ID | `sha256:fa7fe2e41612f598b45dd377850c5034aa9078e04b4d09085f0cf2b10aaed1c3` |
+| Manifest SHA-256 | `c6f43758f612233668656ab448d836480ce95accac576a651c4ced7c6ad8a0e9` |
 | Candidate validation | PASS |
 | Promotion qualification dry-run | PASS |
 
 Base and branch canonical builds produced byte-identical packages, so the change introduces no
 payload difference. A separate run whose evidence carried no workflow binding was rejected by the
-finalize stage (`workflow.runId is missing`), confirming fail-closed behavior.
+finalize stage (`workflow.runId is missing`), confirming fail-closed behavior. Evidence with a
+different run ID or attempt is likewise rejected by finalize (§3b).
