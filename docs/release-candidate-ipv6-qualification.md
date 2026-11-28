@@ -1,11 +1,12 @@
 # Release-candidate IPv6 qualification
 
 **Status:** merged to `main` as `fffdedd` (PR #10). The development-branch hosted non-publication
-qualification is recorded in §11. A production candidate cannot currently be constructed at the
-published `0.3.0` version, so main-branch candidate qualification, attestation and
-production-policy promotion validation are **not demonstrated**; the blocked run and its cause are
-recorded in §12. Release publication remains **disabled**. This document is the canonical
-description of how IPv6-only qualification is bound to a trusted release candidate.
+qualification is recorded in §11. `0.3.1` is prepared as the next unreleased development version,
+which removes the version-eligibility blocker recorded in §12; main-branch candidate qualification,
+attestation and production-policy promotion validation remain outstanding and are **not
+demonstrated**. No v0.3.1 artifact, tag or release exists. Release publication remains **disabled**.
+This document is the canonical description of how IPv6-only qualification is bound to a trusted
+release candidate.
 **Scope:** the trusted release lifecycle (`release.yml`, `release/candidate-schema.json`,
 `scripts/build-release-candidate.sh`, `scripts/validate-candidate.sh`,
 `scripts/check-release-gates.sh`, `scripts/promote-release.sh`) and the qualification harness.
@@ -269,8 +270,9 @@ for this work.
    unachieved (ENG-IPV6-01/02).
 3. **Hosted qualification:** the hosted non-publication run of the combined path on the development
    branch is recorded in §11. The merged `main` revision has post-merge CI and image-qualification
-   evidence, but a production candidate cannot be constructed at the published `0.3.0` version; the
-   blocked main-branch run and its cause are recorded in §12.
+   evidence, but a production candidate could not be constructed at the published `0.3.0` version
+   (§12). `0.3.1` is prepared as the next unreleased development version; main-branch candidate
+   qualification remains outstanding.
 4. **`iproute2-json-normalization`:** still a test-only compatibility layer (ENG-IPV6-10).
 5. **Release publication:** disabled. This integration does not authorize a release.
 6. **Repository protections:** not configured (§8).
@@ -400,8 +402,9 @@ ERROR: production version 0.3.0 is not newer than published 0.3.0
 `workflow_dispatch` `mode=candidate` always sets `PRODUCTION=true`, and
 `build-release-candidate.sh` requires the production version to be strictly newer than
 `release.baselinePublishedVersion` (`0.3.0` in `release/release-policy.json`). The package version
-is `0.3.0` and `v0.3.0` is published, so the gate behaves as designed. A version increment is
-outside this assignment. The only non-release candidate path is a `push` event on a branch listed in
+is `0.3.0` and `v0.3.0` is published, so the gate behaves as designed. A version increment was
+outside that assignment; a follow-up change prepares `0.3.1` as the next unreleased development
+version (see the status above). The only non-release candidate path is a `push` event on a branch listed in
 `release.yml`, which `main` is not; the temporary development-branch trigger was deliberately
 removed in `66715cf`. The downstream jobs (`IPv6-only candidate qualification`,
 `Finalize qualified candidate`, `Qualification dry-run`) were therefore skipped.

@@ -122,6 +122,11 @@ Release preparation:
    checks ancestry, digest equality and `update-release-pins.sh --check` on B.
 6. Publish the exact candidate assets to the draft; verify; publish.
 
+Commit A intentionally still carries the previous release's installer pins. Build-mode validation
+(`scripts/validate-release.sh`) accepts that state when the changelog version is newer than
+`install.sh` VERSION and the installer pins `release.baselinePublishedVersion`; tag and
+published-asset validation remain exact and fail closed.
+
 The packaging-inputs digest covers all tracked files except installer pins,
 docs, workflows, specs and tests. It includes `.gitattributes`, `release/**`,
 `scripts/**`, `containers/**`, `debian/**`, `src/**`, `templates/**` and

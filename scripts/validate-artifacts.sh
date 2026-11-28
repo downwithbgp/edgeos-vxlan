@@ -22,12 +22,18 @@
 #
 # --skip-install-pins relaxes the install.sh version agreement for prerelease
 # builds; published assets are always pin-verified.
+#
+# --development-baseline <version> accepts a stable package version that is
+# newer than the installer pins, provided install.sh still pins that published
+# baseline. This is the documented release-preparation commit-A state; it is
+# valid only in build mode and never for a tag or published assets.
 
 set -eu
 
 MODE=
 TAG=
 SKIP_PINS=no
+DEVELOPMENT_BASELINE=
 
 usage()
 {
@@ -37,6 +43,9 @@ Usage: validate-artifacts.sh [options] --build|--published <artifact-dir> <sourc
 Options:
   --tag <tag>            Require the release tag to match install.sh VERSION
   --skip-install-pins    Skip the install.sh version agreement (prerelease builds)
+  --development-baseline <version>
+                         Accept a newer stable version while install.sh pins
+                         the given published baseline (build mode only)
   -h, --help             Show this help
 EOF
 }
@@ -55,6 +64,11 @@ while [ $# -gt 0 ]; do
         --skip-install-pins)
             SKIP_PINS=yes
             shift
+            ;;
+        --development-baseline)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            DEVELOPMENT_BASELINE=$2
+            shift 2
             ;;
         -h|--help)
             usage
@@ -86,11 +100,15 @@ note()
     echo "NOTE: $*" >&2
 }
 
-for cmd in dpkg-deb dpkg-parsechangelog readelf modinfo sha256sum md5sum cmp \
+for cmd in jq dpkg dpkg-deb dpkg-parsechangelog readelf modinfo sha256sum md5sum cmp \
            gzip find sort awk sed grep stat diff wc head; do
     command -v "$cmd" >/dev/null 2>&1 ||
         fail "required command not found: $cmd"
 done
+
+if [ -n "$DEVELOPMENT_BASELINE" ] && [ "$SKIP_PINS" = "yes" ]; then
+    fail "--development-baseline cannot be combined with --skip-install-pins"
+fi
 
 [ -d "$ARTIFACT_DIR" ] || fail "artifact directory not found: $ARTIFACT_DIR"
 [ -d "$SOURCE_ROOT" ] || fail "source root not found: $SOURCE_ROOT"
@@ -150,10 +168,37 @@ done
 PKG_VERSION=$(dpkg-parsechangelog -l "$SOURCE_ROOT/debian/changelog" -S Version)
 
 if [ "$SKIP_PINS" = "no" ]; then
-    [ "$PKG_VERSION" = "$INSTALLER_PKG_VERSION" ] ||
-        fail "changelog version ($PKG_VERSION) != install.sh PKG_VERSION ($INSTALLER_PKG_VERSION)"
-    [ "$PKG_VERSION" = "$VERSION+edgeos3.0.1.e50" ] ||
-        fail "package version $PKG_VERSION does not match release version $VERSION"
+    if [ -n "$DEVELOPMENT_BASELINE" ]; then
+        [ "$MODE" = "build" ] ||
+            fail "--development-baseline is only valid for build validation"
+        [ "$VERSION" = "$DEVELOPMENT_BASELINE" ] ||
+            fail "install.sh VERSION ($VERSION) != development baseline ($DEVELOPMENT_BASELINE)"
+        printf '%s\n' "$DEVELOPMENT_BASELINE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' ||
+            fail "development baseline is not a release version: $DEVELOPMENT_BASELINE"
+        policy=$SOURCE_ROOT/release/release-policy.json
+        [ -f "$policy" ] ||
+            fail "development validation requires $policy"
+        expected_baseline=$(jq -r '.release.baselinePublishedVersion' "$policy") ||
+            fail "cannot read release.baselinePublishedVersion from $policy"
+        [ "$DEVELOPMENT_BASELINE" = "$expected_baseline" ] ||
+            fail "development baseline $DEVELOPMENT_BASELINE != published baseline $expected_baseline"
+        case "$PKG_VERSION" in
+            *~*)
+                fail "development baseline cannot be combined with a prerelease version: $PKG_VERSION"
+                ;;
+        esac
+        printf '%s\n' "$PKG_VERSION" |
+            grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\+edgeos3\.0\.1\.e50$' ||
+            fail "development package version is not stable with the edgeos3.0.1.e50 suffix: $PKG_VERSION"
+        dpkg --compare-versions "${PKG_VERSION%%+*}" gt "$DEVELOPMENT_BASELINE" ||
+            fail "development version ${PKG_VERSION%%+*} is not newer than the installer baseline $DEVELOPMENT_BASELINE"
+        note "development version ${PKG_VERSION%%+*}; installer pins remain at published $DEVELOPMENT_BASELINE"
+    else
+        [ "$PKG_VERSION" = "$INSTALLER_PKG_VERSION" ] ||
+            fail "changelog version ($PKG_VERSION) != install.sh PKG_VERSION ($INSTALLER_PKG_VERSION)"
+        [ "$PKG_VERSION" = "$VERSION+edgeos3.0.1.e50" ] ||
+            fail "package version $PKG_VERSION does not match release version $VERSION"
+    fi
 else
     [ "$MODE" = "build" ] ||
         fail "published validation cannot skip install pins"
@@ -178,6 +223,10 @@ if [ -n "$TAG" ]; then
     lines=$(printf '%s\n' "$TAG" | wc -l)
     [ "$lines" -eq 1 ] ||
         fail "release tag must be a single line"
+
+    if [ -n "$DEVELOPMENT_BASELINE" ]; then
+        fail "refusing development validation for tag $TAG"
+    fi
 
     printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' ||
         fail "release tag does not match vMAJOR.MINOR.PATCH: $TAG"

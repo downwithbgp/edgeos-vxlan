@@ -199,6 +199,14 @@ run_build()
     "$ROOT/scripts/validate-release.sh" "$1"
 }
 
+make_repo_copy()
+{
+    local dir=$1
+    mkdir -p "$dir"
+    cp -a "$ROOT/scripts" "$ROOT/release" "$ROOT/install.sh" "$ROOT/debian" \
+        "$ROOT/src" "$ROOT/templates" "$ROOT/modules" "$dir/"
+}
+
 
 run_skip_pins()
 {
@@ -222,6 +230,21 @@ expect_pass()
     else
         FAIL=$((FAIL + 1))
         echo "FAIL: $desc (expected success)"
+        sed 's/^/    /' "$TMP/err" | tail -10
+    fi
+}
+
+expect_pass_with()
+{
+    local desc=$1
+    local pattern=$2
+    shift 2
+
+    if "$@" >"$TMP/out" 2>"$TMP/err" && grep -Fq -- "$pattern" "$TMP/err"; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1))
+        echo "FAIL: $desc (expected success with '$pattern')"
         sed 's/^/    /' "$TMP/err" | tail -10
     fi
 }
@@ -259,12 +282,64 @@ if [ "$PRERELEASE" = "no" ]; then
 
     multiline_tag=$(printf 'v%s\nv9.9.9' "$INSTALL_VERSION")
     expect_fail "multiline release tag is rejected" "single line" \
-        "$ROOT/scripts/validate-artifacts.sh" --build --tag "$multiline_tag" \
+        "$ROOT/scripts/validate-artifacts.sh" --build \
+        --development-baseline "$INSTALL_VERSION" --tag "$multiline_tag" \
         "$clean_build" "$ROOT"
 else
     expect_pass "skip-pins accepts a prerelease version" \
         run_skip_pins "$clean_build" "$ROOT"
 fi
+
+# Development (release-preparation commit A) installer pins: a stable changelog
+# version newer than install.sh is accepted while the installer still pins the
+# published baseline. Tag, published and prerelease combinations stay strict.
+dev_repo=$TMP/dev-repo
+make_repo_copy "$dev_repo"
+expect_pass_with "development version uses the published installer baseline" \
+    "development version 0.3.1; install.sh pins remain at published 0.3.0" \
+    "$dev_repo/scripts/validate-release.sh" "$clean_build"
+
+newer_repo=$TMP/newer-repo
+make_repo_copy "$newer_repo"
+sed -i 's/^VERSION=".*"/VERSION="9.9.9"/; s/^PKG_VERSION=".*"/PKG_VERSION="9.9.9+edgeos3.0.1.e50"/' \
+    "$newer_repo/install.sh"
+expect_fail "installer newer than the source version is rejected" \
+    "installer version 9.9.9 is newer than the source version" \
+    "$newer_repo/scripts/validate-release.sh" "$clean_build"
+
+stale_repo=$TMP/stale-repo
+make_repo_copy "$stale_repo"
+sed -i 's/^VERSION=".*"/VERSION="0.2.2"/; s/^PKG_VERSION=".*"/PKG_VERSION="0.2.2+edgeos3.0.1.e50"/' \
+    "$stale_repo/install.sh"
+expect_fail "installer pin older than the published baseline is rejected" \
+    "installer pins 0.2.2, but the published baseline is 0.3.0" \
+    "$stale_repo/scripts/validate-release.sh" "$clean_build"
+
+dev_tag=v${PKG_VERSION%%+*}
+expect_fail "development validation is refused for a release tag" \
+    "refusing development validation for tag" \
+    "$ROOT/scripts/validate-artifacts.sh" --build \
+    --development-baseline "$INSTALL_VERSION" --tag "$dev_tag" \
+    "$clean_build" "$ROOT"
+
+expect_fail "development validation is refused for a tag event" \
+    "refusing development validation for tag" \
+    env GITHUB_REF_TYPE=tag GITHUB_REF_NAME="$dev_tag" \
+    "$ROOT/scripts/validate-artifacts.sh" --build \
+    --development-baseline "$INSTALL_VERSION" \
+    "$clean_build" "$ROOT"
+
+expect_fail "development baseline is refused in published mode" \
+    "--development-baseline is only valid for build validation" \
+    "$ROOT/scripts/validate-artifacts.sh" --published \
+    --development-baseline "$INSTALL_VERSION" \
+    "$clean_build" "$ROOT"
+
+expect_fail "development baseline cannot be combined with skip-pins" \
+    "cannot be combined with --skip-install-pins" \
+    "$ROOT/scripts/validate-artifacts.sh" --build --skip-install-pins \
+    --development-baseline "$INSTALL_VERSION" \
+    "$clean_build" "$ROOT"
 
 mkdir -p "$rc_source"
 cp -a "$ROOT/install.sh" "$ROOT/debian" "$ROOT/src" "$ROOT/templates" \
