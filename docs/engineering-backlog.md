@@ -219,7 +219,8 @@ namespaces is Level B, not Level D.
   same-run package artifact, source commit, workflow identity and packaged reconciler hashes.
 * [x] The evidence is wired into the release candidate manifest and publication gate (ENG-IPV6-11,
   implemented and hosted-demonstrated on the development branch; the main-branch production
-  candidate remains blocked by version eligibility, not by the IPv6 gate). See
+  candidate was blocked by version eligibility, not by the IPv6 gate, and the `0.3.1` development
+  version removes that blocker). See
   [`release-candidate-ipv6-qualification.md`](release-candidate-ipv6-qualification.md) §12.
 * [x] The candidate builder supplies the validated IPv6 evidence before candidate ID/attestation;
   `validate-candidate.sh`/`check-release-gates.sh` reject missing/failed/unpermitted IPv6 checks.
@@ -485,12 +486,12 @@ matrix.
 the development branch
 ([run 46096392548](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46096392548),
 non-release and non-promotable). Post-merge CI and build-environment qualification on `fffdedd`
-passed, but a production candidate cannot be constructed at the published `0.3.0` version:
+passed, but a production candidate could not be constructed at the published `0.3.0` version:
 [run 46103291407](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46103291407) failed at the
-version-eligibility gate (`production version 0.3.0 is not newer than published 0.3.0`), and this
-assignment did not authorize a version increment or a new `main`-branch trigger. Main-branch
-candidate qualification, attestation and production-policy promotion validation therefore remain
-**not demonstrated**; see
+version-eligibility gate (`production version 0.3.0 is not newer than published 0.3.0`). `0.3.1` is
+prepared as the next unreleased development version, which removes that blocker; main-branch
+candidate qualification, attestation and production-policy promotion validation remain
+**not demonstrated**, and no v0.3.1 artifact, tag or release exists. See
 [`release-candidate-ipv6-qualification.md`](release-candidate-ipv6-qualification.md) §12. Release
 publication remains disabled.**
 

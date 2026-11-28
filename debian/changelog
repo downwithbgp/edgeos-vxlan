@@ -1,3 +1,14 @@
+edgeos-vxlan (0.3.1+edgeos3.0.1.e50) unstable; urgency=medium
+
+  * Development version: establish 0.3.1 as the next unreleased package
+    version so the trusted release lifecycle can construct and qualify a
+    production release candidate. No product or runtime behavior change from
+    v0.3.0; only the packaged changelog and version metadata differ.
+  * The published installer pins remain at v0.3.0 until a v0.3.1 release
+    exists; this change publishes no artifact and creates no tag.
+
+ -- Vadim Petrov <vadim@vadimpetrov.com>  Sat, 28 Nov 2026 03:45:00 +0000
+
 edgeos-vxlan (0.3.0+edgeos3.0.1.e50) unstable; urgency=medium
 
   * v0.3.0 release: native EdgeOS firewall attachments for VXLAN.
