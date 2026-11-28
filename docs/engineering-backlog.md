@@ -480,9 +480,11 @@ matrix.
 
 **Priority: P0. This work must be complete before production release publication is enabled.**
 
-**Status (2026-11-27): implemented locally on `ci/ipv6-release-qualification`; hosted
-non-publication demonstration pending branch-publication authorization. Release publication
-remains disabled.**
+**Status (2026-11-28): implemented and hosted-qualified on `ci/ipv6-release-qualification`
+(draft PR #10); the hosted run is a non-release, non-promotable development-branch qualification
+([run 46096392548](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46096392548)). Merge,
+a production-candidate run from `refs/heads/main` and release publication remain pending
+maintainer authorization. Release publication remains disabled.**
 
 The implementation is described in
 [`release-candidate-ipv6-qualification.md`](release-candidate-ipv6-qualification.md). The `ci.yml`
@@ -490,9 +492,10 @@ The implementation is described in
 `release.yml` path qualifies the exact release candidate, attaches the four checks to the candidate
 manifest under an immutable `build.identity`, and is enforced by `validate-candidate.sh` and
 `check-release-gates.sh --candidate-dir`. Local qualification (build identity, packaged N6-R-P,
-candidate finalize, validator, promotion dry-run) is recorded in that document §10. It is **local,
-not hosted** evidence, so production release-candidate IPv6 qualification must not be described as
-fully demonstrated until the hosted run in criterion 7 is recorded.
+candidate finalize, validator, promotion dry-run) is recorded in that document §10, and the
+hosted non-publication run on the development branch is recorded in §11. The hosted run establishes
+the real workflow identity; production release-candidate qualification from `main` and publication
+still require the merge and remain behind the disabled publication controls.
 
 **Problem.** `scripts/build-release-candidate.sh` computes the candidate ID and attests
 `release-candidate.json` with `qualification.checks` from `artifact-contract`, `build-metadata`,
@@ -578,8 +581,11 @@ Phase III trusted release lifecycle as merged; a non-publication hosted qualific
   and an unpermitted skip.
 * [x] Positive and negative release-gate fixtures pass, including the candidate ID, package digest
   and workflow identity cases (`test/unit-release-ipv6-gate.sh`, 28 fixtures).
-* [ ] **Pending authorization:** a non-publication *hosted* run exercises the combined
-  candidate-plus-qualification path and its evidence is validated independently. Local
-  qualification is complete; hosted execution requires publishing the branch.
+* [x] A non-publication **hosted** run exercises the combined candidate-plus-qualification path
+  and its evidence is validated independently:
+  [run 46096392548](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46096392548) on
+  `ci/ipv6-release-qualification` (build, qualification, finalize/attest, dry-run all passed;
+  publication jobs skipped; candidate/evidence/attestation verified independently). This is
+  development-branch evidence, not a production publication authorization.
 * [x] Release publication remains disabled: `RELEASE_PUBLICATION_ENABLED` is unset and no release or
   image was published.

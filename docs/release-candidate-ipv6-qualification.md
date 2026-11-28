@@ -264,9 +264,9 @@ for this work.
    kernel module, bridged EdgeOS dataplane or physical ER-X hardware (ENG-IPV6-04/05).
 2. **Levels C and D:** IPv6-only installation, management, runner and control plane remain
    unachieved (ENG-IPV6-01/02).
-3. **Hosted run pending:** the hosted non-publication qualification of this combined path has not
-   been executed for this branch because publishing the branch requires separate authorization.
-   Local qualification is complete and recorded in §10; it is not hosted evidence.
+3. **Hosted qualification:** the hosted non-publication run of the combined path on the development
+   branch is recorded in §11. A production-candidate run from `refs/heads/main` still requires the
+   merge and remains gated behind the disabled publication controls.
 4. **`iproute2-json-normalization`:** still a test-only compatibility layer (ENG-IPV6-10).
 5. **Release publication:** disabled. This integration does not authorize a release.
 6. **Repository protections:** not configured (§8).
@@ -300,3 +300,60 @@ Base and branch canonical builds produced byte-identical packages, so the change
 payload difference. A separate run whose evidence carried no workflow binding was rejected by the
 finalize stage (`workflow.runId is missing`), confirming fail-closed behavior. Evidence with a
 different run ID or attempt is likewise rejected by finalize (§3b).
+
+## 11. Hosted non-publication qualification record (2026-11-28)
+
+Authorized development-branch qualification. The branch is listed in the `release.yml` push
+trigger; push events always resolve `non_release=true`, the publication jobs are skipped, and
+publication still requires a `workflow_dispatch` `promote` from `refs/heads/main` behind the
+`release-publication` environment. This run is **not** a production publication authorization.
+
+Workflow run
+[46096392548](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46096392548) —
+`Trusted release`, event `push`, branch `ci/ipv6-release-qualification`, head
+`97f9c76cf3229b51abe253453384bc3c145bddc9`, attempt 1, conclusion **success**.
+
+| Job | Result | URL |
+|---|---|---|
+| Resolve immutable identities | success | [job](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46096392548/job/140828586348) |
+| Qualify build image | success | [job](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46096392548/job/140828615064) |
+| Build candidate | success | [job](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46096392548/job/140829288967) |
+| IPv6-only candidate qualification | success | [job](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46096392548/job/140829441400) |
+| Finalize qualified candidate (attest + verify) | success | [job](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46096392548/job/140829581411) |
+| Qualification dry-run (promotion planning) | success | [job](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46096392548/job/140829691570) |
+| Authorized publication / preflight / post-publish | **skipped** (push event) | — |
+
+Artifact and evidence identity (download independently validated):
+
+| Item | Value |
+|---|---|
+| Build identity | `a1e3205e741a9ccb3d4a21ca73a5563fa9ea7eba1c9830f8a970267f3f5bee73` |
+| Candidate ID | `sha256:73c4bd8b72011dfa247549a8a6591038dcda679bbf10e12c62dc21abb93cd817` |
+| Manifest SHA-256 | `d25a07f392c3d6f39e15323ac9de9413ef09bc2b2b6f58edeaf17690de117621` |
+| Integration package | `edgeos-vxlan_0.3.0+edgeos3.0.1.e50_all.deb`, `6afa3f25e8145a6ebf31a947ab104b223b351aa615b51aa2a97389364a133e2a` (identical before and after qualification, and identical to the canonical local build) |
+| Kernel module | `edgeos-vxlan-kmod_0.3.0+edgeos3.0.1.e50_mipsel.deb`, `7ffe10f611932f6543b96b3ce5683b93b6c678a51ac1b63bcdb3d630e58c7827` |
+| Evidence | 113 pass, 0 fail, 2 skip; `capture=executed`, `reconciler=executed`, `packageExecuted=true` |
+| Evidence hashes | `summary.json` `b9d83bf7d33f6224ad3260a8225b08874be712d5393ade45f939fe081b5c3ef1`; `summary.txt` `6c1db02fbb452474f7547f5adb2f004f48c98c68540afe3a69ac69dae2ab2ab0`; `captures/analysis.txt` `4566ecfb86aaef625b23be90c9f498baa17e90b955ff65790117d9b1ef48af56`; `reconciler-evidence.txt` `6813645cea6f0762bd99e611e616721c032350a6aa92bb4eef92cca25cd0bed5` |
+| Capture hashes | underlay `2dd52f9bd23db4cb17d3202e24fee404879261d8e006e6d1a5c5f7b85ba296af`, overlay `0eadf705786d67d80bdffe285523fc98d282840df4fb79c5f5510ba678e4da9c` |
+
+Independent validation:
+
+- `validate-candidate.sh --candidate-dir <downloaded release-candidate> --source-root . --rev
+  97f9c76…` → **PASS** (candidate ID `sha256:73c4bd8b…`).
+- `validate-ipv6-qualification-evidence.py` with expected source commit, build identity, package
+  SHA-256, run `46096392548` attempt 1, workflow path
+  `downwithbgp/edgeos-vxlan/.github/workflows/release.yml@refs/heads/ci/ipv6-release-qualification`,
+  ref and commit, and harness commit → **PASS**.
+- `verify-attestations.sh` with the pinned `gh` 2.106.0 and the Sigstore trusted root → **PASS**
+  (repository, signer workflow `.github/workflows/release.yml`, signer digest = source commit
+  `97f9c76…`, source ref `refs/heads/ci/ipv6-release-qualification`, certificate repository ID).
+  The same bundle with `--source-ref refs/heads/main` is **rejected** (exit 1), which is the
+  intended non-promotable behavior.
+
+The ordinary CI run on the same push
+[46096392518](https://github.com/downwithbgp/edgeos-vxlan/actions/runs/46096392518) also passed all
+six jobs, including the `ci.yml` `ipv6-only` same-run package qualification. That CI run is not a
+substitute for this combined release-qualification demonstration.
+
+This record was committed after the qualifying run; the record commit changes documentation only
+and does not alter the workflow, scripts, tests or package payload that were qualified.
