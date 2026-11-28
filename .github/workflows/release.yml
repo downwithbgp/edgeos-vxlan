@@ -91,13 +91,7 @@ on:
         type: string
   push:
     branches:
-      # Trusted development branches only. Push events always resolve to a
-      # non-release candidate (resolve job: event_name == push =>
-      # non_release=true); production publication requires a workflow_dispatch
-      # "promote" from refs/heads/main behind the release-publication
-      # environment. Adding a branch here can never enable publication.
       - ci/trusted-release-lifecycle
-      - ci/ipv6-release-qualification
 
 permissions:
   contents: read
