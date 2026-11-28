@@ -114,6 +114,48 @@ job that executed the package. The job holds no OIDC token, no secret and no pub
 credential, and a source-level attacker already controls the workflow, so this does not widen the
 release trust boundary; it is recorded here so the guarantee is not overstated.
 
+## 3a. Attestation enforcement
+
+Six properties are distinct and are enforced at different layers:
+
+| Property | What it means | Where it is enforced |
+|---|---|---|
+| Manifest integrity | The manifest bytes were not altered after attestation | `verify-attestations.sh` verifies the manifest subject; `check_candidate_id` recomputes the candidate ID |
+| Artifact integrity | Each distributed file matches the manifest and the attested subject | `validate-candidate.sh` hashes every artifact; `verify-attestations.sh` verifies each manifest artifact as a subject |
+| Qualification evidence integrity | The retained evidence bytes match the manifest's hashes | `validate-candidate.sh` recomputes them and runs the canonical evidence validator on the retained summary |
+| Workflow provenance | The attestation was produced by the trusted workflow, from the permitted source revision/ref | `verify-attestations.sh` binds `--repo`, `--signer-workflow` (policy workflow), `--signer-digest`, `--source-digest`, `--source-ref`, OIDC issuer and `--deny-self-hosted-runners`; the certificate repository identifier must equal the policy `repositoryId` |
+| Attestation authenticity | The signature chain verifies against Sigstore | `gh attestation verify` (real run); fixtures pin the identity semantics, not the cryptography |
+| Publication authorization | This candidate is permitted to publish now | `validate-candidate.sh --production/--release`, `check-release-gates.sh` (environment, variables, confirmation), `promote-release.sh` (tag/version/pins/draft) |
+
+A cryptographically valid attestation is **not** by itself a publication authorization. A
+development-branch candidate, an unrelated signer workflow, or an unauthorized source revision can
+produce a valid attestation and still be rejected: `validate-candidate.sh --production` requires
+`nonRelease=false`, `refs/heads/main`, and workflow commit equal to source commit; `release.yml`
+only reaches the publish job from `workflow_dispatch` `mode=promote` on `refs/heads/main` behind
+the `release-publication` environment. The transitive binding is enforced in both directions: the
+attestation covers the manifest, the manifest covers every artifact and the evidence hashes, and
+the candidate ID covers the entire manifest including `qualification.ipv6`.
+
+## 3b. Rerun semantics
+
+GitHub Actions full reruns and failed-job-only reruns are handled by binding evidence to the run
+identity:
+
+| Field | Behavior |
+|---|---|
+| Run ID | Evidence records `GITHUB_RUN_ID`; finalize requires it to equal the current run |
+| Run attempt | Evidence records `GITHUB_RUN_ATTEMPT`; finalize requires it to equal the current attempt |
+| Artifact ID/digest | Artifacts are fetched by immutable ID and digest from the current run; the API digest and downloaded bytes are verified |
+| Artifacts from a previous attempt | A successful immutable build artifact may be reused by a failed-job-only rerun **only** because it is content-addressed (ID+digest) and its build record binds the source and workflow commit; it is never selected by name or by "latest" |
+| Job outputs from a previous attempt | Used only as the immutable artifact ID/digest of the successful build job; outputs are never used as evidence |
+| Evidence from a different attempt | **Rejected.** Finalize compares the recorded attempt with the current attempt; a failed-job-only rerun of finalization after a successful qualification therefore fails closed and requires "Re-run all jobs" |
+| Finalization after a failed/interrupted qualification | Impossible: the finalize job `needs` the qualification job, and the implicit `success()` skips it when qualification fails |
+
+The selected policy is: **cross-attempt evidence is always rejected; a complete workflow rerun is
+required whenever evidence must be regenerated.** This is deliberate and matches "reject
+cross-attempt evidence" rather than silently falling back to an earlier successful attempt. There is
+no latest-run lookup anywhere in the path.
+
 ## 4. Gate semantics
 
 - `validate-candidate.sh` rejects: missing `build.identity`; a build identity that does not
@@ -132,6 +174,27 @@ release trust boundary; it is recorded here so the guarantee is not overstated.
 - Existing controls are unchanged: fail-closed publication gates, protected `release-publication`
   environment, immutable-release confirmation, draft-first promotion, and draft verification of
   the downloaded asset bytes.
+
+### 4a. Published-assets verification boundary
+
+`validate-candidate.sh --published-assets` exists only for verifying **already published** release
+assets, where the raw evidence directory is not a distributed asset (the release policy's
+`requiredAssets` does not include `qualification/`). Its only caller is `verify-release.sh`, which
+is used for published/draft release verification.
+
+- It cannot be reached from promotion: `promote-release.sh` never passes it, and the candidate
+  validation it performs (qualification dry-run, preflight, publication) always uses the strict
+  mode.
+- It cannot turn an unqualified candidate into a publishable one: it still requires the manifest's
+  `qualification.ipv6` block, the four required check IDs, the build identity, package/source
+  binding, provenance consistency and the skip/workaround allow-list. It skips only the *presence
+  and hashing* of the raw evidence files.
+- It is guarded: it is rejected unless `--release` is also set, and rejected when the raw evidence
+  directory is present, so it cannot be used to silence evidence verification while the evidence
+  exists.
+- Historical releases remain functional and immutable: `verify-release.sh` classifies releases
+  below `canonicalFrom` as legacy and verifies them with `validate-published-release.sh`; no
+  historical asset, checksum or tag is touched.
 
 ## 5. Permitted exceptions
 
@@ -173,7 +236,9 @@ python3 scripts/validate-ipv6-qualification-evidence.py \
   rejects the candidate at the next validation point. Recovery is a new candidate from a new run;
   the evidence is not edited in place.
 - Reruns create a new attempt with new evidence. The gate compares the run attempt, so a rerun that
-  fails cannot inherit the previous attempt's evidence.
+  fails cannot inherit the previous attempt's evidence. A failed-job-only rerun of finalization
+  after a successful qualification is rejected by design; use "Re-run all jobs" to regenerate
+  evidence in the new attempt. See §3b.
 - Publication remains disabled until the maintainer enables `RELEASE_PUBLICATION_ENABLED` and
   confirms immutable releases. Nothing in this integration enables it.
 

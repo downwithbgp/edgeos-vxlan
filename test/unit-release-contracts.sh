@@ -436,6 +436,21 @@ cat > "$FAKE_ATTEST_GH" <<'EOF'
 #!/bin/sh
 set -eu
 [ "${FAKE_ATTEST_FAIL:-}" = "yes" ] && { echo "no attestations found" >&2; exit 1; }
+if [ -n "${FAKE_ATTEST_FAIL_SUBJECT:-}" ]; then
+    for arg in "$@"; do
+        if [ "$arg" = "$FAKE_ATTEST_FAIL_SUBJECT" ]; then
+            echo "no attestation covers $arg" >&2
+            exit 1
+        fi
+    done
+fi
+if [ -n "${FAKE_ATTEST_REQUIRE_ARG:-}" ]; then
+    found=no
+    for arg in "$@"; do
+        [ "$arg" = "$FAKE_ATTEST_REQUIRE_ARG" ] && found=yes
+    done
+    [ "$found" = yes ] || { echo "missing required argument $FAKE_ATTEST_REQUIRE_ARG" >&2; exit 1; }
+fi
 cat "$FAKE_ATTEST_OUTPUT"
 EOF
 chmod +x "$FAKE_ATTEST_GH"
@@ -478,6 +493,31 @@ expect_fail_with "attestation verification failed" \
 jq -n '[{verificationResult:{signature:{certificate:{sourceRepositoryIdentifier: 1357738281}}}}]' \
     > "$TMP/id-good.json"
 expect_pass verify_with_identity "$TMP/id-good.json"
+
+# A manifest artifact without a covering attestation is rejected: the verifier
+# iterates the manifest's own subjects, so a missing subject cannot be skipped.
+expect_fail_with "attestation verification failed for" \
+    env GH_BIN="$FAKE_ATTEST_GH" FAKE_ATTEST_OUTPUT="$TMP/id-good.json" \
+        FAKE_ATTEST_FAIL_SUBJECT="$CAND/sbom-edgeos-vxlan-kmod.spdx.json" \
+        "$ROOT/scripts/verify-attestations.sh" \
+        --candidate-dir "$CAND" --bundle "$BUNDLE_FILE" --no-sbom
+
+# An unauthorized signer workflow is rejected: the verifier binds the signer
+# workflow passed to gh, so a substituted workflow cannot verify.
+expect_fail_with "attestation verification failed for" \
+    env GH_BIN="$FAKE_ATTEST_GH" FAKE_ATTEST_OUTPUT="$TMP/id-good.json" \
+        FAKE_ATTEST_REQUIRE_ARG=downwithbgp/edgeos-vxlan/.github/workflows/release.yml \
+        "$ROOT/scripts/verify-attestations.sh" \
+        --candidate-dir "$CAND" --bundle "$BUNDLE_FILE" --no-sbom \
+        --workflow downwithbgp/edgeos-vxlan/.github/workflows/evil.yml
+
+# A non-main source ref cannot satisfy a production verification.
+expect_fail_with "attestation verification failed for" \
+    env GH_BIN="$FAKE_ATTEST_GH" FAKE_ATTEST_OUTPUT="$TMP/id-good.json" \
+        FAKE_ATTEST_REQUIRE_ARG=refs/heads/main \
+        "$ROOT/scripts/verify-attestations.sh" \
+        --candidate-dir "$CAND" --bundle "$BUNDLE_FILE" --no-sbom \
+        --source-ref refs/heads/ci/ipv6-release-qualification
 
 # --- adversarial matrix: malformed evidence -----------------------------------
 

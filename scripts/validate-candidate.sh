@@ -207,6 +207,10 @@ fi
 if jq -e '.qualification.checks[] | select(.status != "passed")' "$MANIFEST" >/dev/null; then
     fail "one or more qualification checks did not pass"
 fi
+duplicate_checks=$(jq -r '.qualification.checks[].id' "$MANIFEST" |
+    LC_ALL=C sort | LC_ALL=C uniq -d)
+[ -z "$duplicate_checks" ] ||
+    fail "duplicate qualification check ids: $duplicate_checks"
 
 NAMES=$(mktemp "${TMPDIR:-/tmp}/edgeos-vxlan-artifact-names.XXXXXX") ||
     fail "cannot create temporary artifact-name list"

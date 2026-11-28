@@ -476,5 +476,129 @@ resign_id "$D/release-candidate.json"
 expect_fail_with "status is not passed" "$ROOT/scripts/validate-candidate.sh" \
     --candidate-dir "$D" --release --published-assets
 
+# --- finalize-stage provenance and rerun semantics --------------------------
+
+# Build a pristine build-record directory from a finalized candidate: drop the
+# candidate manifest and the attached evidence, keep the artifacts and the
+# immutable build identity.
+make_build_record()
+{
+    local src=$1 dst=$2
+    rm -rf "$dst"
+    cp -a "$src" "$dst"
+    rm -f "$dst/release-candidate.json"
+    rm -rf "$dst/qualification/ipv6-only" "$dst/qualification/ipv6-fragment.json"
+    jq 'del(.candidate.id)
+        | .candidate.status="built"
+        | .qualification.status="pending"
+        | del(.qualification.ipv6)
+        | .qualification.checks |= map(select(.id | startswith("ipv6-only") | not))' \
+        "$src/release-candidate.json" > "$dst/qualification/build-record.json"
+}
+
+finalize_args()
+{
+    local dir=$1 evidence=$2 identity=$3 run_id=${4:-123456789} attempt=${5:-1}
+    FINALIZE=(--stage finalize --repo "$ROOT" --output-dir "$dir"
+        --ipv6-evidence-dir "$evidence"
+        --expected-build-identity "$identity"
+        --expected-workflow-run-id "$run_id"
+        --expected-workflow-run-attempt "$attempt"
+        --expected-workflow-path 'downwithbgp/edgeos-vxlan/.github/workflows/release.yml@refs/heads/main'
+        --expected-evidence-ref refs/heads/main
+        --expected-evidence-commit "$SHA"
+        --expected-harness-commit "$SHA")
+}
+
+# 25. Finalize accepts evidence from the current run/attempt.
+F=$TMP/finalize-positive
+make_build_record "$CAND" "$F"
+FID=$(jq -r .build.identity "$F/qualification/build-record.json")
+ipv6_fixture_write "$TMP/finalize-holder" "$FID" "$SHA" "$INTEGRATION" \
+    "$(sha256_file "$F/$INTEGRATION")"
+finalize_args "$F" "$TMP/finalize-holder/qualification/ipv6-only" "$FID"
+expect_pass "$ROOT/scripts/build-release-candidate.sh" "${FINALIZE[@]}"
+
+# 26. Finalize rejects evidence from a different attempt (a failed-job-only
+# rerun of finalization must not reuse the previous attempt's evidence).
+F=$TMP/finalize-attempt
+make_build_record "$CAND" "$F"
+FID=$(jq -r .build.identity "$F/qualification/build-record.json")
+ipv6_fixture_write "$TMP/finalize-holder-2" "$FID" "$SHA" "$INTEGRATION" \
+    "$(sha256_file "$F/$INTEGRATION")"
+finalize_args "$F" "$TMP/finalize-holder-2/qualification/ipv6-only" "$FID" 123456789 2
+expect_fail_with "workflow.runAttempt" \
+    "$ROOT/scripts/build-release-candidate.sh" "${FINALIZE[@]}"
+
+# 27. Finalize rejects evidence from a different workflow run.
+F=$TMP/finalize-run
+make_build_record "$CAND" "$F"
+FID=$(jq -r .build.identity "$F/qualification/build-record.json")
+ipv6_fixture_write "$TMP/finalize-holder-3" "$FID" "$SHA" "$INTEGRATION" \
+    "$(sha256_file "$F/$INTEGRATION")"
+finalize_args "$F" "$TMP/finalize-holder-3/qualification/ipv6-only" "$FID" 999 1
+expect_fail_with "workflow.runId" \
+    "$ROOT/scripts/build-release-candidate.sh" "${FINALIZE[@]}"
+
+# --- production authorization boundaries -----------------------------------
+
+# 28. A development-branch candidate (nonRelease=true) cannot satisfy the
+# production validator, even with otherwise valid evidence.
+D=$TMP/dev-branch-nonrelease
+make_candidate "$D" true
+jq '.source.trustedWorkflow.ref="refs/heads/ci/ipv6-release-qualification"' \
+    "$D/release-candidate.json" > "$TMP/d28.json"
+mv "$TMP/d28.json" "$D/release-candidate.json"
+reseal "$D/release-candidate.json"
+expect_fail_with "release candidate is marked nonRelease" \
+    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$D" --production
+
+# 29. A non-production source ref cannot satisfy the production validator.
+D=$TMP/dev-branch-ref
+mutate_copy "$CAND" "$D" \
+    '.source.trustedWorkflow.ref="refs/heads/ci/ipv6-release-qualification"'
+reseal "$D/release-candidate.json"
+expect_fail_with "workflow ref is not refs/heads/main" \
+    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$D" --production
+
+# 30. Artifact substitution after finalization is rejected by the real
+# promotion planner.
+D=$TMP/promotion-artifact-sub
+rm -rf "$D"; cp -a "$PROMOTE" "$D"
+printf 'tampered after finalization\n' > "$D/$INTEGRATION"
+expect_fail_with "artifact size mismatch" \
+    "$ROOT/scripts/promote-release.sh" \
+    --candidate-dir "$D" --qualification --dry-run --fixture \
+    --candidate-id "$(jq -r .candidate.id "$D/release-candidate.json")" \
+    --manifest-sha256 "$(sha256_file "$D/release-candidate.json")"
+
+# 31. Evidence removed after finalization is rejected by the promotion planner:
+# --published-assets relaxation is not reachable from promotion.
+D=$TMP/promotion-no-evidence
+rm -rf "$D"; cp -a "$PROMOTE" "$D"
+rm -rf "$D/qualification/ipv6-only"
+expect_fail_with "required directory not found" \
+    "$ROOT/scripts/promote-release.sh" \
+    --candidate-dir "$D" --qualification --dry-run --fixture \
+    --candidate-id "$(jq -r .candidate.id "$D/release-candidate.json")" \
+    --manifest-sha256 "$(sha256_file "$D/release-candidate.json")"
+
+# 32. --published-assets cannot be used outside published-asset verification,
+# nor to silence checks while the raw evidence is present.
+D=$TMP/published-assets-guard
+rm -rf "$D"; cp -a "$CAND" "$D"
+expect_fail_with "only valid with --release" \
+    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$D" --published-assets
+expect_fail_with "not valid when the raw evidence directory is present" \
+    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$D" --release --published-assets
+
+# 33. Duplicate security-relevant identifiers (check IDs) are rejected.
+D=$TMP/duplicate-check-id
+mutate_copy "$CAND" "$D" \
+    '.qualification.checks += [.qualification.checks[] | select(.id == "ipv6-only-isolation")]'
+resign_id "$D/release-candidate.json"
+expect_fail_with "duplicate qualification check ids" \
+    "$ROOT/scripts/validate-candidate.sh" --candidate-dir "$D" --release
+
 echo "unit-release-ipv6-gate: pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]
